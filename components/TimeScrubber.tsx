@@ -42,8 +42,8 @@ export default function TimeScrubber({
   const maxT = Math.max(...temps) + 1;
   const spanT = Math.max(1, maxT - minT);
 
-  const width = 460;
-  const height = 54;
+  const width = 1000;
+  const height = 56;
   const stepX = width / Math.max(1, slice.length - 1);
 
   const tempPath = slice
@@ -54,9 +54,11 @@ export default function TimeScrubber({
     })
     .join(" ");
 
-  const activeX = clampedIdx * stepX;
-  const activeY =
-    height - 8 - ((active.temperature - minT) / spanT) * (height - 18);
+  const activePctX = (clampedIdx / Math.max(1, slice.length - 1)) * 100;
+  const activePctY =
+    ((height - 8 - ((active.temperature - minT) / spanT) * (height - 18)) /
+      height) *
+    100;
 
   return (
     <div className="glass-panel w-full p-4 sm:p-5 space-y-3">
@@ -104,60 +106,62 @@ export default function TimeScrubber({
         </div>
       </div>
 
-      {/* SVG Sparkline + Yağış Barları */}
+      {/* SVG Sparkline + Yağış Barları (tam genişlik slider hizalı) */}
       <div className="relative">
-        <svg
-          viewBox={`0 0 ${width} ${height}`}
-          className="h-14 w-full overflow-visible"
-          aria-hidden="true"
-        >
-          <defs>
-            <linearGradient id="sparkStroke" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#38bdf8" />
-              <stop offset="50%" stopColor="#ff8a3c" />
-              <stop offset="100%" stopColor="#a78bfa" />
-            </linearGradient>
-          </defs>
-          {slice.map((h, i) => {
-            const barH = (h.precipProbability / 100) * (height - 14);
-            if (barH <= 1) return null;
-            return (
-              <rect
-                key={h.time}
-                x={i * stepX - 4}
-                y={height - barH}
-                width={8}
-                height={barH}
-                rx={3}
-                fill={h.precipType === "snow" ? "rgba(241,245,255,0.28)" : "rgba(56,189,248,0.28)"}
-              />
-            );
-          })}
-          <path
-            d={tempPath}
-            fill="none"
-            stroke="url(#sparkStroke)"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+        <div className="relative h-14 w-full">
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            className="h-full w-full overflow-visible"
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient id="sparkStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#38bdf8" />
+                <stop offset="50%" stopColor="#ff8a3c" />
+                <stop offset="100%" stopColor="#a78bfa" />
+              </linearGradient>
+            </defs>
+            {slice.map((h, i) => {
+              const barH = (h.precipProbability / 100) * (height - 14);
+              if (barH <= 1) return null;
+              return (
+                <rect
+                  key={h.time}
+                  x={i * stepX - 7}
+                  y={height - barH}
+                  width={14}
+                  height={barH}
+                  rx={4}
+                  fill={
+                    h.precipType === "snow"
+                      ? "rgba(241,245,255,0.28)"
+                      : "rgba(56,189,248,0.28)"
+                  }
+                />
+              );
+            })}
+            <path
+              d={tempPath}
+              fill="none"
+              stroke="url(#sparkStroke)"
+              strokeWidth={2.5}
+              vectorEffect="non-scaling-stroke"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+
+          {/* Aktif saat dikey çizgisi ve dairesel gösterge */}
+          <div
+            className="pointer-events-none absolute top-0 bottom-0 w-px border-l border-dashed border-neon-orange/55"
+            style={{ left: `${activePctX}%` }}
           />
-          <line
-            x1={activeX}
-            y1={0}
-            x2={activeX}
-            y2={height}
-            stroke="rgba(255,138,60,0.45)"
-            strokeDasharray="3 3"
+          <div
+            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-neon-white bg-neon-orange shadow-[0_0_10px_rgba(255,138,60,0.9)]"
+            style={{ left: `${activePctX}%`, top: `${activePctY}%` }}
           />
-          <circle
-            cx={activeX}
-            cy={activeY}
-            r={5}
-            fill="#ff8a3c"
-            stroke="#f5f7ff"
-            strokeWidth={2}
-          />
-        </svg>
+        </div>
 
         <input
           type="range"
