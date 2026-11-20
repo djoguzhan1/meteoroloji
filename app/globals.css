@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-night-950 text-neon-white font-sans antialiased overflow-x-hidden;
+  }
+}
+
+.glass-panel {
+  @apply bg-[#0a1026]/55 border border-white/15 rounded-3xl shadow-glass backdrop-blur-glass;
+}
+
+.glass-card {
+  @apply bg-white/[0.06] border border-white/10 rounded-2xl backdrop-blur-md;
+}
+
+.heading-glow {
+  text-shadow: 0 0 42px rgba(255, 190, 140, 0.25), 0 0 22px rgba(255, 255, 255, 0.25);
+}
+
+/* Custom Range Slider */
+input[type="range"].atmos-range {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].atmos-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.35), rgba(255, 138, 60, 0.55));
+}
+
+input[type="range"].atmos-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  border-radius: 9999px;
+  background: #ff8a3c;
+  border: 2px solid #f5f7ff;
+  box-shadow: 0 0 14px rgba(255, 138, 60, 0.8);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(5, 8, 22, 0.8);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 138, 60, 0.55);
+}
