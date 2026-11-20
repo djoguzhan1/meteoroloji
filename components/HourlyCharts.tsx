@@ -7,9 +7,9 @@ import type { HourlyPoint, UnitSystem } from "@/lib/weather-types";
 type ChartMode = "temp" | "precip" | "wind" | "pressure";
 
 const CHART_TABS: Array<{ key: ChartMode; label: string }> = [
-  { key: "temp", label: "Sıcaklık & Hissedilen" },
-  { key: "precip", label: "Yağış (% & mm)" },
-  { key: "wind", label: "Rüzgar & Hamle" },
+  { key: "temp", label: "Sıcaklık" },
+  { key: "precip", label: "Yağış" },
+  { key: "wind", label: "Rüzgar" },
   { key: "pressure", label: "Basınç & Nem" }
 ];
 
@@ -30,8 +30,8 @@ export default function HourlyCharts({
 
   const width = 760;
   const height = 210;
-  const padX = 24;
-  const padTop = 22;
+  const padX = 32;
+  const padTop = 20;
   const padBot = 28;
   const innerW = width - padX * 2;
   const innerH = height - padTop - padBot;
@@ -56,13 +56,9 @@ export default function HourlyCharts({
       ? [...primarySeries, ...secondarySeries]
       : primarySeries;
   const minVal =
-    mode === "precip"
-      ? 0
-      : Math.floor(Math.min(...combined) - 2);
+    mode === "precip" ? 0 : Math.floor(Math.min(...combined) - 2);
   const maxVal =
-    mode === "precip"
-      ? 100
-      : Math.ceil(Math.max(...combined) + 2);
+    mode === "precip" ? 100 : Math.ceil(Math.max(...combined) + 2);
   const span = Math.max(1, maxVal - minVal);
 
   const yOf = (val: number) =>
@@ -79,28 +75,35 @@ export default function HourlyCharts({
   const primaryPath = linePath(primarySeries);
   const areaPath = `${primaryPath} L${(padX + (data.length - 1) * stepX).toFixed(1)},${(padTop + innerH).toFixed(1)} L${padX},${(padTop + innerH).toFixed(1)} Z`;
 
+  const primaryStroke =
+    mode === "temp"
+      ? "#f3f6fb"
+      : mode === "wind"
+        ? "#38bdf8"
+        : "#cbd5e1";
+
   return (
-    <div className="glass-panel p-5 sm:p-6 space-y-5">
+    <div className="surface-panel p-5 sm:p-6 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="font-display text-lg font-semibold text-neon-white">
-            24 Saatlik Grafik Analizi
+          <h3 className="font-display text-base font-semibold text-ink-primary">
+            Saatlik Değişim Grafiği (24s)
           </h3>
-          <p className="text-xs text-neon-white/60">
-            Saat noktalarına tıklayarak detaylı telemetriyi incele
+          <p className="text-xs text-ink-muted">
+            Saat seçmek için grafikteki noktalara tıkla
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1 rounded-xl border border-white/[0.08] bg-white/[0.03] p-1">
           {CHART_TABS.map((t) => (
             <button
               key={t.key}
               type="button"
               onClick={() => setMode(t.key)}
-              className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                 mode === t.key
-                  ? "border-neon-orange/60 bg-neon-orange/20 text-neon-white"
-                  : "border-white/10 bg-white/5 text-neon-white/70 hover:text-neon-white"
+                  ? "bg-white/[0.12] text-ink-primary"
+                  : "text-ink-secondary hover:text-ink-primary"
               }`}
             >
               {t.label}
@@ -109,94 +112,104 @@ export default function HourlyCharts({
         </div>
       </div>
 
-      {/* Seçili saat özeti */}
-      <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-xs">
-        <span className="font-mono font-semibold text-neon-orange">
+      {/* Seçili saat satırı */}
+      <div className="flex flex-wrap items-center gap-4 rounded-xl border border-white/[0.07] bg-white/[0.03] px-4 py-2.5 text-xs tabular">
+        <span className="font-mono font-semibold text-ink-primary">
           {selected.dayLabel} · {selected.hourLabel}
         </span>
         {mode === "temp" && (
           <>
-            <span>
+            <span className="text-ink-secondary">
               Sıcaklık:{" "}
-              <strong className="font-mono text-neon-white">
+              <strong className="font-mono text-ink-primary">
                 {formatTemperature(selected.temperature, unit)}
               </strong>
             </span>
-            <span>
+            <span className="text-ink-secondary">
               Hissedilen:{" "}
-              <strong className="font-mono text-neon-cyan">
+              <strong className="font-mono text-signal-sky">
                 {formatTemperature(selected.apparentTemperature, unit)}
               </strong>
             </span>
-            <span>
+            <span className="text-ink-secondary">
               Çiy Noktası:{" "}
-              <strong className="font-mono text-neon-white/85">
+              <strong className="font-mono text-ink-primary">
                 {formatTemperature(selected.dewPoint, unit)}
               </strong>
             </span>
+            {selected.temp850hPa !== null && (
+              <span className="text-ink-secondary">
+                850 hPa:{" "}
+                <strong className="font-mono text-ink-primary">
+                  {selected.temp850hPa}°C
+                </strong>
+              </span>
+            )}
           </>
         )}
         {mode === "precip" && (
           <>
-            <span>
-              Yağış Olasılığı:{" "}
-              <strong className="font-mono text-neon-cyan">
+            <span className="text-ink-secondary">
+              Olasılık:{" "}
+              <strong className="font-mono text-signal-sky">
                 %{selected.precipProbability}
               </strong>
             </span>
-            <span>
-              Miktar:{" "}
-              <strong className="font-mono text-neon-white">
+            <span className="text-ink-secondary">
+              Yağış:{" "}
+              <strong className="font-mono text-ink-primary">
                 {selected.precipitation.toFixed(1)} mm/sa
               </strong>
             </span>
-            <span>
-              Durum: <strong className="text-neon-white">{selected.condition}</strong>
+            <span className="text-ink-secondary">
+              Durum:{" "}
+              <strong className="text-ink-primary">{selected.condition}</strong>
             </span>
           </>
         )}
         {mode === "wind" && (
           <>
-            <span>
-              Rüzgar:{" "}
-              <strong className="font-mono text-neon-cyan">
+            <span className="text-ink-secondary">
+              Ortalama:{" "}
+              <strong className="font-mono text-signal-sky">
                 {formatWindSpeed(selected.windSpeed, unit)}
               </strong>
             </span>
-            <span>
+            <span className="text-ink-secondary">
               Hamle:{" "}
-              <strong className="font-mono text-neon-orange">
+              <strong className="font-mono text-signal-amber">
                 {formatWindSpeed(selected.windGusts, unit)}
               </strong>
             </span>
-            <span>
-              Yön: <strong className="font-mono">{selected.windDirection}°</strong>
+            <span className="text-ink-secondary">
+              Yön: <strong className="font-mono text-ink-primary">{selected.windDirection}°</strong>
             </span>
           </>
         )}
         {mode === "pressure" && (
           <>
-            <span>
+            <span className="text-ink-secondary">
               Basınç:{" "}
-              <strong className="font-mono text-neon-violet">
+              <strong className="font-mono text-ink-primary">
                 {selected.pressure} hPa
               </strong>
             </span>
-            <span>
-              Bağıl Nem:{" "}
-              <strong className="font-mono text-neon-cyan">
+            <span className="text-ink-secondary">
+              Nem:{" "}
+              <strong className="font-mono text-signal-sky">
                 %{selected.humidity}
               </strong>
             </span>
-            <span>
+            <span className="text-ink-secondary">
               Görüş:{" "}
-              <strong className="font-mono">{selected.visibilityKm} km</strong>
+              <strong className="font-mono text-ink-primary">
+                {selected.visibilityKm} km
+              </strong>
             </span>
           </>
         )}
       </div>
 
-      {/* İnteraktif SVG Grafik */}
       <div className="overflow-x-auto">
         <svg
           viewBox={`0 0 ${width} ${height}`}
@@ -205,13 +218,12 @@ export default function HourlyCharts({
           aria-label="24 saatlik meteoroloji grafiği"
         >
           <defs>
-            <linearGradient id="chartFill" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#ff8a3c" stopOpacity="0.34" />
-              <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.02" />
+            <linearGradient id="meteoArea" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="rgba(243,246,251,0.16)" />
+              <stop offset="100%" stopColor="rgba(243,246,251,0.0)" />
             </linearGradient>
           </defs>
 
-          {/* Yatay kılavuz çizgileri */}
           {[0, 0.33, 0.66, 1].map((frac) => {
             const y = padTop + innerH * frac;
             const val = Math.round(maxVal - span * frac);
@@ -222,13 +234,13 @@ export default function HourlyCharts({
                   y1={y}
                   x2={width - padX}
                   y2={y}
-                  stroke="rgba(255,255,255,0.08)"
-                  strokeDasharray="4 4"
+                  stroke="rgba(255,255,255,0.07)"
                 />
                 <text
-                  x={4}
+                  x={26}
                   y={y + 4}
-                  fill="rgba(245,247,255,0.45)"
+                  textAnchor="end"
+                  fill="rgba(167,180,200,0.65)"
                   fontSize="10"
                   fontFamily="monospace"
                 >
@@ -249,25 +261,25 @@ export default function HourlyCharts({
                   y={padTop + innerH - barH}
                   width={18}
                   height={Math.max(2, barH)}
-                  rx={5}
+                  rx={4}
                   fill={
                     i === selectedIdx
                       ? "#38bdf8"
-                      : "rgba(56,189,248,0.42)"
+                      : "rgba(56, 189, 248, 0.38)"
                   }
-                  className="cursor-pointer transition-opacity"
+                  className="cursor-pointer"
                   onClick={() => setSelectedIdx(i)}
                 />
               );
             })
           ) : (
             <>
-              <path d={areaPath} fill="url(#chartFill)" />
+              <path d={areaPath} fill="url(#meteoArea)" />
               <path
                 d={primaryPath}
                 fill="none"
-                stroke={mode === "pressure" ? "#a78bfa" : "#ff8a3c"}
-                strokeWidth={2.8}
+                stroke={primaryStroke}
+                strokeWidth={2.2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
@@ -275,15 +287,14 @@ export default function HourlyCharts({
                 <path
                   d={linePath(secondarySeries)}
                   fill="none"
-                  stroke="#38bdf8"
-                  strokeWidth={2}
-                  strokeDasharray="5 4"
+                  stroke={mode === "wind" ? "#f59e0b" : "#38bdf8"}
+                  strokeWidth={1.6}
+                  strokeDasharray="4 4"
                 />
               )}
             </>
           )}
 
-          {/* Etkileşim noktaları ve saat etiketleri */}
           {data.map((h, i) => {
             const x = padX + i * stepX;
             const y = yOf(primarySeries[i]);
@@ -304,9 +315,9 @@ export default function HourlyCharts({
                 <circle
                   cx={x}
                   cy={y}
-                  r={isSel ? 5.5 : 3}
-                  fill={isSel ? "#ff8a3c" : "#f5f7ff"}
-                  stroke={isSel ? "#ffffff" : "transparent"}
+                  r={isSel ? 5 : 2.5}
+                  fill={isSel ? "#38bdf8" : "#f3f6fb"}
+                  stroke={isSel ? "#090d16" : "transparent"}
                   strokeWidth={2}
                 />
                 {i % 3 === 0 && (
@@ -314,7 +325,7 @@ export default function HourlyCharts({
                     x={x}
                     y={height - 6}
                     textAnchor="middle"
-                    fill="rgba(245,247,255,0.55)"
+                    fill="rgba(167,180,200,0.68)"
                     fontSize="11"
                     fontFamily="monospace"
                   >

@@ -24,13 +24,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ATMOS — Sinematik 3D Hava Durumu & Meteoroloji Laboratuvarı",
+  title: "ATMOS — Canlı Hava Durumu, Radar & Atmosferik Sondaj",
   description:
-    "Gerçek zamanlı 3D WebGL atmosfer sahnesi, interaktif 3D dünya küresi, çoklu şehir panosu ve canlı Skew-T Log-P / CAPE konvektif analiz laboratuvarı.",
+    "Gerçek zamanlı meteoroloji gözlemi, RainViewer canlı yağış radarı, ECMWF · GFS · ICON model karşılaştırması ve 1000–300 hPa Skew-T Log-P radyosonda analizi.",
   openGraph: {
-    title: "ATMOS — Sinematik 3D Hava Durumu & Meteoroloji Laboratuvarı",
+    title: "ATMOS — Canlı Hava Durumu, Radar & Atmosferik Sondaj",
     description:
-      "Canlı atmosfer verileri, 3D Dünya Küresi, 24s zaman kaydırıcısı ve CAPE/Skew-T meteoroloji laboratuvarı.",
+      "Canlı gözlem, küresel yağış radarı, ECMWF/GFS/ICON modelleri ve üst atmosfer radyosonda analizi.",
     type: "website",
     locale: "tr_TR"
   }
@@ -43,15 +43,21 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const initialBundle = await fetchWeatherBundle(DEFAULT_LOCATION);
+  let initialBundle = null;
+  let initialError: string | null = null;
+  try {
+    initialBundle = await fetchWeatherBundle(DEFAULT_LOCATION);
+  } catch {
+    initialError = "Meteoroloji veri servisine şu an ulaşılamıyor.";
+  }
 
   return (
     <html
       lang="tr"
       className={`dark ${inter.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable}`}
     >
-      <body className="min-h-screen bg-night-950 text-neon-white antialiased">
-        <WeatherProvider initialBundle={initialBundle}>
+      <body className="min-h-screen bg-obsidian-950 text-ink-primary antialiased">
+        <WeatherProvider initialBundle={initialBundle} initialError={initialError}>
           <AppShell>{children}</AppShell>
         </WeatherProvider>
       </body>

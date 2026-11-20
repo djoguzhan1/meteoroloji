@@ -9,14 +9,12 @@ type CitySearchProps = {
   onSelect: (loc: GeoLocation) => void;
   onOpenChange?: (open: boolean) => void;
   placeholder?: string;
-  compact?: boolean;
 };
 
 export default function CitySearch({
   onSelect,
   onOpenChange,
-  placeholder = "Şehir veya ilçe ara...",
-  compact = false
+  placeholder = "Şehir, ilçe veya istasyon ara..."
 }: CitySearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GeoLocation[]>(GLOBE_CITIES.slice(0, 6));
@@ -64,11 +62,11 @@ export default function CitySearch({
         setResults(Array.isArray(data.results) ? data.results : []);
         setActiveIndex(0);
       } catch {
-        // aborted or network error
+        // aborted
       } finally {
         setLoading(false);
       }
-    }, 240);
+    }, 220);
 
     return () => {
       window.clearTimeout(timer);
@@ -84,7 +82,7 @@ export default function CitySearch({
 
   const handleGps = () => {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setGpsError("Tarayıcın konum servisini desteklemiyor.");
+      setGpsError("Konum servisi desteklenmiyor.");
       return;
     }
     setGpsLoading(true);
@@ -99,10 +97,10 @@ export default function CitySearch({
           );
           const geo = res.ok
             ? await res.json()
-            : { name: "Konumum", country: "" };
+            : { name: "Mevcut Konum", country: "" };
           handleChoose({
             id: `gps_${lat.toFixed(2)}_${lon.toFixed(2)}`,
-            name: geo.name || "Konumum",
+            name: geo.name || "Mevcut Konum",
             admin1: geo.admin1,
             country: geo.country || "",
             countryCode: geo.countryCode,
@@ -112,7 +110,7 @@ export default function CitySearch({
         } catch {
           handleChoose({
             id: `gps_${lat.toFixed(2)}_${lon.toFixed(2)}`,
-            name: "Konumum",
+            name: `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`,
             country: "",
             lat,
             lon
@@ -123,7 +121,7 @@ export default function CitySearch({
       },
       () => {
         setGpsLoading(false);
-        setGpsError("Konum izni reddedildi.");
+        setGpsError("Konum izni alınamadı.");
       },
       { timeout: 8000 }
     );
@@ -131,12 +129,8 @@ export default function CitySearch({
 
   return (
     <div ref={containerRef} className="relative w-full">
-      <div
-        className={`flex items-center gap-2 rounded-2xl border border-white/15 bg-night-900/75 px-3 backdrop-blur-xl transition-colors focus-within:border-neon-orange/60 ${
-          compact ? "h-10" : "h-11"
-        }`}
-      >
-        <Search className="h-4 w-4 shrink-0 text-neon-white/50" />
+      <div className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 transition-colors focus-within:border-white/25 focus-within:bg-obsidian-900/90">
+        <Search className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
         <input
           type="text"
           value={query}
@@ -167,47 +161,47 @@ export default function CitySearch({
           }}
           placeholder={placeholder}
           aria-label="Şehir ara"
-          className="w-full bg-transparent text-sm text-neon-white placeholder:text-neon-white/45 focus:outline-none"
+          className="w-full bg-transparent text-sm text-ink-primary placeholder:text-ink-muted focus:outline-none"
         />
         {query && (
           <button
             type="button"
             onClick={() => setQuery("")}
-            aria-label="Aramayı temizle"
-            className="text-neon-white/50 hover:text-neon-white"
+            aria-label="Temizle"
+            className="text-ink-muted hover:text-ink-primary"
           >
-            <X className="h-4 w-4" />
+            <X className="h-3.5 w-3.5" />
           </button>
         )}
         <button
           type="button"
           onClick={handleGps}
           disabled={gpsLoading}
-          title="GPS ile mevcut konumumu bul"
-          aria-label="Mevcut konumumu kullan"
-          className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-neon-white/80 hover:border-neon-cyan/50 hover:text-neon-cyan transition-colors disabled:opacity-50"
+          title="Mevcut GPS konumunu kullan"
+          aria-label="Konumumu kullan"
+          className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-ink-secondary hover:border-white/25 hover:text-ink-primary transition-colors disabled:opacity-50"
         >
           <LocateFixed className={`h-3.5 w-3.5 ${gpsLoading ? "animate-spin" : ""}`} />
-          <span className="hidden sm:inline">Konumum</span>
+          <span className="hidden sm:inline">Konum</span>
         </button>
       </div>
 
       {open && (
-        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 overflow-hidden rounded-2xl border border-white/15 bg-night-900/95 shadow-glass backdrop-blur-2xl">
-          <div className="flex items-center justify-between border-b border-white/10 px-3.5 py-2 text-xs text-neon-white/55">
-            <span>{query.trim().length < 2 ? "Popüler Şehirler" : "Arama Sonuçları"}</span>
-            {loading && <span className="text-neon-cyan">Aranıyor...</span>}
+        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-xl border border-white/15 bg-obsidian-900/95 shadow-instrument backdrop-blur-2xl">
+          <div className="flex items-center justify-between border-b border-white/[0.08] px-3.5 py-2 text-xs text-ink-muted">
+            <span>{query.trim().length < 2 ? "Hızlı Seçim" : "Konumlar"}</span>
+            {loading && <span className="text-signal-sky">Aranıyor...</span>}
           </div>
 
           {gpsError && (
-            <p className="border-b border-white/10 bg-red-500/10 px-3.5 py-2 text-xs text-red-300">
+            <p className="border-b border-white/[0.08] bg-red-500/10 px-3.5 py-2 text-xs text-red-300">
               {gpsError}
             </p>
           )}
 
           {results.length === 0 ? (
-            <p className="px-4 py-4 text-xs text-neon-white/55">
-              &ldquo;{query}&rdquo; için eşleşen konum bulunamadı.
+            <p className="px-4 py-3.5 text-xs text-ink-muted">
+              &ldquo;{query}&rdquo; için sonuç bulunamadı.
             </p>
           ) : (
             <ul className="max-h-72 overflow-y-auto py-1">
@@ -217,22 +211,24 @@ export default function CitySearch({
                     type="button"
                     onMouseEnter={() => setActiveIndex(idx)}
                     onClick={() => handleChoose(loc)}
-                    className={`flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left text-sm transition-colors ${
+                    className={`flex w-full items-center justify-between gap-3 px-3.5 py-2 text-left text-sm transition-colors ${
                       idx === activeIndex
-                        ? "bg-white/10 text-neon-white"
-                        : "text-neon-white/80 hover:bg-white/5"
+                        ? "bg-white/[0.08] text-ink-primary"
+                        : "text-ink-secondary hover:bg-white/[0.04]"
                     }`}
                   >
-                    <span className="flex items-center gap-2.5 truncate">
-                      <MapPin className="h-4 w-4 shrink-0 text-neon-orange" />
-                      <span className="truncate font-medium">{loc.name}</span>
+                    <span className="flex items-center gap-2 truncate">
+                      <MapPin className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+                      <span className="truncate font-medium text-ink-primary">
+                        {loc.name}
+                      </span>
                       {loc.admin1 && loc.admin1 !== loc.name && (
-                        <span className="truncate text-xs text-neon-white/50">
+                        <span className="truncate text-xs text-ink-muted">
                           {loc.admin1}
                         </span>
                       )}
                     </span>
-                    <span className="shrink-0 font-mono text-xs text-neon-white/50">
+                    <span className="shrink-0 font-mono text-xs text-ink-muted">
                       {loc.country}
                     </span>
                   </button>

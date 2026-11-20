@@ -1,11 +1,13 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
-import gsap from "gsap";
 import {
   Activity,
   ArrowDown,
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
   Cloud,
   CloudLightning,
   CloudRain,
@@ -14,15 +16,16 @@ import {
   Droplets,
   Eye,
   Gauge,
+  Layers,
   RefreshCw,
+  ShieldCheck,
   Star,
   Sun,
   Sunrise,
   Sunset,
-  Thermometer,
   Wind
 } from "lucide-react";
-import { SCENARIO_META, useWeather } from "@/context/WeatherContext";
+import { useWeather } from "@/context/WeatherContext";
 import {
   formatTemperature,
   formatWindSpeed,
@@ -32,21 +35,119 @@ import { analyzeConvectiveProfile } from "@/lib/thermo-cape";
 import TimeScrubber from "./TimeScrubber";
 import HourlyCharts from "./HourlyCharts";
 
-function WeatherGlyph({ code, className = "h-5 w-5" }: { code: number; className?: string }) {
-  if (code >= 95) return <CloudLightning className={`${className} text-neon-orange`} />;
+function WeatherGlyph({
+  code,
+  className = "h-5 w-5"
+}: {
+  code: number;
+  className?: string;
+}) {
+  if (code >= 95) return <CloudLightning className={`${className} text-signal-amber`} />;
   if ((code >= 71 && code <= 77) || code === 85 || code === 86) {
-    return <CloudSnow className={`${className} text-sky-200`} />;
+    return <CloudSnow className={`${className} text-slate-200`} />;
   }
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-    return <CloudRain className={`${className} text-neon-cyan`} />;
+    return <CloudRain className={`${className} text-signal-sky`} />;
   }
-  if (code === 0 || code === 1) return <Sun className={`${className} text-amber-300`} />;
-  return <Cloud className={`${className} text-slate-300`} />;
+  if (code === 0 || code === 1) return <Sun className={`${className} text-signal-amber`} />;
+  return <Cloud className={`${className} text-ink-secondary`} />;
 }
 
-function SunArc({ sunrise, sunset }: { sunrise: string; sunset: string }) {
-  const srTime = sunrise ? sunrise.slice(11, 16) : "06:45";
-  const ssTime = sunset ? sunset.slice(11, 16) : "18:00";
+function WindCompassMini({ deg }: { deg: number }) {
+  return (
+    <svg
+      viewBox="0 0 40 40"
+      className="h-9 w-9 shrink-0"
+      aria-hidden="true"
+    >
+      <circle
+        cx="20"
+        cy="20"
+        r="17"
+        fill="none"
+        stroke="rgba(255,255,255,0.12)"
+        strokeWidth="1.2"
+      />
+      <text x="20" y="8" textAnchor="middle" fill="rgba(167,180,200,0.75)" fontSize="6" fontFamily="monospace">
+        K
+      </text>
+      <text x="34" y="22" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.5" fontFamily="monospace">
+        D
+      </text>
+      <text x="20" y="36" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.5" fontFamily="monospace">
+        G
+      </text>
+      <text x="6" y="22" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.5" fontFamily="monospace">
+        B
+      </text>
+      <g transform={`rotate(${deg} 20 20)`}>
+        <line
+          x1="20"
+          y1="27"
+          x2="20"
+          y2="11"
+          stroke="#38bdf8"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <polygon points="20,9 17.2,14.5 22.8,14.5" fill="#38bdf8" />
+      </g>
+    </svg>
+  );
+}
+
+function BarometerDialMini({ pressure }: { pressure: number }) {
+  // 980 hPa -> -115°, 1040 hPa -> +115°
+  const clamped = Math.max(980, Math.min(1040, pressure));
+  const frac = (clamped - 980) / 60;
+  const angleDeg = -115 + frac * 230;
+  return (
+    <svg
+      viewBox="0 0 44 36"
+      className="h-9 w-10 shrink-0"
+      aria-hidden="true"
+    >
+      <path
+        d="M 7 29 A 16 16 0 1 1 37 29"
+        fill="none"
+        stroke="rgba(255,255,255,0.14)"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 15 10 A 16 16 0 0 1 29 10"
+        fill="none"
+        stroke="rgba(56,189,248,0.45)"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+      />
+      <g transform={`rotate(${angleDeg} 22 21)`}>
+        <line
+          x1="22"
+          y1="21"
+          x2="22"
+          y2="8"
+          stroke="#f3f6fb"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+      </g>
+      <circle cx="22" cy="21" r="2.2" fill="#38bdf8" />
+    </svg>
+  );
+}
+
+function SunCycleCard({
+  sunrise,
+  sunset,
+  solarElevationDeg
+}: {
+  sunrise: string;
+  sunset: string;
+  solarElevationDeg: number;
+}) {
+  const srTime = sunrise ? sunrise.slice(11, 16) : "--:--";
+  const ssTime = sunset ? sunset.slice(11, 16) : "--:--";
 
   const toMin = (hhmm: string) => {
     const [h, m] = hhmm.split(":").map(Number);
@@ -62,60 +163,59 @@ function SunArc({ sunrise, sunset }: { sunrise: string; sunset: string }) {
     Math.min(1, (nowMin - srMin) / Math.max(60, ssMin - srMin))
   );
 
-  // Yarım daire yay üstündeki güneş noktası
   const angle = Math.PI * (1 - progress);
-  const cx = 110 + Math.cos(angle) * 85;
-  const cy = 92 - Math.sin(angle) * 74;
+  const cx = 110 + Math.cos(angle) * 84;
+  const cy = 90 - Math.sin(angle) * 72;
 
-  const dayDurationMin = Math.max(0, ssMin - srMin);
-  const durH = Math.floor(dayDurationMin / 60);
-  const durM = dayDurationMin % 60;
+  const dayDur = Math.max(0, ssMin - srMin);
+  const durH = Math.floor(dayDur / 60);
+  const durM = dayDur % 60;
 
   return (
-    <div className="glass-panel p-5 flex flex-col justify-between">
+    <div className="surface-panel p-5 flex flex-col justify-between">
       <div className="flex items-center justify-between">
-        <span className="font-display text-sm font-semibold text-neon-white">
+        <span className="font-display text-sm font-semibold text-ink-primary">
           Güneş Döngüsü
         </span>
-        <span className="font-mono text-xs text-neon-white/55">
-          {durH}s {durM}dk
+        <span className="font-mono text-xs text-ink-muted tabular">
+          Açı {solarElevationDeg > 0 ? `+${solarElevationDeg}°` : `${solarElevationDeg}°`} · {durH}s {durM}dk
         </span>
       </div>
 
-      <svg viewBox="0 0 220 106" className="my-2 h-28 w-full" aria-hidden="true">
+      <svg viewBox="0 0 220 104" className="my-2 h-24 w-full" aria-hidden="true">
         <line
-          x1="15"
-          y1="92"
-          x2="205"
-          y2="92"
-          stroke="rgba(255,255,255,0.14)"
+          x1="14"
+          y1="90"
+          x2="206"
+          y2="90"
+          stroke="rgba(255,255,255,0.12)"
           strokeDasharray="3 3"
         />
         <path
-          d="M 25 92 A 85 74 0 0 1 195 92"
+          d="M 26 90 A 84 72 0 0 1 194 90"
           fill="none"
-          stroke="rgba(255,138,60,0.45)"
-          strokeWidth="2.5"
+          stroke="rgba(245, 158, 11, 0.45)"
+          strokeWidth="2"
           strokeDasharray="4 4"
         />
         <circle
           cx={cx}
           cy={cy}
-          r="7"
-          fill="#ff8a3c"
-          stroke="#fff7ed"
-          strokeWidth="2"
+          r="6"
+          fill={solarElevationDeg > 0 ? "#f59e0b" : "#94a3b8"}
+          stroke="#f3f6fb"
+          strokeWidth="1.5"
         />
       </svg>
 
-      <div className="flex items-center justify-between text-xs">
-        <span className="flex items-center gap-1.5 text-amber-300">
-          <Sunrise className="h-4 w-4" />
-          <span className="font-mono">{srTime}</span>
+      <div className="flex items-center justify-between text-xs tabular">
+        <span className="flex items-center gap-1.5 text-ink-secondary">
+          <Sunrise className="h-3.5 w-3.5 text-signal-amber" />
+          <span className="font-mono text-ink-primary">{srTime}</span>
         </span>
-        <span className="flex items-center gap-1.5 text-neon-orange">
-          <Sunset className="h-4 w-4" />
-          <span className="font-mono">{ssTime}</span>
+        <span className="flex items-center gap-1.5 text-ink-secondary">
+          <Sunset className="h-3.5 w-3.5 text-signal-amber" />
+          <span className="font-mono text-ink-primary">{ssTime}</span>
         </span>
       </div>
     </div>
@@ -133,62 +233,46 @@ export default function HeroSceneView() {
     addFavorite,
     removeFavorite,
     unit,
-    scenario,
-    setScenario,
     frameIndex,
     setFrameIndex
   } = useWeather();
 
-  const heroRef = useRef<HTMLDivElement | null>(null);
-  const headingRef = useRef<HTMLDivElement | null>(null);
-  const cardRef = useRef<HTMLDivElement | null>(null);
+  const liveSoundingSummary = useMemo(() => {
+    if (!bundle || bundle.sounding.length === 0) return null;
+    return analyzeConvectiveProfile({
+      surfaceTempC: bundle.current.temperature,
+      surfaceHumidity: bundle.current.humidity,
+      surfacePressureHpa: bundle.current.pressure,
+      levels: bundle.sounding
+    });
+  }, [bundle]);
 
-  useLayoutEffect(() => {
-    if (!heroRef.current) return;
-    const ctx = gsap.context(() => {
-      gsap.fromTo(
-        [headingRef.current, cardRef.current],
-        { opacity: 0, y: 24 },
-        {
-          opacity: 1,
-          y: 0,
-          duration: 0.75,
-          stagger: 0.1,
-          ease: "power3.out"
-        }
-      );
-    }, heroRef);
-    return () => ctx.revert();
-  }, []);
+  if (!bundle) {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-24 text-center space-y-4">
+        <div className="surface-panel p-8 space-y-4">
+          <h1 className="font-display text-xl font-semibold text-ink-primary">
+            Canlı Veri Alınamadı
+          </h1>
+          <p className="text-sm text-ink-secondary">
+            {error ?? "Meteoroloji veri servisi yanıt vermedi."}
+          </p>
+          <button
+            type="button"
+            onClick={() => void refreshWeather()}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-ink-primary hover:bg-white/15"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Yeniden Dene
+          </button>
+        </div>
+      </div>
+    );
+  }
 
-  const presetOverride = SCENARIO_META[scenario]?.override;
   const activeHour = frameIndex > 0 ? bundle.hourly[frameIndex] : null;
-
-  const display = useMemo(() => {
-    if (presetOverride) {
-      return {
-        temperature: presetOverride.temperature,
-        apparentTemperature: presetOverride.apparentTemperature,
-        windSpeed: presetOverride.windSpeed,
-        windGusts: presetOverride.windGusts,
-        windDirection: presetOverride.windDirection,
-        cloudCover: presetOverride.cloudCover,
-        humidity: presetOverride.humidity,
-        dewPoint: bundle.current.dewPoint,
-        pressure: presetOverride.pressure,
-        visibilityKm: presetOverride.isStorm ? 4.5 : 14,
-        uvIndex: presetOverride.daylight > 0.7 ? 7.2 : 1.2,
-        condition: presetOverride.condition,
-        isStorm: presetOverride.isStorm,
-        aqiLabel: presetOverride.airQualityLabel,
-        aqiValue: presetOverride.airQualityIndex * 18,
-        badge: `${SCENARIO_META[scenario].label} Simülasyonu`,
-        sourceText: "Simülasyon"
-      };
-    }
-
-    if (activeHour) {
-      return {
+  const display = activeHour
+    ? {
         temperature: activeHour.temperature,
         apparentTemperature: activeHour.apparentTemperature,
         windSpeed: activeHour.windSpeed,
@@ -201,73 +285,66 @@ export default function HeroSceneView() {
         visibilityKm: activeHour.visibilityKm,
         uvIndex: activeHour.uvIndex,
         condition: activeHour.condition,
-        isStorm: activeHour.isStorm,
-        aqiLabel: bundle.airQuality.label,
-        aqiValue: bundle.airQuality.europeanAqi,
-        badge: `${activeHour.dayLabel} · ${activeHour.hourLabel}`,
-        sourceText: bundle.source === "open-meteo" ? "Open-Meteo Canlı" : "Demo Veri"
+        weatherCode: activeHour.weatherCode,
+        temp850hPa: activeHour.temp850hPa,
+        freezingLevelM: activeHour.freezingLevelM,
+        timeLabel: `${activeHour.dayLabel} · ${activeHour.hourLabel}`
+      }
+    : {
+        temperature: bundle.current.temperature,
+        apparentTemperature: bundle.current.apparentTemperature,
+        windSpeed: bundle.current.windSpeed,
+        windGusts: bundle.current.windGusts,
+        windDirection: bundle.current.windDirection,
+        cloudCover: bundle.current.cloudCover,
+        humidity: bundle.current.humidity,
+        dewPoint: bundle.current.dewPoint,
+        pressure: bundle.current.pressure,
+        visibilityKm: bundle.current.visibilityKm,
+        uvIndex: bundle.current.uvIndex,
+        condition: bundle.current.condition,
+        weatherCode: bundle.current.weatherCode,
+        temp850hPa: bundle.current.temp850hPa,
+        freezingLevelM: bundle.nativeConvective.freezingLevelM,
+        timeLabel: `Gözlem · ${bundle.current.time.slice(11, 16)}`
       };
-    }
-
-    const c = bundle.current;
-    return {
-      temperature: c.temperature,
-      apparentTemperature: c.apparentTemperature,
-      windSpeed: c.windSpeed,
-      windGusts: c.windGusts,
-      windDirection: c.windDirection,
-      cloudCover: c.cloudCover,
-      humidity: c.humidity,
-      dewPoint: c.dewPoint,
-      pressure: c.pressure,
-      visibilityKm: c.visibilityKm,
-      uvIndex: c.uvIndex,
-      condition: c.condition,
-      isStorm: c.isStorm,
-      aqiLabel: bundle.airQuality.label,
-      aqiValue: bundle.airQuality.europeanAqi,
-      badge: "Anlık Atmosfer",
-      sourceText: bundle.source === "open-meteo" ? "Open-Meteo Canlı" : "Demo Veri"
-    };
-  }, [activeHour, bundle, presetOverride, scenario]);
-
-  const liveCapeSummary = useMemo(() => {
-    return analyzeConvectiveProfile({
-      surfaceType: "soil",
-      surfaceTempC: bundle.current.temperature,
-      surfaceHumidity: bundle.current.humidity,
-      surfacePressureHpa: bundle.current.pressure,
-      levels: bundle.sounding,
-      applySurfacePhysics: false
-    });
-  }, [bundle]);
 
   const fav = isFavorite(activeLocation);
-
-  // 7 günlük sıcaklık aralığı normalizasyonu
   const weekMin = Math.min(...bundle.daily.map((d) => d.tempMin));
   const weekMax = Math.max(...bundle.daily.map((d) => d.tempMax));
   const weekSpan = Math.max(1, weekMax - weekMin);
 
   return (
-    <div ref={heroRef} className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-12">
+    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-10">
       {error && (
-        <div className="rounded-2xl border border-amber-400/35 bg-amber-500/15 px-4 py-3 text-xs text-amber-200">
+        <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
           {error}
         </div>
       )}
 
-      {/* BÖLÜM 1: HERO & CANLI ATMOSFER */}
-      <section className="flex min-h-[calc(100vh-7.5rem)] flex-col justify-between gap-8 py-4">
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-end">
-          {/* Sol: Konum, Dev Sıcaklık, Özet */}
-          <div ref={headingRef} className="space-y-5">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3.5 py-1.5 text-xs font-medium text-neon-white/90 backdrop-blur-md">
-                <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                {display.sourceText} · {display.badge}
+      {/* BÖLÜM 1: ANLIK GÖZLEM & ÖLÇÜMLER */}
+      <section className="flex min-h-[calc(100vh-7rem)] flex-col justify-between gap-8 py-4">
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-end">
+          {/* Sol: Konum & Ana Sıcaklık */}
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
+              <span className="rounded-lg border border-white/15 bg-obsidian-900/65 px-2.5 py-1 font-mono text-ink-primary backdrop-blur-md">
+                {display.timeLabel}
               </span>
-
+              {bundle.location.elevation !== undefined && (
+                <span className="rounded-lg border border-white/10 bg-obsidian-900/50 px-2.5 py-1 font-mono backdrop-blur-md">
+                  Rakım {bundle.location.elevation} m
+                </span>
+              )}
+              {bundle.hybrid && (
+                <a
+                  href="#hibrit"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-signal-sky/30 bg-signal-sky/10 px-2.5 py-1 font-mono text-signal-sky hover:bg-signal-sky/15 transition-colors backdrop-blur-md tabular"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>Hibrit Uzlaşı %{bundle.hybrid.confidencePct}</span>
+                </a>
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -275,53 +352,55 @@ export default function HeroSceneView() {
                     ? removeFavorite(activeLocation.id)
                     : addFavorite(activeLocation)
                 }
-                aria-label={fav ? "Favorilerden çıkar" : "Favorilere ekle"}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                aria-label={fav ? "İstasyonlardan çıkar" : "İstasyonlara kaydet"}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 transition-colors backdrop-blur-md ${
                   fav
-                    ? "border-amber-400/50 bg-amber-400/15 text-amber-200"
-                    : "border-white/15 bg-white/5 text-neon-white/80 hover:bg-white/10"
+                    ? "border-signal-amber/45 bg-signal-amber/15 text-amber-200"
+                    : "border-white/10 bg-obsidian-900/50 text-ink-secondary hover:text-ink-primary"
                 }`}
               >
                 <Star className={`h-3.5 w-3.5 ${fav ? "fill-amber-300 text-amber-300" : ""}`} />
-                {fav ? "Favoride" : "Panoma Ekle"}
+                {fav ? "Kayıtlı" : "Kaydet"}
               </button>
-
               <button
                 type="button"
                 onClick={() => void refreshWeather()}
-                aria-label="Hava durumunu yenile"
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-neon-white/75 hover:bg-white/10 hover:text-neon-white transition-colors"
+                aria-label="Verileri güncelle"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-obsidian-900/50 px-2.5 py-1 text-ink-secondary hover:text-ink-primary transition-colors backdrop-blur-md"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-                Yenile
+                Güncelle
               </button>
             </div>
 
             <div>
-              <p className="text-sm font-medium text-neon-white/75">
-                {activeLocation.name}
-                {activeLocation.country ? `, ${activeLocation.country}` : ""}
-                <span className="ml-2 font-mono text-xs text-neon-white/45">
+              <div className="flex flex-wrap items-baseline gap-2.5">
+                <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl">
+                  {activeLocation.name}
+                  {activeLocation.country ? `, ${activeLocation.country}` : ""}
+                </h1>
+                <span className="font-mono text-xs text-ink-muted tabular">
                   {activeLocation.lat.toFixed(2)}°K · {activeLocation.lon.toFixed(2)}°D
                 </span>
-              </p>
+              </div>
 
-              <div className="mt-2 flex flex-wrap items-baseline gap-4">
-                <h1 className="heading-glow font-display text-7xl font-black tracking-tight text-transparent bg-gradient-to-br from-white via-neon-white to-neon-orange bg-clip-text sm:text-8xl lg:text-9xl">
+              <div className="mt-3 flex flex-wrap items-baseline gap-5">
+                <span className="font-display text-7xl font-bold tracking-tight text-ink-primary tabular sm:text-8xl lg:text-[7.5rem] leading-none">
                   {formatTemperature(display.temperature, unit)}
-                </h1>
-                <div className="space-y-1">
-                  <p className="font-display text-2xl font-semibold text-neon-white sm:text-3xl">
-                    {display.condition}
+                </span>
+                <div className="space-y-1.5">
+                  <p className="flex items-center gap-2 font-display text-xl font-medium text-ink-primary sm:text-2xl">
+                    <WeatherGlyph code={display.weatherCode} className="h-6 w-6" />
+                    <span>{display.condition}</span>
                   </p>
-                  <p className="text-sm text-neon-white/70">
+                  <p className="text-sm text-ink-secondary tabular">
                     Hissedilen{" "}
-                    <span className="font-mono font-semibold text-neon-white">
+                    <strong className="font-mono font-medium text-ink-primary">
                       {formatTemperature(display.apparentTemperature, unit)}
-                    </span>
+                    </strong>
                     {" · "}
-                    En Y / En D:{" "}
-                    <span className="font-mono text-neon-white/90">
+                    Günlük{" "}
+                    <span className="font-mono text-ink-primary">
                       {formatTemperature(bundle.daily[0]?.tempMax ?? display.temperature, unit)} /{" "}
                       {formatTemperature(bundle.daily[0]?.tempMin ?? display.temperature, unit)}
                     </span>
@@ -330,109 +409,145 @@ export default function HeroSceneView() {
               </div>
             </div>
 
-            {display.isStorm && (
-              <div className="inline-flex items-center gap-2 rounded-2xl border border-neon-orange/50 bg-neon-orange/15 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-neon-orange">
-                <CloudLightning className="h-4 w-4" />
-                Fırtına modu aktif — 3D kamera & şimşek tepkisi devrede
-              </div>
-            )}
+            {/* Gerçek Üst Atmosfer Hızlı Satırı (850 hPa + 0°C Donma Seviyesi) */}
+            <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-ink-secondary tabular">
+              {display.temp850hPa !== null && (
+                <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
+                  850 hPa:{" "}
+                  <strong className="text-ink-primary">{display.temp850hPa}°C</strong>
+                </span>
+              )}
+              {display.freezingLevelM !== null && (
+                <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
+                  0°C Seviyesi:{" "}
+                  <strong className="text-ink-primary">{display.freezingLevelM} m</strong>
+                </span>
+              )}
+              {liveSoundingSummary && (
+                <Link
+                  href="/lab"
+                  className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 text-ink-secondary hover:border-white/25 hover:text-ink-primary transition-colors backdrop-blur-md"
+                >
+                  CAPE:{" "}
+                  <strong className="text-ink-primary">
+                    {bundle.nativeConvective.cape ?? liveSoundingSummary.cape} J/kg
+                  </strong>{" "}
+                  · ECMWF/GFS/ICON →
+                </Link>
+              )}
+            </div>
           </div>
 
-          {/* Sağ: Canlı Telemetri Kartı */}
-          <div ref={cardRef} className="glass-panel p-5 sm:p-6 space-y-5">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display text-sm font-semibold uppercase tracking-[0.2em] text-neon-white/80">
-                Canlı Atmosfer Telemetrisi
+          {/* Sağ: Meteorolojik Ölçüm Paneli */}
+          <div className="surface-panel p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-secondary">
+                Anlık Ölçümler
               </h2>
-              <span className="font-mono text-xs text-neon-cyan">
-                AQI {display.aqiValue} · {display.aqiLabel}
+              <span className="font-mono text-xs text-ink-secondary tabular">
+                EAQI {bundle.airQuality.europeanAqi} · {bundle.airQuality.label}
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <div className="glass-card p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs text-neon-white/60">
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 tabular">
+              <div className="surface-tile p-3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Rüzgar</span>
-                  <Wind className="h-3.5 w-3.5 text-neon-cyan" />
+                  <Wind className="h-3.5 w-3.5" />
                 </div>
-                <p className="font-mono text-lg font-semibold text-neon-white">
-                  {formatWindSpeed(display.windSpeed, unit)}
-                </p>
-                <p className="flex items-center gap-1 text-xs text-neon-white/55">
-                  <Compass
-                    className="h-3.5 w-3.5 text-neon-orange"
-                    style={{ transform: `rotate(${display.windDirection}deg)` }}
-                  />
-                  {windDirectionToCompass(display.windDirection)} · Hamle{" "}
-                  {formatWindSpeed(display.windGusts, unit)}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-lg font-semibold text-ink-primary">
+                      {formatWindSpeed(display.windSpeed, unit)}
+                    </p>
+                    <p className="flex items-center gap-1 text-[11px] text-ink-muted">
+                      <Compass className="h-3 w-3 text-signal-sky" />
+                      {windDirectionToCompass(display.windDirection)} · Hamle{" "}
+                      {formatWindSpeed(display.windGusts, unit)}
+                    </p>
+                  </div>
+                  <WindCompassMini deg={display.windDirection} />
+                </div>
               </div>
 
-              <div className="glass-card p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs text-neon-white/60">
+              <div className="surface-tile p-3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Nem & Çiy</span>
-                  <Droplets className="h-3.5 w-3.5 text-neon-cyan" />
+                  <Droplets className="h-3.5 w-3.5" />
                 </div>
-                <p className="font-mono text-lg font-semibold text-neon-white">
+                <p className="font-mono text-lg font-semibold text-ink-primary">
                   %{display.humidity}
                 </p>
-                <p className="text-xs text-neon-white/55">
+                <p className="text-xs text-ink-muted">
                   Çiy {formatTemperature(display.dewPoint, unit)}
                 </p>
               </div>
 
-              <div className="glass-card p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs text-neon-white/60">
-                  <span>Basınç</span>
-                  <Gauge className="h-3.5 w-3.5 text-neon-violet" />
+              <div className="surface-tile p-3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-ink-muted">
+                  <span>Basınç (MSL)</span>
+                  <Gauge className="h-3.5 w-3.5" />
                 </div>
-                <p className="font-mono text-lg font-semibold text-neon-white">
-                  {display.pressure} hPa
-                </p>
-                <p className="text-xs text-neon-white/55">
-                  {display.pressure < 1008
-                    ? "Alçak basınç"
-                    : display.pressure > 1020
-                      ? "Yüksek basınç"
-                      : "Normal"}
-                </p>
+                <div className="flex items-center justify-between gap-1.5">
+                  <div>
+                    <p className="font-mono text-lg font-semibold text-ink-primary">
+                      {Math.round(display.pressure)} hPa
+                    </p>
+                    <p className="flex items-center gap-1 text-[11px] text-ink-muted">
+                      {bundle.current.pressureTrend === "yükseliyor" ? (
+                        <ArrowUpRight className="h-3.5 w-3.5 text-signal-emerald" />
+                      ) : bundle.current.pressureTrend === "düşüyor" ? (
+                        <ArrowDownRight className="h-3.5 w-3.5 text-signal-amber" />
+                      ) : (
+                        <ArrowRight className="h-3.5 w-3.5 text-ink-muted" />
+                      )}
+                      {bundle.current.pressureDelta3h > 0
+                        ? `+${bundle.current.pressureDelta3h}`
+                        : bundle.current.pressureDelta3h}{" "}
+                      hPa/3s
+                    </p>
+                  </div>
+                  <BarometerDialMini pressure={display.pressure} />
+                </div>
               </div>
 
-              <div className="glass-card p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs text-neon-white/60">
-                  <span>Bulut Örtüsü</span>
-                  <Cloud className="h-3.5 w-3.5 text-slate-300" />
+              <div className="surface-tile p-3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-ink-muted">
+                  <span>Bulutluluk</span>
+                  <Cloud className="h-3.5 w-3.5" />
                 </div>
-                <p className="font-mono text-lg font-semibold text-neon-white">
+                <p className="font-mono text-lg font-semibold text-ink-primary">
                   %{display.cloudCover}
                 </p>
-                <p className="text-xs text-neon-white/55">
-                  UV {display.uvIndex.toFixed(1)}
-                </p>
+                <p className="text-xs text-ink-muted">UV {display.uvIndex.toFixed(1)}</p>
               </div>
 
-              <div className="glass-card p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs text-neon-white/60">
+              <div className="surface-tile p-3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Görüş</span>
-                  <Eye className="h-3.5 w-3.5 text-emerald-300" />
+                  <Eye className="h-3.5 w-3.5" />
                 </div>
-                <p className="font-mono text-lg font-semibold text-neon-white">
+                <p className="font-mono text-lg font-semibold text-ink-primary">
                   {display.visibilityKm} km
                 </p>
-                <p className="text-xs text-neon-white/55">
-                  {display.visibilityKm >= 10 ? "Berrak" : "Kısıtlı"}
+                <p className="text-xs text-ink-muted">
+                  {display.visibilityKm >= 10
+                    ? "Açık"
+                    : display.visibilityKm >= 4
+                      ? "Puslu"
+                      : "Kısıtlı"}
                 </p>
               </div>
 
-              <div className="glass-card p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs text-neon-white/60">
-                  <span>Hissedilen</span>
-                  <Thermometer className="h-3.5 w-3.5 text-neon-orange" />
+              <div className="surface-tile p-3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-ink-muted">
+                  <span>Hava Kalitesi</span>
+                  <Activity className="h-3.5 w-3.5" />
                 </div>
-                <p className="font-mono text-lg font-semibold text-neon-white">
-                  {formatTemperature(display.apparentTemperature, unit)}
+                <p className="font-mono text-lg font-semibold text-ink-primary">
+                  {bundle.airQuality.label}
                 </p>
-                <p className="text-xs text-neon-white/55">
+                <p className="text-xs text-ink-muted">
                   PM2.5: {bundle.airQuality.pm25} µg
                 </p>
               </div>
@@ -440,76 +555,183 @@ export default function HeroSceneView() {
           </div>
         </div>
 
-        {/* Zaman Çizelgesi (24s) + Aşağı Kaydır İpucu */}
-        <div className="space-y-4">
+        {/* 24 Saatlik Akış & Alt Yönlendirme */}
+        <div className="space-y-3">
           <TimeScrubber
             hourly={bundle.hourly}
             frameIndex={frameIndex}
-            onChange={(idx) => {
-              if (scenario !== "live") setScenario("live");
-              setFrameIndex(idx);
-            }}
-            scenario={scenario}
+            onChange={setFrameIndex}
             unit={unit}
           />
 
-          <div className="flex items-center justify-between text-xs text-neon-white/55">
+          <div className="flex items-center justify-between text-xs text-ink-muted">
             <a
               href="#saatlik"
-              className="inline-flex items-center gap-2 hover:text-neon-white transition-colors"
+              className="inline-flex items-center gap-1.5 hover:text-ink-primary transition-colors"
             >
-              <ArrowDown className="h-4 w-4 animate-bounce text-neon-orange" />
-              <span>48 Saatlik Grafik & 7 Günlük Tahmin için aşağı kaydır</span>
+              <ArrowDown className="h-3.5 w-3.5" />
+              <span>Saatlik grafik & 7 günlük tahmin</span>
             </a>
-            <div className="hidden sm:flex items-center gap-4">
-              <Link href="/world" className="hover:text-neon-cyan transition-colors">
-                3D Dünya Küresi →
+            <div className="hidden sm:flex items-center gap-5">
+              <Link href="/world" className="hover:text-ink-primary transition-colors">
+                Canlı Yağış Radarı →
               </Link>
-              <Link href="/lab" className="hover:text-neon-orange transition-colors">
-                CAPE / Skew-T Lab →
+              <Link href="/lab" className="hover:text-ink-primary transition-colors">
+                ECMWF · GFS · ICON & Skew-T →
               </Link>
             </div>
           </div>
         </div>
       </section>
 
-      {/* BÖLÜM 2: 48 SAATLİK ŞERİT & İNTERAKTİF GRAFİKLER */}
-      <section id="saatlik" className="scroll-mt-24 space-y-6">
-        <div className="glass-panel p-5 sm:p-6 space-y-4">
+      {/* BÖLÜM 1.5: ÇOKLU MODEL HİBRİT SENTEZ & VERİ KAYNAKLARI */}
+      {bundle.hybrid && (
+        <section id="hibrit" className="scroll-mt-20 surface-panel p-5 sm:p-6 space-y-5">
+          <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.08] pb-4">
+            <div>
+              <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-signal-sky">
+                <Layers className="h-3.5 w-3.5" />
+                Parametre Bazlı Çoklu Model Hibrit Sentezi
+              </p>
+              <h2 className="mt-1 font-display text-lg font-semibold text-ink-primary">
+                Canlı Model Karşılaştırması & Uzlaşı Skoru
+              </h2>
+              <p className="mt-0.5 text-xs text-ink-muted">
+                Her meteorolojik değişken, WMO doğrulama puanı en yüksek sayısal tahmin modellerinden ağırlıklı sentezlenir.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="text-right font-mono tabular">
+                <span className="block text-[10px] uppercase tracking-wider text-ink-muted">
+                  Anlık Model Uzlaşısı
+                </span>
+                <span className="text-xl font-semibold text-signal-emerald">
+                  %{bundle.hybrid.confidencePct}
+                </span>
+                <span className="ml-2 text-xs text-ink-muted">
+                  ΔT {bundle.hybrid.tempSpreadC}°C · ΔP {bundle.hybrid.pressureSpreadHpa} hPa
+                </span>
+              </div>
+              <Link
+                href="/lab"
+                className="rounded-xl border border-white/15 bg-white/[0.05] px-3 py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
+              >
+                72s Grafik →
+              </Link>
+            </div>
+          </div>
+
+          {/* 3 Model Canlı Anlık Karşılaştırma Şeridi */}
+          <div className="grid gap-3 md:grid-cols-3 font-mono text-xs tabular">
+            {[
+              {
+                key: "ecmwf" as const,
+                name: "ECMWF IFS 0.25°",
+                org: "Avrupa Merkezi · Sıcaklık & Basınç Lideri",
+                accent: "text-[#38bdf8]",
+                dot: "bg-[#38bdf8]"
+              },
+              {
+                key: "icon" as const,
+                name: "DWD ICON-EU (7 km)",
+                org: "Alman Meteoroloji · Yağış & Rüzgar Lideri",
+                accent: "text-[#10b981]",
+                dot: "bg-[#10b981]"
+              },
+              {
+                key: "gfs" as const,
+                name: "NOAA GFS",
+                org: "ABD Küresel · Konveksiyon & Üst Atmosfer",
+                accent: "text-[#f59e0b]",
+                dot: "bg-[#f59e0b]"
+              }
+            ].map((m) => {
+              const t = bundle.hybrid.currentBreakdown.temperature[m.key];
+              const p = bundle.hybrid.currentBreakdown.pressure[m.key];
+              const w = bundle.hybrid.currentBreakdown.windSpeed[m.key];
+              const t850 = bundle.hybrid.currentBreakdown.temp850hPa[m.key];
+              return (
+                <div key={m.key} className="surface-tile p-3.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className={`flex items-center gap-1.5 font-semibold ${m.accent}`}>
+                      <span className={`h-2 w-2 rounded-full ${m.dot}`} />
+                      {m.name}
+                    </span>
+                    <span className="text-sm font-semibold text-ink-primary">
+                      {t !== null ? formatTemperature(t, unit) : "—"}
+                    </span>
+                  </div>
+                  <p className="font-sans text-[11px] text-ink-muted">{m.org}</p>
+                  <div className="flex items-center justify-between border-t border-white/[0.06] pt-2 text-[11px] text-ink-secondary">
+                    <span>{p !== null ? `${p} hPa` : "—"}</span>
+                    <span>{w !== null ? formatWindSpeed(w, unit) : "—"}</span>
+                    <span>850 hPa: {t850 !== null ? `${t850}°` : "—"}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Parametre Bazlı Model Yönlendirme Matrisi */}
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 text-xs">
+            {bundle.hybrid.attributions.map((item) => (
+              <div
+                key={item.parameter}
+                className="rounded-xl border border-white/[0.06] bg-obsidian-950/55 p-3 space-y-1"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-ink-primary">{item.parameter}</span>
+                  <span className="font-mono text-[10px] text-signal-sky">
+                    {item.primaryEngine}
+                  </span>
+                </div>
+                <p className="font-mono text-[10px] text-ink-secondary tabular">
+                  {item.weightsLabel}
+                </p>
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  {item.reason}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* BÖLÜM 2: SAATLİK ŞERİT & GRAFİKLER */}
+      <section id="saatlik" className="scroll-mt-20 space-y-5">
+        <div className="surface-panel p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-display text-lg font-semibold text-neon-white">
-              48 Saatlik Saatlik Akış
+            <h2 className="font-display text-base font-semibold text-ink-primary">
+              Saatlik Tahmin (24s)
             </h2>
-            <span className="font-mono text-xs text-neon-white/55">
-              Kartlara tıklayarak 3D sahneyi o saate al
+            <span className="text-xs text-ink-muted">
+              Herhangi bir saate tıklayarak gökyüzünü ve ölçümleri incele
             </span>
           </div>
 
-          <div className="flex gap-3 overflow-x-auto pb-2">
+          <div className="flex gap-2.5 overflow-x-auto pb-1 tabular">
             {bundle.hourly.slice(0, 24).map((h, i) => {
-              const isSelected = scenario === "live" && frameIndex === i;
+              const isSelected = frameIndex === i;
               return (
                 <button
                   key={h.time}
                   type="button"
-                  onClick={() => {
-                    setScenario("live");
-                    setFrameIndex(i);
-                  }}
-                  className={`flex min-w-[92px] shrink-0 flex-col items-center gap-2 rounded-2xl border px-3 py-3.5 text-center transition-colors ${
+                  onClick={() => setFrameIndex(i)}
+                  className={`flex min-w-[84px] shrink-0 flex-col items-center gap-1.5 rounded-xl border px-3 py-3 text-center transition-colors ${
                     isSelected
-                      ? "border-neon-orange/70 bg-neon-orange/20 text-neon-white"
-                      : "border-white/10 bg-white/[0.04] text-neon-white/80 hover:bg-white/10"
+                      ? "border-white/30 bg-white/[0.12] text-ink-primary"
+                      : "border-white/[0.07] bg-white/[0.03] text-ink-secondary hover:bg-white/[0.07]"
                   }`}
                 >
-                  <span className="font-mono text-xs text-neon-white/65">
+                  <span className="font-mono text-xs text-ink-muted">
                     {i === 0 ? "Şimdi" : h.hourLabel}
                   </span>
                   <WeatherGlyph code={h.weatherCode} className="h-5 w-5" />
-                  <span className="font-mono text-base font-bold text-neon-white">
+                  <span className="font-mono text-sm font-semibold text-ink-primary">
                     {formatTemperature(h.temperature, unit)}
                   </span>
-                  <span className="font-mono text-xs text-neon-cyan">
+                  <span className="font-mono text-xs text-signal-sky">
                     %{h.precipProbability}
                   </span>
                 </button>
@@ -521,53 +743,55 @@ export default function HeroSceneView() {
         <HourlyCharts hourly={bundle.hourly} unit={unit} />
       </section>
 
-      {/* BÖLÜM 3: 7 GÜNLÜK TAHMİN & ATMOSFER DETAY IZGARASI */}
-      <section id="haftalik" className="scroll-mt-24 grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-        {/* 7 Günlük Tahmin */}
-        <div className="glass-panel p-5 sm:p-6 space-y-4">
+      {/* BÖLÜM 3: 7 GÜNLÜK TAHMİN & DETAY KARTLARI */}
+      <section
+        id="haftalik"
+        className="scroll-mt-20 grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]"
+      >
+        <div className="surface-panel p-5 sm:p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-display text-lg font-semibold text-neon-white">
+            <h2 className="font-display text-base font-semibold text-ink-primary">
               7 Günlük Tahmin
             </h2>
-            <span className="text-xs text-neon-white/55">
-              Normalize sıcaklık aralığı
+            <span className="text-xs text-ink-muted">
+              Haftalık sıcaklık aralığı & yağış
             </span>
           </div>
 
-          <div className="divide-y divide-white/10">
+          <div className="divide-y divide-white/[0.07] tabular">
             {bundle.daily.map((d) => {
               const leftPct = ((d.tempMin - weekMin) / weekSpan) * 100;
               const widthPct = Math.max(8, ((d.tempMax - d.tempMin) / weekSpan) * 100);
               return (
                 <div
                   key={d.date}
-                  className="grid grid-cols-[72px_36px_54px_1fr_84px] items-center gap-3 py-3 text-sm"
+                  className="grid grid-cols-[68px_32px_48px_1fr_78px] items-center gap-3 py-3 text-sm"
                 >
-                  <span className="font-medium text-neon-white">{d.dayName}</span>
-                  <WeatherGlyph code={d.weatherCode} className="h-5 w-5" />
-                  <span className="font-mono text-xs text-neon-cyan">
+                  <span className="font-medium text-ink-primary">{d.dayName}</span>
+                  <WeatherGlyph code={d.weatherCode} className="h-4 w-4" />
+                  <span className="font-mono text-xs text-signal-sky">
                     %{d.precipProbabilityMax}
                   </span>
 
                   <div className="flex items-center gap-2.5">
-                    <span className="w-9 text-right font-mono text-xs text-neon-white/60">
+                    <span className="w-8 text-right font-mono text-xs text-ink-muted">
                       {formatTemperature(d.tempMin, unit)}
                     </span>
-                    <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                    <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.08]">
                       <div
-                        className="absolute top-0 bottom-0 rounded-full bg-gradient-to-r from-neon-cyan via-amber-300 to-neon-orange"
+                        className="absolute top-0 bottom-0 rounded-full bg-gradient-to-r from-signal-sky to-signal-amber"
                         style={{
                           left: `${leftPct}%`,
                           width: `${widthPct}%`
                         }}
                       />
                     </div>
-                    <span className="w-9 font-mono text-xs font-semibold text-neon-white">
+                    <span className="w-8 font-mono text-xs font-medium text-ink-primary">
                       {formatTemperature(d.tempMax, unit)}
                     </span>
                   </div>
 
-                  <span className="text-right font-mono text-xs text-neon-white/60">
+                  <span className="text-right font-mono text-xs text-ink-muted">
                     {formatWindSpeed(d.windSpeedMax, unit)}
                   </span>
                 </div>
@@ -576,38 +800,37 @@ export default function HeroSceneView() {
           </div>
         </div>
 
-        {/* 4 Atmosfer Detay Kartı */}
         <div className="grid gap-4 sm:grid-cols-2">
-          <SunArc
+          <SunCycleCard
             sunrise={bundle.current.sunrise}
             sunset={bundle.current.sunset}
+            solarElevationDeg={bundle.current.solarElevationDeg}
           />
 
-          {/* UV İndeksi */}
-          <div className="glass-panel p-5 flex flex-col justify-between space-y-3">
+          <div className="surface-panel p-5 flex flex-col justify-between space-y-3">
             <div className="flex items-center justify-between">
-              <span className="font-display text-sm font-semibold text-neon-white">
-                UV İndeksi
+              <span className="font-display text-sm font-semibold text-ink-primary">
+                UV Radyasyonu
               </span>
-              <Sun className="h-4 w-4 text-amber-300" />
+              <Sun className="h-4 w-4 text-signal-amber" />
             </div>
             <div>
-              <p className="font-mono text-3xl font-bold text-neon-white">
+              <p className="font-mono text-3xl font-bold text-ink-primary tabular">
                 {bundle.daily[0]?.uvIndexMax.toFixed(1) ?? "0.0"}
               </p>
-              <p className="text-xs text-neon-white/65">
+              <p className="mt-1 text-xs text-ink-muted">
                 {(bundle.daily[0]?.uvIndexMax ?? 0) >= 8
-                  ? "Çok Yüksek — doğrudan güneşten kaçın"
+                  ? "Çok yüksek — öğle saatlerinde korunma gerekli"
                   : (bundle.daily[0]?.uvIndexMax ?? 0) >= 6
-                    ? "Yüksek — güneş gözlüğü & SPF önerilir"
+                    ? "Yüksek — güneş koruması önerilir"
                     : (bundle.daily[0]?.uvIndexMax ?? 0) >= 3
-                      ? "Orta düzey güneş radyasyonu"
-                      : "Düşük UV riski"}
+                      ? "Orta düzey güneş ışınımı"
+                      : "Düşük UV indeksi"}
               </p>
             </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-full bg-gradient-to-r from-emerald-400 via-amber-400 via-orange-500 to-purple-500">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500">
               <div
-                className="h-full w-1.5 rounded-full bg-white shadow"
+                className="h-full w-1.5 rounded-full bg-white"
                 style={{
                   marginLeft: `${Math.min(95, ((bundle.daily[0]?.uvIndexMax ?? 0) / 11) * 100)}%`
                 }}
@@ -615,76 +838,79 @@ export default function HeroSceneView() {
             </div>
           </div>
 
-          {/* Hava Kalitesi Kırılımı */}
-          <div className="glass-panel p-5 space-y-3">
+          <div className="surface-panel p-5 space-y-3 tabular">
             <div className="flex items-center justify-between">
-              <span className="font-display text-sm font-semibold text-neon-white">
+              <span className="font-display text-sm font-semibold text-ink-primary">
                 Hava Kalitesi
               </span>
-              <span className="rounded-lg border border-neon-cyan/40 bg-neon-cyan/15 px-2 py-0.5 font-mono text-xs text-neon-cyan">
+              <span className="font-mono text-xs text-ink-secondary">
                 EAQI {bundle.airQuality.europeanAqi} · {bundle.airQuality.label}
               </span>
             </div>
-            <div className="grid grid-cols-2 gap-2.5 text-xs">
-              <div className="glass-card p-2.5">
-                <span className="text-neon-white/55">PM2.5</span>
-                <p className="font-mono font-semibold text-neon-white">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="surface-tile p-2.5">
+                <span className="text-ink-muted">PM2.5</span>
+                <p className="font-mono font-medium text-ink-primary">
                   {bundle.airQuality.pm25} µg/m³
                 </p>
               </div>
-              <div className="glass-card p-2.5">
-                <span className="text-neon-white/55">PM10</span>
-                <p className="font-mono font-semibold text-neon-white">
+              <div className="surface-tile p-2.5">
+                <span className="text-ink-muted">PM10</span>
+                <p className="font-mono font-medium text-ink-primary">
                   {bundle.airQuality.pm10} µg/m³
                 </p>
               </div>
-              <div className="glass-card p-2.5">
-                <span className="text-neon-white/55">Ozon (O₃)</span>
-                <p className="font-mono font-semibold text-neon-white">
+              <div className="surface-tile p-2.5">
+                <span className="text-ink-muted">Ozon (O₃)</span>
+                <p className="font-mono font-medium text-ink-primary">
                   {bundle.airQuality.ozone} µg/m³
                 </p>
               </div>
-              <div className="glass-card p-2.5">
-                <span className="text-neon-white/55">NO₂</span>
-                <p className="font-mono font-semibold text-neon-white">
-                  {bundle.airQuality.no2} µg/m³
+              <div className="surface-tile p-2.5">
+                <span className="text-ink-muted">NO₂ / Toz</span>
+                <p className="font-mono font-medium text-ink-primary">
+                  {bundle.airQuality.no2} / {bundle.airQuality.dust}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Canlı CAPE Fırtına Riski Özeti -> /lab */}
-          <div className="glass-panel p-5 flex flex-col justify-between space-y-3">
+          <div className="surface-panel p-5 flex flex-col justify-between space-y-3 tabular">
             <div className="flex items-center justify-between">
-              <span className="font-display text-sm font-semibold text-neon-white">
-                Konvektif CAPE Riski
+              <span className="font-display text-sm font-semibold text-ink-primary">
+                Üst Atmosfer
               </span>
-              <Activity className="h-4 w-4 text-neon-orange" />
+              <Activity className="h-4 w-4 text-ink-secondary" />
             </div>
 
-            <div className="space-y-1">
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono text-3xl font-bold text-neon-white">
-                  {bundle.nativeConvective.cape ?? liveCapeSummary.cape}
-                </span>
-                <span className="font-mono text-xs text-neon-white/60">J/kg</span>
-                <span
-                  className={`ml-auto rounded-lg border px-2 py-0.5 text-xs font-medium ${liveCapeSummary.capeRisk.badgeClass}`}
-                >
-                  {liveCapeSummary.capeRisk.label}
-                </span>
+            {liveSoundingSummary && (
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-ink-muted">CAPE</span>
+                  <span className="font-mono text-lg font-semibold text-ink-primary">
+                    {bundle.nativeConvective.cape ?? liveSoundingSummary.cape} J/kg
+                  </span>
+                </div>
+                <div className="flex justify-between text-ink-secondary">
+                  <span>0–6 km Kırılma</span>
+                  <span className="font-mono text-ink-primary">
+                    {liveSoundingSummary.bulkShear06Kt} kt
+                  </span>
+                </div>
+                <div className="flex justify-between text-ink-secondary">
+                  <span>700–500 Lapse Rate</span>
+                  <span className="font-mono text-ink-primary">
+                    {liveSoundingSummary.lapseRate700500} °C/km
+                  </span>
+                </div>
               </div>
-              <p className="font-mono text-xs text-neon-white/60">
-                LI: {liveCapeSummary.liftedIndex} · K: {liveCapeSummary.kIndex} · LCL:{" "}
-                {liveCapeSummary.lclHeightM} m
-              </p>
-            </div>
+            )}
 
             <Link
               href="/lab"
-              className="inline-flex items-center justify-center rounded-xl border border-neon-orange/50 bg-neon-orange/15 px-3 py-2 text-xs font-semibold text-neon-orange hover:bg-neon-orange/25 transition-colors"
+              className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/[0.06] px-3 py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.12] transition-colors"
             >
-              Skew-T & CAPE Laboratuvarını Aç →
+              Sondaj & ECMWF/GFS/ICON →
             </Link>
           </div>
         </div>

@@ -9,11 +9,9 @@ import {
   useMemo,
   useState
 } from "react";
-import { buildDemoBundle, DEFAULT_LOCATION, PRESET_CITIES } from "@/lib/weather";
+import { DEFAULT_LOCATION, PRESET_CITIES } from "@/lib/weather";
 import type {
   GeoLocation,
-  PerformanceMode,
-  ScenarioKey,
   SceneAtmosphereInput,
   UnitSystem,
   WeatherAlertRule,
@@ -21,168 +19,14 @@ import type {
 } from "@/lib/weather-types";
 
 const STORAGE_KEYS = {
-  location: "atmos:activeLocation:v2",
-  favorites: "atmos:favorites:v2",
-  alerts: "atmos:alerts:v2",
-  unit: "atmos:unit:v2",
-  perf: "atmos:perf:v2"
-};
-
-export const SCENARIO_META: Record<
-  ScenarioKey,
-  {
-    label: string;
-    shortDesc: string;
-    override?: {
-      temperature: number;
-      apparentTemperature: number;
-      windSpeed: number;
-      windGusts: number;
-      windDirection: number;
-      cloudCover: number;
-      humidity: number;
-      pressure: number;
-      condition: string;
-      isStorm: boolean;
-      precipType: "none" | "rain" | "snow";
-      precipIntensity: number;
-      rainAccum: number;
-      snowAccum: number;
-      airQualityIndex: number;
-      airQualityLabel: string;
-      daylight: number;
-      cape: number;
-    };
-  }
-> = {
-  live: {
-    label: "Canlı Veri",
-    shortDesc: "Seçili şehrin gerçek zamanlı atmosferi"
-  },
-  storm: {
-    label: "Fırtına",
-    shortDesc: "Şiddetli sağanak, 68 km/s rüzgar, şimşek",
-    override: {
-      temperature: 12,
-      apparentTemperature: 8,
-      windSpeed: 68,
-      windGusts: 92,
-      windDirection: 225,
-      cloudCover: 96,
-      humidity: 89,
-      pressure: 998,
-      condition: "Gök Gürültülü Fırtına",
-      isStorm: true,
-      precipType: "rain",
-      precipIntensity: 1.0,
-      rainAccum: 14.5,
-      snowAccum: 0,
-      airQualityIndex: 2,
-      airQualityLabel: "Makul",
-      daylight: 0.14,
-      cape: 2650
-    }
-  },
-  snow: {
-    label: "Kar Fırtınası",
-    shortDesc: "Yoğun 3D kar taneleri ve beyaz zemin örtüsü",
-    override: {
-      temperature: -3,
-      apparentTemperature: -9,
-      windSpeed: 38,
-      windGusts: 54,
-      windDirection: 35,
-      cloudCover: 92,
-      humidity: 86,
-      pressure: 1009,
-      condition: "Yoğun Kar Yağışlı",
-      isStorm: false,
-      precipType: "snow",
-      precipIntensity: 0.9,
-      rainAccum: 0,
-      snowAccum: 12.0,
-      airQualityIndex: 1,
-      airQualityLabel: "İyi",
-      daylight: 0.42,
-      cape: 80
-    }
-  },
-  fog: {
-    label: "Yoğun Sis",
-    shortDesc: "Düşük görüş, kenar sisi ve yüksek AQI",
-    override: {
-      temperature: 8,
-      apparentTemperature: 6,
-      windSpeed: 9,
-      windGusts: 14,
-      windDirection: 110,
-      cloudCover: 88,
-      humidity: 96,
-      pressure: 1021,
-      condition: "Sisli / Puslu",
-      isStorm: false,
-      precipType: "none",
-      precipIntensity: 0,
-      rainAccum: 0.5,
-      snowAccum: 0,
-      airQualityIndex: 5,
-      airQualityLabel: "Çok Kötü",
-      daylight: 0.35,
-      cape: 40
-    }
-  },
-  sunset: {
-    label: "Gün Batımı",
-    shortDesc: "Kızıl ufuk, hafif esinti, parçalı bulut",
-    override: {
-      temperature: 19,
-      apparentTemperature: 18,
-      windSpeed: 18,
-      windGusts: 25,
-      windDirection: 280,
-      cloudCover: 46,
-      humidity: 54,
-      pressure: 1016,
-      condition: "Parçalı Bulutlu",
-      isStorm: false,
-      precipType: "none",
-      precipIntensity: 0,
-      rainAccum: 0,
-      snowAccum: 0,
-      airQualityIndex: 1,
-      airQualityLabel: "İyi",
-      daylight: 0.58,
-      cape: 220
-    }
-  },
-  sunny: {
-    label: "Güneşli",
-    shortDesc: "Açık gökyüzü, berrak atmosfer",
-    override: {
-      temperature: 26,
-      apparentTemperature: 25,
-      windSpeed: 12,
-      windGusts: 18,
-      windDirection: 160,
-      cloudCover: 18,
-      humidity: 42,
-      pressure: 1020,
-      condition: "Açık / Güneşli",
-      isStorm: false,
-      precipType: "none",
-      precipIntensity: 0,
-      rainAccum: 0,
-      snowAccum: 0,
-      airQualityIndex: 1,
-      airQualityLabel: "İyi",
-      daylight: 0.96,
-      cape: 310
-    }
-  }
+  location: "atmos:location:v3",
+  favorites: "atmos:stations:v3",
+  alerts: "atmos:alerts:v3",
+  unit: "atmos:unit:v3"
 };
 
 type WeatherContextValue = {
-  bundle: WeatherBundle;
+  bundle: WeatherBundle | null;
   loading: boolean;
   error: string | null;
   activeLocation: GeoLocation;
@@ -198,20 +42,12 @@ type WeatherContextValue = {
   toggleAlert: (id: string) => void;
   unit: UnitSystem;
   setUnit: (u: UnitSystem) => void;
-  scenario: ScenarioKey;
-  setScenario: (s: ScenarioKey) => void;
   frameIndex: number;
   setFrameIndex: (idx: number) => void;
   audioEnabled: boolean;
   setAudioEnabled: (v: boolean) => void;
-  audioVolume: number;
-  setAudioVolume: (v: number) => void;
-  controlOpen: boolean;
-  setControlOpen: (v: boolean) => void;
   searchOpen: boolean;
   setSearchOpen: (v: boolean) => void;
-  performanceMode: PerformanceMode;
-  setPerformanceMode: (m: PerformanceMode) => void;
   atmosphere: SceneAtmosphereInput;
 };
 
@@ -219,7 +55,7 @@ const WeatherContext = createContext<WeatherContextValue | null>(null);
 
 const DEFAULT_ALERTS: WeatherAlertRule[] = [
   {
-    id: "default-wind-bursa",
+    id: "watch-wind-bursa",
     cityId: "bursa-tr",
     cityName: "Bursa",
     metric: "windSpeed",
@@ -228,7 +64,7 @@ const DEFAULT_ALERTS: WeatherAlertRule[] = [
     enabled: true
   },
   {
-    id: "default-rain-istanbul",
+    id: "watch-rain-istanbul",
     cityId: "istanbul-tr",
     cityName: "İstanbul",
     metric: "precipProbability",
@@ -238,31 +74,44 @@ const DEFAULT_ALERTS: WeatherAlertRule[] = [
   }
 ];
 
+const FALLBACK_SCENE: SceneAtmosphereInput = {
+  windSpeed: 8,
+  windDirection: 180,
+  cloudCover: 35,
+  visibilityKm: 15,
+  airQualityIndex: 1,
+  isStorm: false,
+  precipType: "none",
+  precipIntensity: 0,
+  rainAccum: 0,
+  snowAccum: 0,
+  solarElevationDeg: -10,
+  daylight: 0,
+  cape: 0
+};
+
 export function WeatherProvider({
   initialBundle,
+  initialError = null,
   children
 }: {
-  initialBundle: WeatherBundle;
+  initialBundle: WeatherBundle | null;
+  initialError?: string | null;
   children: ReactNode;
 }) {
-  const [bundle, setBundle] = useState<WeatherBundle>(initialBundle);
+  const [bundle, setBundle] = useState<WeatherBundle | null>(initialBundle);
   const [activeLocation, setActiveLocationState] = useState<GeoLocation>(
-    initialBundle.location
+    initialBundle?.location ?? DEFAULT_LOCATION
   );
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
 
   const [favorites, setFavorites] = useState<GeoLocation[]>(PRESET_CITIES);
   const [alerts, setAlerts] = useState<WeatherAlertRule[]>(DEFAULT_ALERTS);
   const [unit, setUnitState] = useState<UnitSystem>("metric");
-  const [scenario, setScenario] = useState<ScenarioKey>("live");
   const [frameIndex, setFrameIndex] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const [audioVolume, setAudioVolume] = useState(0.55);
-  const [controlOpen, setControlOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [performanceMode, setPerformanceModeState] =
-    useState<PerformanceMode>("auto");
 
   const loadForLocation = useCallback(async (loc: GeoLocation) => {
     setLoading(true);
@@ -275,7 +124,10 @@ export function WeatherProvider({
         country: loc.country ?? ""
       });
       const res = await fetch(`/api/weather?${qs.toString()}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
       const data: WeatherBundle = await res.json();
       setBundle({
         ...data,
@@ -288,15 +140,17 @@ export function WeatherProvider({
         }
       });
       setFrameIndex(0);
-    } catch {
-      setError("Canlı hava verisi alınamadı, yedek veri gösteriliyor.");
-      setBundle(buildDemoBundle(loc));
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Meteoroloji verileri alınamadı. Bağlantını kontrol edip tekrar dene."
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // localStorage hydrate
   useEffect(() => {
     try {
       const savedFavs = localStorage.getItem(STORAGE_KEYS.favorites);
@@ -312,27 +166,23 @@ export function WeatherProvider({
       const savedUnit = localStorage.getItem(STORAGE_KEYS.unit);
       if (savedUnit === "metric" || savedUnit === "imperial") setUnitState(savedUnit);
 
-      const savedPerf = localStorage.getItem(STORAGE_KEYS.perf);
-      if (savedPerf === "auto" || savedPerf === "high" || savedPerf === "low") {
-        setPerformanceModeState(savedPerf);
-      }
-
       const savedLoc = localStorage.getItem(STORAGE_KEYS.location);
       if (savedLoc) {
         const loc: GeoLocation = JSON.parse(savedLoc);
+        const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
         if (
           loc &&
           typeof loc.lat === "number" &&
           typeof loc.lon === "number" &&
-          (Math.abs(loc.lat - initialBundle.location.lat) > 0.05 ||
-            Math.abs(loc.lon - initialBundle.location.lon) > 0.05)
+          (Math.abs(loc.lat - initLoc.lat) > 0.05 ||
+            Math.abs(loc.lon - initLoc.lon) > 0.05)
         ) {
           setActiveLocationState(loc);
           void loadForLocation(loc);
         }
       }
     } catch {
-      // ignore malformed storage
+      // ignore storage errors
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -340,12 +190,11 @@ export function WeatherProvider({
   const setActiveLocation = useCallback(
     (loc: GeoLocation) => {
       setActiveLocationState(loc);
-      setScenario("live");
       setFrameIndex(0);
       try {
         localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
       } catch {
-        // ignore quota errors
+        // ignore
       }
       void loadForLocation(loc);
     },
@@ -360,15 +209,6 @@ export function WeatherProvider({
     setUnitState(u);
     try {
       localStorage.setItem(STORAGE_KEYS.unit, u);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const setPerformanceMode = useCallback((m: PerformanceMode) => {
-    setPerformanceModeState(m);
-    try {
-      localStorage.setItem(STORAGE_KEYS.perf, m);
     } catch {
       // ignore
     }
@@ -453,24 +293,9 @@ export function WeatherProvider({
     });
   }, []);
 
-  // Aktif 3D sahne atmosfer parametreleri
+  // %100 gerçek anlık / seçili saatlik atmosfer verisi
   const atmosphere: SceneAtmosphereInput = useMemo(() => {
-    const preset = SCENARIO_META[scenario]?.override;
-    if (preset) {
-      return {
-        windSpeed: preset.windSpeed,
-        windDirection: preset.windDirection,
-        cloudCover: preset.cloudCover,
-        airQualityIndex: preset.airQualityIndex,
-        isStorm: preset.isStorm,
-        precipType: preset.precipType,
-        precipIntensity: preset.precipIntensity,
-        rainAccum: preset.rainAccum,
-        snowAccum: preset.snowAccum,
-        daylight: preset.daylight,
-        cape: preset.cape
-      };
-    }
+    if (!bundle) return FALLBACK_SCENE;
 
     const activeHour = frameIndex > 0 ? bundle.hourly[frameIndex] : null;
     if (activeHour) {
@@ -478,17 +303,19 @@ export function WeatherProvider({
         windSpeed: activeHour.windSpeed,
         windDirection: activeHour.windDirection,
         cloudCover: activeHour.cloudCover,
+        visibilityKm: activeHour.visibilityKm,
         airQualityIndex: bundle.airQuality.categoryIndex,
         isStorm: activeHour.isStorm,
         precipType: activeHour.precipType,
         precipIntensity:
           activeHour.precipType === "none"
             ? 0
-            : Math.min(1, 0.35 + activeHour.precipitation * 0.25),
+            : Math.min(1, 0.3 + activeHour.precipitation * 0.25),
         rainAccum: activeHour.rainAccum,
         snowAccum: activeHour.snowAccum,
+        solarElevationDeg: activeHour.solarElevationDeg,
         daylight: activeHour.daylight,
-        cape: bundle.nativeConvective.cape ?? 0
+        cape: activeHour.cape ?? bundle.nativeConvective.cape ?? 0
       };
     }
 
@@ -497,19 +324,21 @@ export function WeatherProvider({
       windSpeed: cur.windSpeed,
       windDirection: cur.windDirection,
       cloudCover: cur.cloudCover,
+      visibilityKm: cur.visibilityKm,
       airQualityIndex: bundle.airQuality.categoryIndex,
       isStorm: cur.isStorm,
       precipType: cur.precipType,
       precipIntensity:
         cur.precipType === "none"
           ? 0
-          : Math.min(1, 0.35 + cur.precipitation * 0.3 + (cur.isStorm ? 0.4 : 0)),
+          : Math.min(1, 0.3 + cur.precipitation * 0.3 + (cur.isStorm ? 0.35 : 0)),
       rainAccum: bundle.hourly[0]?.rainAccum ?? 0,
       snowAccum: bundle.hourly[0]?.snowAccum ?? 0,
+      solarElevationDeg: cur.solarElevationDeg,
       daylight: cur.daylight,
       cape: bundle.nativeConvective.cape ?? 0
     };
-  }, [bundle, frameIndex, scenario]);
+  }, [bundle, frameIndex]);
 
   const value = useMemo<WeatherContextValue>(
     () => ({
@@ -529,20 +358,12 @@ export function WeatherProvider({
       toggleAlert,
       unit,
       setUnit,
-      scenario,
-      setScenario,
       frameIndex,
       setFrameIndex,
       audioEnabled,
       setAudioEnabled,
-      audioVolume,
-      setAudioVolume,
-      controlOpen,
-      setControlOpen,
       searchOpen,
       setSearchOpen,
-      performanceMode,
-      setPerformanceMode,
       atmosphere
     }),
     [
@@ -562,14 +383,9 @@ export function WeatherProvider({
       toggleAlert,
       unit,
       setUnit,
-      scenario,
       frameIndex,
       audioEnabled,
-      audioVolume,
-      controlOpen,
       searchOpen,
-      performanceMode,
-      setPerformanceMode,
       atmosphere
     ]
   );
@@ -586,5 +402,3 @@ export function useWeather(): WeatherContextValue {
   }
   return ctx;
 }
-
-export { DEFAULT_LOCATION };

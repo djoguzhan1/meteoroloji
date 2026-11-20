@@ -14,17 +14,9 @@ import { PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
 import gsap from "gsap";
 import ScrollTrigger from "gsap/ScrollTrigger";
-import type {
-  PerformanceMode,
-  SceneAtmosphereInput
-} from "@/lib/weather-types";
+import type { SceneAtmosphereInput } from "@/lib/weather-types";
 
 gsap.registerPlugin(ScrollTrigger);
-
-type StormSceneProps = {
-  atmosphere: SceneAtmosphereInput;
-  performanceMode: PerformanceMode;
-};
 
 type ErrorBoundaryState = { hasError: boolean };
 
@@ -33,20 +25,15 @@ class WebGLErrorBoundary extends Component<
   ErrorBoundaryState
 > {
   state: ErrorBoundaryState = { hasError: false };
-
   static getDerivedStateFromError(): ErrorBoundaryState {
     return { hasError: true };
   }
-
   render() {
     if (this.state.hasError) return this.props.fallback;
     return this.props.children;
   }
 }
 
-/**
- * ScrollTrigger + drift'siz harmonik fırtına kamera sarsıntısı + fare parallax
- */
 function CameraRig({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
   const { camera } = useThree();
   const scrollTargetRef = useRef({ x: 0, y: 0.65, z: 3.1 });
@@ -59,9 +46,9 @@ function CameraRig({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
       scrub: true,
       onUpdate: (self) => {
         const p = self.progress;
-        scrollTargetRef.current.x = (p - 0.5) * 0.9;
-        scrollTargetRef.current.y = 0.65 - p * 0.45;
-        scrollTargetRef.current.z = 3.1 + p * 0.5;
+        scrollTargetRef.current.x = (p - 0.5) * 0.65;
+        scrollTargetRef.current.y = 0.65 - p * 0.35;
+        scrollTargetRef.current.z = 3.1 + p * 0.4;
       }
     });
     return () => trigger.kill();
@@ -69,36 +56,24 @@ function CameraRig({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
-    const stormIntensity = THREE.MathUtils.clamp(
-      (atmosphere.windSpeed - 35) / 35 + (atmosphere.isStorm ? 0.35 : 0),
-      0,
-      1
-    );
+    const gale = THREE.MathUtils.clamp((atmosphere.windSpeed - 42) / 38, 0, 1);
 
-    // Drift yapmayan harmonik sarsıntı (merkez etrafında sıfır ortalamalı)
     const shakeX =
-      stormIntensity > 0.15
-        ? (Math.sin(t * 23.7) * 0.5 + Math.cos(t * 37.3) * 0.5) *
-          0.045 *
-          stormIntensity
+      gale > 0.1
+        ? (Math.sin(t * 21.3) * 0.5 + Math.cos(t * 34.7) * 0.5) * 0.032 * gale
         : 0;
     const shakeY =
-      stormIntensity > 0.15
-        ? (Math.cos(t * 19.3) * 0.5 + Math.sin(t * 41.1) * 0.5) *
-          0.032 *
-          stormIntensity
+      gale > 0.1
+        ? (Math.cos(t * 17.9) * 0.5 + Math.sin(t * 38.1) * 0.5) * 0.024 * gale
         : 0;
 
-    const pointerX = state.pointer.x * 0.18;
-    const pointerY = state.pointer.y * 0.1;
-
-    const targetX = scrollTargetRef.current.x + pointerX + shakeX;
-    const targetY = scrollTargetRef.current.y + pointerY + shakeY;
+    const targetX = scrollTargetRef.current.x + state.pointer.x * 0.12 + shakeX;
+    const targetY = scrollTargetRef.current.y + state.pointer.y * 0.07 + shakeY;
     const targetZ = scrollTargetRef.current.z;
 
-    camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX, 0.08);
-    camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY, 0.08);
-    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 0.08);
+    camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX, 0.07);
+    camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY, 0.07);
+    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 0.07);
     camera.lookAt(0, 0.25, -2.5);
   });
 
@@ -106,9 +81,10 @@ function CameraRig({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
 }
 
 /**
- * Dinamik gökyüzü + yıldızlar + güneş diski + volumetrik bulutlar + şimşek parlaması
+ * Fiziksel Rayleigh / Mie gökyüzü saçılımı + gerçek bulut tabakası + gece yıldızları + şimşek.
+ * Yapay neon/mor-pembe gradyan yok: tamamen gerçek güneş yükselme açısı ve bulut örtüsüyle çalışır.
  */
-function VolumetricSkyAndClouds({
+function PhysicalAtmosphericSky({
   atmosphere,
   lightningRef
 }: {
@@ -122,17 +98,16 @@ function VolumetricSkyAndClouds({
     () => ({
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2(size.width, size.height) },
-      uCloudDensity: { value: atmosphere.cloudCover / 100 },
-      uStormFactor: { value: atmosphere.isStorm ? 1 : 0 },
-      uDaylight: { value: atmosphere.daylight },
+      uCloudCover: { value: atmosphere.cloudCover / 100 },
+      uSolarElev: { value: atmosphere.solarElevationDeg },
+      uStorm: { value: atmosphere.isStorm ? 1 : 0 },
       uLightning: { value: 0 },
-      uWind: { value: new THREE.Vector2(atmosphere.windSpeed / 50, 0.0) }
+      uWind: { value: new THREE.Vector2(0.15, 0.0) }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
-  // Resize'da uTime sıfırlanmadan sadece uResolution güncellenir
   useEffect(() => {
     if (materialRef.current) {
       materialRef.current.uniforms.uResolution.value.set(size.width, size.height);
@@ -143,44 +118,41 @@ function VolumetricSkyAndClouds({
     if (!materialRef.current) return;
     const u = materialRef.current.uniforms;
     u.uTime.value += delta;
-    u.uCloudDensity.value = THREE.MathUtils.lerp(
-      u.uCloudDensity.value,
+    u.uCloudCover.value = THREE.MathUtils.lerp(
+      u.uCloudCover.value,
       atmosphere.cloudCover / 100,
       0.035
     );
-    u.uStormFactor.value = THREE.MathUtils.lerp(
-      u.uStormFactor.value,
+    u.uSolarElev.value = THREE.MathUtils.lerp(
+      u.uSolarElev.value,
+      atmosphere.solarElevationDeg,
+      0.04
+    );
+    u.uStorm.value = THREE.MathUtils.lerp(
+      u.uStorm.value,
       atmosphere.isStorm ? 1 : 0,
       0.04
     );
-    u.uDaylight.value = THREE.MathUtils.lerp(
-      u.uDaylight.value,
-      atmosphere.daylight,
-      0.04
-    );
+
     const windRad = (atmosphere.windDirection * Math.PI) / 180;
-    const windScale = Math.max(0.15, atmosphere.windSpeed / 45);
+    const windSpeedNorm = Math.max(0.08, atmosphere.windSpeed / 55);
     u.uWind.value.x = THREE.MathUtils.lerp(
       u.uWind.value.x,
-      Math.cos(windRad) * windScale,
+      Math.cos(windRad) * windSpeedNorm,
       0.03
     );
     u.uWind.value.y = THREE.MathUtils.lerp(
       u.uWind.value.y,
-      Math.sin(windRad) * windScale * 0.35,
+      Math.sin(windRad) * windSpeedNorm * 0.25,
       0.03
     );
 
-    // Fırtına veya yüksek CAPE'de rastgele bulut içi şimşek parlaması
-    const stormPower = atmosphere.isStorm
-      ? 1
-      : atmosphere.cape >= 1400
-        ? 0.55
-        : 0;
-    if (stormPower > 0 && lightningRef.current <= 0.02 && Math.random() < delta * 0.32 * stormPower) {
-      lightningRef.current = 0.75 + Math.random() * 0.25;
+    // Yalnızca gerçek oraj/fırtına veya yüksek gerçek CAPE durumunda şimşek
+    const stormTrigger = atmosphere.isStorm || atmosphere.cape >= 1500 ? 1 : 0;
+    if (stormTrigger > 0 && lightningRef.current <= 0.02 && Math.random() < delta * 0.24) {
+      lightningRef.current = 0.7 + Math.random() * 0.3;
     }
-    lightningRef.current = Math.max(0, lightningRef.current - delta * 3.8);
+    lightningRef.current = Math.max(0, lightningRef.current - delta * 4.2);
     u.uLightning.value = lightningRef.current;
   });
 
@@ -205,9 +177,9 @@ function VolumetricSkyAndClouds({
 
           uniform float uTime;
           uniform vec2 uResolution;
-          uniform float uCloudDensity;
-          uniform float uStormFactor;
-          uniform float uDaylight;
+          uniform float uCloudCover;
+          uniform float uSolarElev;
+          uniform float uStorm;
           uniform float uLightning;
           uniform vec2 uWind;
 
@@ -231,9 +203,10 @@ function VolumetricSkyAndClouds({
           float fbm(vec2 p) {
             float v = 0.0;
             float a = 0.5;
-            for (int i = 0; i < 5; i++) {
+            mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+            for (int i = 0; i < 6; i++) {
               v += a * noise(p);
-              p *= 2.04;
+              p = rot * p * 2.02;
               a *= 0.5;
             }
             return v;
@@ -244,68 +217,89 @@ function VolumetricSkyAndClouds({
             float aspect = uResolution.x / max(1.0, uResolution.y);
             vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
 
-            // Gün döngüsü renk paleti (gece -> şafak/günbatımı -> gündüz -> fırtına)
-            float sunsetBell = smoothstep(0.15, 0.55, uDaylight) * (1.0 - smoothstep(0.55, 0.9, uDaylight));
+            // Gerçek güneş yükselme açısına göre atmosfer fazları
+            float dayFactor = smoothstep(-4.0, 22.0, uSolarElev);
+            float goldenFactor = smoothstep(-8.0, 1.0, uSolarElev) * (1.0 - smoothstep(4.0, 18.0, uSolarElev));
+            float nightFactor = 1.0 - smoothstep(-12.0, -2.0, uSolarElev);
 
-            vec3 nightTop = vec3(0.02, 0.04, 0.11);
-            vec3 nightBot = vec3(0.05, 0.06, 0.16);
-            vec3 dayTop = vec3(0.08, 0.24, 0.54);
-            vec3 dayBot = vec3(0.24, 0.44, 0.68);
-            vec3 sunsetHorizon = vec3(0.76, 0.34, 0.18);
+            // Doğal fiziksel gökyüzü renkleri (çelik-slate, atmosferik mavi, doğal ufuk puslu altın)
+            vec3 nightZenith = vec3(0.018, 0.028, 0.055);
+            vec3 nightHorizon = vec3(0.045, 0.068, 0.115);
 
-            vec3 skyTop = mix(nightTop, dayTop, uDaylight);
-            vec3 skyBot = mix(nightBot, dayBot, uDaylight);
-            skyBot = mix(skyBot, sunsetHorizon, sunsetBell * 0.72 * (1.0 - uStormFactor * 0.7));
+            vec3 dayZenith = vec3(0.07, 0.21, 0.42);
+            vec3 dayHorizon = vec3(0.32, 0.49, 0.68);
 
-            // Fırtınada gökyüzü kurşun tonuna döner
-            skyTop = mix(skyTop, vec3(0.03, 0.04, 0.09), uStormFactor * 0.75);
-            skyBot = mix(skyBot, vec3(0.08, 0.09, 0.16), uStormFactor * 0.75);
+            vec3 goldenZenith = vec3(0.08, 0.14, 0.26);
+            vec3 goldenHorizon = vec3(0.64, 0.36, 0.20);
 
-            vec3 sky = mix(skyBot, skyTop, pow(uv.y, 0.85));
+            vec3 zenith = mix(nightZenith, dayZenith, dayFactor);
+            vec3 horizon = mix(nightHorizon, dayHorizon, dayFactor);
+            zenith = mix(zenith, goldenZenith, goldenFactor * 0.65);
+            horizon = mix(horizon, goldenHorizon, goldenFactor * 0.78 * (1.0 - uCloudCover * 0.55));
 
-            // Gece yıldız alanı (bulutsuz ve geceyse parlar)
-            float nightVis = (1.0 - smoothstep(0.1, 0.45, uDaylight)) * (1.0 - uCloudDensity * 0.85);
-            if (nightVis > 0.01) {
-              vec2 starGrid = floor(uv * vec2(220.0, 130.0));
-              float rndStar = hash(starGrid);
-              if (rndStar > 0.992) {
-                float twinkle = 0.55 + 0.45 * sin(uTime * 2.5 + rndStar * 80.0);
-                sky += vec3(0.8, 0.88, 1.0) * twinkle * nightVis * smoothstep(0.25, 0.75, uv.y);
+            // Kapalı / yağışlı havada gökyüzü gerçek çelik-gri stratüs tonuna döner
+            float overcastDamp = clamp(uCloudCover * 0.65 + uStorm * 0.45, 0.0, 0.92);
+            vec3 overcastZenith = mix(vec3(0.04, 0.055, 0.08), vec3(0.14, 0.18, 0.24), dayFactor);
+            vec3 overcastHorizon = mix(vec3(0.075, 0.095, 0.13), vec3(0.24, 0.29, 0.35), dayFactor);
+
+            zenith = mix(zenith, overcastZenith, overcastDamp);
+            horizon = mix(horizon, overcastHorizon, overcastDamp);
+
+            vec3 sky = mix(horizon, zenith, pow(clamp(uv.y, 0.0, 1.0), 0.72));
+
+            // Gerçek yıldız alanı (yalnızca gece ve bulut örtüsü düşükken)
+            float starVis = nightFactor * (1.0 - smoothstep(0.35, 0.88, uCloudCover));
+            if (starVis > 0.02) {
+              vec2 sg = floor(uv * vec2(260.0, 150.0));
+              float rs = hash(sg);
+              if (rs > 0.993) {
+                float tw = 0.65 + 0.35 * sin(uTime * 1.8 + rs * 90.0);
+                sky += vec3(0.84, 0.89, 0.98) * tw * starVis * smoothstep(0.22, 0.75, uv.y) * 0.85;
               }
             }
 
-            // Güneş / Ay diski + god-rays
-            vec2 sunPos = vec2(0.22 * aspect, mix(-0.12, 0.32, uDaylight));
-            float distSun = length(p - sunPos);
-            float sunHalo = exp(-distSun * 3.4) * uDaylight * (1.0 - uStormFactor * 0.85);
-            float sunDisc = smoothstep(0.075, 0.03, distSun) * uDaylight * (1.0 - uCloudDensity * 0.65);
-            vec3 sunColor = mix(vec3(1.0, 0.55, 0.25), vec3(1.0, 0.92, 0.78), smoothstep(0.35, 0.85, uDaylight));
-            sky += sunColor * (sunHalo * 0.42 + sunDisc * 0.85);
+            // Güneş saçılımı (gerçek güneş yükselme açısına göre konumlanır)
+            if (uSolarElev > -5.0) {
+              float sunY = clamp((uSolarElev / 55.0) * 0.46 - 0.06, -0.14, 0.36);
+              vec2 sunPos = vec2(0.24 * aspect, sunY);
+              float dSun = length(p - sunPos);
+              float clearness = 1.0 - overcastDamp * 0.85;
+              float mieHalo = exp(-dSun * 3.8) * clearness * smoothstep(-5.0, 6.0, uSolarElev);
+              float sunDisc = smoothstep(0.045, 0.02, dSun) * clearness * smoothstep(0.0, 8.0, uSolarElev);
+              vec3 sunCol = mix(vec3(0.95, 0.56, 0.30), vec3(1.0, 0.96, 0.88), dayFactor);
+              sky += sunCol * (mieHalo * 0.34 + sunDisc * 0.75);
+            }
 
-            // Volumetrik fBM bulutlar
-            float t = uTime * 0.035;
-            vec2 windOffset = uWind * t;
-            float base = fbm(uv * vec2(2.8 * aspect, 2.8) + windOffset);
-            float detail = fbm(uv * vec2(6.5 * aspect, 6.5) - windOffset * 1.45);
-            float clouds = pow(mix(base, detail, 0.55), 1.35);
+            // Gerçekçi çok katmanlı stratüs / kümülüs bulut örtüsü
+            float t = uTime * 0.025;
+            vec2 flow = uWind * t;
+            vec2 cloudUv = vec2(uv.x * aspect * 1.6, uv.y * 2.1);
+            float warp = fbm(cloudUv * 1.1 + flow * 0.6);
+            float n1 = fbm(cloudUv * 1.9 + flow + warp * 0.35);
+            float n2 = fbm(cloudUv * 4.2 - flow * 1.25);
+            float cloudField = mix(n1, n2, 0.42);
 
-            float density = clamp(uCloudDensity * 1.25 + uStormFactor * 0.35, 0.0, 1.45);
-            float alpha = clamp(clouds * density - 0.16, 0.0, 0.95);
+            float coverage = smoothstep(1.02 - uCloudCover * 0.95, 1.08 - uCloudCover * 0.28, cloudField);
+            float horizonFade = smoothstep(0.0, 0.24, uv.y);
+            float cloudAlpha = clamp(coverage * (0.28 + uCloudCover * 0.66) * horizonFade, 0.0, 0.92);
 
-            vec3 cloudShadow = mix(vec3(0.08, 0.1, 0.2), vec3(0.22, 0.28, 0.42), uDaylight);
-            vec3 cloudLight = mix(vec3(0.55, 0.62, 0.82), vec3(0.98, 0.92, 0.88), uDaylight);
-            cloudLight = mix(cloudLight, vec3(1.0, 0.68, 0.42), sunsetBell * 0.55);
-            cloudLight = mix(cloudLight, vec3(0.45, 0.5, 0.64), uStormFactor * 0.6);
+            vec3 cDark = mix(vec3(0.045, 0.06, 0.095), vec3(0.18, 0.22, 0.29), dayFactor);
+            vec3 cLit = mix(vec3(0.15, 0.20, 0.28), vec3(0.76, 0.81, 0.87), dayFactor);
+            cLit = mix(cLit, vec3(0.84, 0.60, 0.42), goldenFactor * 0.55);
+            cLit = mix(cLit, vec3(0.24, 0.28, 0.34), uStorm * 0.65);
 
-            vec3 cloudCol = mix(cloudShadow, cloudLight, smoothstep(0.18, 0.85, clouds));
+            vec3 cloudCol = mix(cDark, cLit, smoothstep(0.25, 0.82, n1));
 
-            // Şimşek bulut içi aydınlanması
-            float flashMask = smoothstep(0.32, 0.88, clouds) * uLightning;
-            cloudCol += vec3(0.75, 0.85, 1.0) * flashMask * 1.6;
+            // Gerçek fırtına bulut içi şimşek aydınlanması
+            float boltMask = smoothstep(0.42, 0.86, cloudField) * uLightning;
+            cloudCol += vec3(0.82, 0.90, 1.0) * boltMask * 1.4;
 
-            vec3 finalCol = mix(sky, cloudCol, alpha);
-            // Kısa ortam şimşek darbesi
-            finalCol += vec3(0.22, 0.28, 0.42) * uLightning * 0.55;
+            vec3 finalCol = mix(sky, cloudCol, cloudAlpha);
+            finalCol += vec3(0.18, 0.22, 0.30) * uLightning * 0.42;
+
+            // Metin okunabilirliği için çok ince doğal üst/alt vinyet
+            float vignette = smoothstep(1.15, 0.25, length(uv - 0.5));
+            finalCol *= mix(0.72, 1.0, vignette);
 
             gl_FragColor = vec4(finalCol, 1.0);
           }
@@ -316,24 +310,25 @@ function VolumetricSkyAndClouds({
 }
 
 /**
- * Gerçek 3D Parçacık Sistemi (InstancedMesh): Yağmur, Kar ve Rüzgar Tozu
+ * Gerçek 3D Parçacıklar — yalnızca gerçek yağmur veya kar yağışında çalışır.
  */
-function WeatherParticles3D({
+function RealPrecipitationParticles({
   atmosphere
 }: {
   atmosphere: SceneAtmosphereInput;
 }) {
-  const count = 420;
+  const count = 360;
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
   const seeds = useMemo(() => {
     const arr = new Float32Array(count * 4);
     for (let i = 0; i < count; i++) {
-      arr[i * 4 + 0] = (Math.random() - 0.5) * 12; // x
-      arr[i * 4 + 1] = Math.random() * 8 - 2; // y
-      arr[i * 4 + 2] = (Math.random() - 0.5) * 8 - 1; // z
-      arr[i * 4 + 3] = 0.6 + Math.random() * 0.9; // speed multiplier
+      arr[i * 4 + 0] = (Math.random() - 0.5) * 14;
+      arr[i * 4 + 1] = Math.random() * 9 - 2.5;
+      // Kamera lensinin (z=3.1) çok önüne çıkmaması için derinlik -9.5 .. +0.6 aralığında
+      arr[i * 4 + 2] = -9.5 + Math.random() * 10.1;
+      arr[i * 4 + 3] = 0.7 + Math.random() * 0.75;
     }
     return arr;
   }, []);
@@ -344,19 +339,13 @@ function WeatherParticles3D({
 
     const isRain = atmosphere.precipType === "rain";
     const isSnow = atmosphere.precipType === "snow";
-    const isDust = !isRain && !isSnow && atmosphere.windSpeed >= 26;
+    const activeCount =
+      isRain || isSnow
+        ? Math.floor(count * Math.min(1, 0.35 + atmosphere.precipIntensity * 0.65))
+        : 0;
 
-    const visibleRatio = isRain
-      ? Math.min(1, 0.35 + atmosphere.precipIntensity * 0.65)
-      : isSnow
-        ? Math.min(1, 0.45 + atmosphere.precipIntensity * 0.55)
-        : isDust
-          ? 0.28
-          : 0;
-
-    const activeCount = Math.floor(count * visibleRatio);
     const windRad = (atmosphere.windDirection * Math.PI) / 180;
-    const windDriftX = Math.sin(windRad) * (atmosphere.windSpeed / 16);
+    const windDriftX = Math.sin(windRad) * (atmosphere.windSpeed / 18);
     const t = state.clock.elapsedTime;
 
     for (let i = 0; i < count; i++) {
@@ -372,35 +361,26 @@ function WeatherParticles3D({
       const mult = seeds[idx + 3];
 
       if (isRain) {
-        seeds[idx + 1] -= delta * (9.5 + atmosphere.windSpeed * 0.08) * mult;
-        seeds[idx + 0] += delta * windDriftX * 0.85;
-      } else if (isSnow) {
-        seeds[idx + 1] -= delta * 1.45 * mult;
-        seeds[idx + 0] +=
-          delta * (windDriftX * 0.45 + Math.sin(t * 1.6 + i) * 0.45);
+        seeds[idx + 1] -= delta * (10.0 + atmosphere.windSpeed * 0.08) * mult;
+        seeds[idx + 0] += delta * windDriftX * 0.8;
       } else {
-        // Rüzgar tozu / parçacık akışı
-        seeds[idx + 0] += delta * (2.6 + Math.abs(windDriftX)) * mult;
-        seeds[idx + 1] += Math.sin(t * 2 + i) * delta * 0.25;
+        seeds[idx + 1] -= delta * 1.35 * mult;
+        seeds[idx + 0] +=
+          delta * (windDriftX * 0.4 + Math.sin(t * 1.4 + i) * 0.35);
       }
 
-      // Sınır sarmalama
       if (seeds[idx + 1] < -2.5) seeds[idx + 1] = 5.5;
-      if (seeds[idx + 1] > 6.0) seeds[idx + 1] = -2.0;
       if (seeds[idx + 0] > 6.5) seeds[idx + 0] = -6.5;
       if (seeds[idx + 0] < -6.5) seeds[idx + 0] = 6.5;
 
       dummy.position.set(seeds[idx + 0], seeds[idx + 1], seeds[idx + 2]);
       if (isRain) {
         dummy.rotation.set(0, 0, -Math.atan2(windDriftX * 0.14, 1));
-        dummy.scale.set(0.012, 0.34, 0.012);
-      } else if (isSnow) {
-        dummy.rotation.set(t * 0.5 + i, t * 0.4, 0);
-        const s = 0.036 * mult;
-        dummy.scale.set(s, s, s);
+        dummy.scale.set(0.0055, 0.36, 0.0055);
       } else {
-        dummy.rotation.set(0, 0, 0);
-        dummy.scale.set(0.02, 0.02, 0.02);
+        dummy.rotation.set(t * 0.4 + i, t * 0.3, 0);
+        const s = 0.028 * mult;
+        dummy.scale.set(s, s, s);
       }
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
@@ -409,20 +389,13 @@ function WeatherParticles3D({
     mesh.instanceMatrix.needsUpdate = true;
   });
 
-  const color =
-    atmosphere.precipType === "snow"
-      ? "#f1f5ff"
-      : atmosphere.precipType === "rain"
-        ? "#93c5fd"
-        : "#cbd5e1";
-
   return (
     <instancedMesh ref={meshRef} args={[undefined, undefined, count]} frustumCulled={false}>
       <boxGeometry args={[1, 1, 1]} />
       <meshBasicMaterial
-        color={color}
+        color={atmosphere.precipType === "snow" ? "#e2e8f0" : "#b8cae0"}
         transparent
-        opacity={atmosphere.precipType === "snow" ? 0.82 : 0.48}
+        opacity={atmosphere.precipType === "snow" ? 0.75 : 0.32}
         depthWrite={false}
       />
     </instancedMesh>
@@ -430,41 +403,24 @@ function WeatherParticles3D({
 }
 
 /**
- * Ekran üstü ince yağmur şeridi shader'ı — YALNIZCA yağış varken aktif!
+ * Gerçek sis / düşük görüş mesafesi atmosfer pusu
  */
-function ScreenRainOverlay({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
+function VisibilityMist({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
+  const uniforms = useMemo(() => ({ uMist: { value: 0 } }), []);
 
-  const uniforms = useMemo(
-    () => ({
-      uTime: { value: 0 },
-      uIntensity: { value: 0 },
-      uStormFactor: { value: atmosphere.isStorm ? 1 : 0 }
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
-
-  useFrame((_, delta) => {
+  useFrame(() => {
     if (!materialRef.current) return;
-    materialRef.current.uniforms.uTime.value += delta;
-    const targetIntensity =
-      atmosphere.precipType === "rain"
-        ? THREE.MathUtils.clamp(
-            0.35 + atmosphere.precipIntensity * 0.65 + (atmosphere.isStorm ? 0.2 : 0),
-            0,
-            1
-          )
+    const visFactor =
+      atmosphere.visibilityKm < 6
+        ? THREE.MathUtils.clamp((6 - atmosphere.visibilityKm) / 5.5, 0, 0.75)
         : 0;
-    materialRef.current.uniforms.uIntensity.value = THREE.MathUtils.lerp(
-      materialRef.current.uniforms.uIntensity.value,
-      targetIntensity,
-      0.05
-    );
-    materialRef.current.uniforms.uStormFactor.value = THREE.MathUtils.lerp(
-      materialRef.current.uniforms.uStormFactor.value,
-      atmosphere.isStorm ? 1 : 0,
-      0.05
+    const aqiFactor = atmosphere.airQualityIndex >= 4 ? 0.28 : 0;
+    const target = Math.max(visFactor, aqiFactor);
+    materialRef.current.uniforms.uMist.value = THREE.MathUtils.lerp(
+      materialRef.current.uniforms.uMist.value,
+      target,
+      0.04
     );
   });
 
@@ -476,7 +432,6 @@ function ScreenRainOverlay({ atmosphere }: { atmosphere: SceneAtmosphereInput })
         transparent
         depthWrite={false}
         depthTest={false}
-        blending={THREE.AdditiveBlending}
         uniforms={uniforms}
         vertexShader={/* glsl */ `
           varying vec2 vUv;
@@ -488,45 +443,11 @@ function ScreenRainOverlay({ atmosphere }: { atmosphere: SceneAtmosphereInput })
         fragmentShader={/* glsl */ `
           precision highp float;
           varying vec2 vUv;
-
-          uniform float uTime;
-          uniform float uIntensity;
-          uniform float uStormFactor;
-
-          float random(vec2 p) {
-            return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-          }
-
+          uniform float uMist;
           void main() {
-            float intensity = uIntensity;
-            if (intensity < 0.01) discard;
-
-            vec2 uv = vUv;
-            float slant = 0.07 + 0.14 * uStormFactor;
-            vec2 ruv = vec2(uv.x + uv.y * slant, uv.y);
-            float time = uTime * (1.25 + 0.9 * uStormFactor);
-            float drops = 0.0;
-
-            for (int layer = 0; layer < 2; layer++) {
-              float fLayer = float(layer);
-              float cols = mix(46.0, 82.0, fLayer);
-              float speed = mix(2.2, 3.6, fLayer) * (0.85 + 0.65 * uStormFactor);
-              vec2 grid = vec2(ruv.x * cols, ruv.y * mix(4.2, 7.2, fLayer) + time * speed);
-              vec2 id = floor(grid);
-              vec2 f = fract(grid);
-
-              float rnd = random(id + fLayer * 19.3);
-              float isDrop = step(1.0 - (0.16 + intensity * 0.38), rnd);
-              float xPos = 0.2 + 0.6 * random(id + 4.1);
-              float width = mix(0.05, 0.10, intensity) * mix(1.0, 0.65, fLayer);
-              float streakX = smoothstep(width, 0.0, abs(f.x - xPos));
-              float streakY = smoothstep(0.0, 0.22, f.y) * smoothstep(0.95, 0.25, f.y);
-              drops += isDrop * streakX * streakY * mix(0.5, 0.32, fLayer);
-            }
-
-            float highlight = clamp(drops, 0.0, 1.0) * (0.32 + 0.32 * uStormFactor);
-            vec3 col = vec3(0.72, 0.85, 1.0) * highlight;
-            gl_FragColor = vec4(col, highlight * (0.42 + 0.35 * intensity));
+            if (uMist < 0.01) discard;
+            float lowerBand = smoothstep(0.85, 0.0, vUv.y);
+            gl_FragColor = vec4(vec3(0.56, 0.62, 0.70), lowerBand * uMist * 0.55);
           }
         `}
       />
@@ -534,225 +455,52 @@ function ScreenRainOverlay({ atmosphere }: { atmosphere: SceneAtmosphereInput })
   );
 }
 
-/**
- * Zemin / Ufuk Yağmur Islaklığı & Kar Birikimi Katmanı (Time-Scrubbing fiziksel tepkisi)
- */
-function HorizonGroundLayer({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
-  const materialRef = useRef<THREE.ShaderMaterial>(null);
+function StaticSkyFallback({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
+  const isDay = atmosphere.solarElevationDeg > 4;
+  const cls =
+    atmosphere.cloudCover > 75
+      ? isDay
+        ? "from-[#1e293b] via-[#2b3749] to-[#0f172a]"
+        : "from-[#0a0f1a] via-[#131c2b] to-[#06090f]"
+      : isDay
+        ? "from-[#102d56] via-[#244e7d] to-[#0f1b2e]"
+        : "from-[#050811] via-[#0c1424] to-[#05070c]";
 
-  const uniforms = useMemo(
-    () => ({
-      uTime: { value: 0 },
-      uWetness: { value: 0 },
-      uSnow: { value: 0 },
-      uDaylight: { value: atmosphere.daylight }
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
-
-  useFrame((_, delta) => {
-    if (!materialRef.current) return;
-    const u = materialRef.current.uniforms;
-    u.uTime.value += delta;
-    const targetWet = THREE.MathUtils.clamp(
-      atmosphere.rainAccum / 10 + (atmosphere.precipType === "rain" ? 0.35 : 0),
-      0,
-      1
-    );
-    const targetSnow = THREE.MathUtils.clamp(
-      atmosphere.snowAccum / 8 + (atmosphere.precipType === "snow" ? 0.45 : 0),
-      0,
-      1
-    );
-    u.uWetness.value = THREE.MathUtils.lerp(u.uWetness.value, targetWet, 0.04);
-    u.uSnow.value = THREE.MathUtils.lerp(u.uSnow.value, targetSnow, 0.04);
-    u.uDaylight.value = THREE.MathUtils.lerp(u.uDaylight.value, atmosphere.daylight, 0.04);
-  });
-
-  return (
-    <mesh position={[0, -1.65, -2.2]} rotation={[-Math.PI / 2.25, 0, 0]}>
-      <planeGeometry args={[28, 12, 1, 1]} />
-      <shaderMaterial
-        ref={materialRef}
-        transparent
-        depthWrite={false}
-        uniforms={uniforms}
-        vertexShader={/* glsl */ `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `}
-        fragmentShader={/* glsl */ `
-          precision highp float;
-          varying vec2 vUv;
-          uniform float uTime;
-          uniform float uWetness;
-          uniform float uSnow;
-          uniform float uDaylight;
-
-          void main() {
-            float fade = smoothstep(0.0, 0.35, vUv.y) * smoothstep(1.0, 0.12, vUv.y);
-            float ripple = sin(vUv.x * 48.0 + uTime * 2.4) * cos(vUv.y * 28.0 - uTime * 1.9);
-            float puddleSpec = smoothstep(0.25, 0.95, ripple * 0.5 + 0.5) * uWetness;
-
-            vec3 baseGround = mix(vec3(0.03, 0.05, 0.12), vec3(0.07, 0.11, 0.2), uDaylight);
-            vec3 wetColor = mix(baseGround, vec3(0.28, 0.42, 0.65), puddleSpec * 0.65);
-            vec3 snowColor = mix(vec3(0.76, 0.84, 0.96), vec3(0.95, 0.97, 1.0), uDaylight);
-
-            vec3 finalCol = mix(wetColor, snowColor, uSnow * 0.82);
-            float alpha = fade * (0.28 + uWetness * 0.32 + uSnow * 0.45);
-            gl_FragColor = vec4(finalCol, alpha);
-          }
-        `}
-      />
-    </mesh>
-  );
+  return <div className={`fixed inset-0 z-0 bg-gradient-to-b ${cls}`} />;
 }
 
-/**
- * Hava Kalitesi & Sis Kenar Pusu (EdgeFog)
- */
-function EdgeFog({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
-  const materialRef = useRef<THREE.ShaderMaterial>(null);
-
-  const uniforms = useMemo(
-    () => ({
-      uTime: { value: 0 },
-      uHaze: { value: 0 }
-    }),
-    []
-  );
-
-  useFrame((_, delta) => {
-    if (!materialRef.current) return;
-    materialRef.current.uniforms.uTime.value += delta;
-    let target = 0;
-    if (atmosphere.airQualityIndex >= 5) target = 0.85;
-    else if (atmosphere.airQualityIndex >= 4) target = 0.58;
-    else if (atmosphere.airQualityIndex >= 3) target = 0.32;
-
-    materialRef.current.uniforms.uHaze.value = THREE.MathUtils.lerp(
-      materialRef.current.uniforms.uHaze.value,
-      target,
-      0.04
-    );
-  });
-
-  return (
-    <mesh frustumCulled={false} renderOrder={6}>
-      <planeGeometry args={[2, 2]} />
-      <shaderMaterial
-        ref={materialRef}
-        transparent
-        depthWrite={false}
-        depthTest={false}
-        uniforms={uniforms}
-        vertexShader={/* glsl */ `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = vec4(position.xy, 0.0, 1.0);
-          }
-        `}
-        fragmentShader={/* glsl */ `
-          precision highp float;
-          varying vec2 vUv;
-          uniform float uTime;
-          uniform float uHaze;
-
-          void main() {
-            if (uHaze < 0.01) discard;
-            vec2 d = abs(vUv - vec2(0.5));
-            float edge = max(d.x, d.y);
-            float fog = smoothstep(0.32, 0.82, edge);
-            fog += sin(vUv.y * 28.0 + uTime * 0.5) * 0.025;
-            float intensity = clamp(fog, 0.0, 1.0) * uHaze;
-            vec3 col = mix(vec3(0.08, 0.1, 0.18), vec3(0.62, 0.68, 0.78), intensity);
-            gl_FragColor = vec4(col, intensity * 0.62);
-          }
-        `}
-      />
-    </mesh>
-  );
-}
-
-function StaticAtmosphereFallback({
+export default function StormScene({
   atmosphere
 }: {
   atmosphere: SceneAtmosphereInput;
 }) {
-  const bgStyle = atmosphere.isStorm
-    ? "from-[#060918] via-[#141a38] to-[#040611]"
-    : atmosphere.precipType === "snow"
-      ? "from-[#111c36] via-[#263b5e] to-[#091124]"
-      : atmosphere.daylight > 0.65
-        ? "from-[#0b244e] via-[#1c4b82] to-[#0a142d]"
-        : "from-[#050816] via-[#131836] to-[#040712]";
-
-  return (
-    <div
-      className={`fixed inset-0 z-0 bg-gradient-to-b ${bgStyle} transition-colors duration-700`}
-    >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_25%_20%,_rgba(56,189,248,0.22),_transparent_52%),radial-gradient(circle_at_80%_75%,_rgba(255,138,60,0.16),_transparent_52%)]" />
-    </div>
-  );
-}
-
-export default function StormScene({
-  atmosphere,
-  performanceMode
-}: StormSceneProps) {
   const [contextLost, setContextLost] = useState(false);
-  const [autoLowPower, setAutoLowPower] = useState(false);
+  const [webglUnsupported, setWebglUnsupported] = useState(false);
   const lightningRef = useRef(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const testCanvas = document.createElement("canvas");
-      const gl =
-        testCanvas.getContext("webgl2") || testCanvas.getContext("webgl");
-      if (!gl) {
-        setAutoLowPower(true);
-        return;
+      const c = document.createElement("canvas");
+      if (!(c.getContext("webgl2") || c.getContext("webgl"))) {
+        setWebglUnsupported(true);
       }
     } catch {
-      setAutoLowPower(true);
-      return;
+      setWebglUnsupported(true);
     }
-
-    const nav = window.navigator as Navigator & { deviceMemory?: number };
-    const veryWeakHardware =
-      (nav.hardwareConcurrency && nav.hardwareConcurrency <= 2) ||
-      (nav.deviceMemory && nav.deviceMemory <= 2);
-    if (veryWeakHardware) setAutoLowPower(true);
   }, []);
 
-  const useFallback =
-    contextLost ||
-    performanceMode === "low" ||
-    (performanceMode === "auto" && autoLowPower);
-
-  if (useFallback) {
-    return <StaticAtmosphereFallback atmosphere={atmosphere} />;
+  if (contextLost || webglUnsupported) {
+    return <StaticSkyFallback atmosphere={atmosphere} />;
   }
 
-  const dpr: [number, number] =
-    performanceMode === "high" ? [1, 2] : [1, 1.5];
-
   return (
-    <WebGLErrorBoundary fallback={<StaticAtmosphereFallback atmosphere={atmosphere} />}>
+    <WebGLErrorBoundary fallback={<StaticSkyFallback atmosphere={atmosphere} />}>
       <div className="fixed inset-0 z-0">
         <Canvas
-          dpr={dpr}
+          dpr={[1, 1.5]}
           className="h-full w-full"
-          gl={{
-            powerPreference: "high-performance",
-            antialias: true
-          }}
+          gl={{ powerPreference: "high-performance", antialias: true }}
           onCreated={({ gl }) => {
             const canvas = gl.domElement;
             canvas.addEventListener("webglcontextlost", (e) => {
@@ -765,17 +513,13 @@ export default function StormScene({
           }}
         >
           <PerspectiveCamera makeDefault position={[0, 0.65, 3.1]} fov={46} />
-          <color attach="background" args={["#050816"]} />
-          <ambientLight intensity={0.6} />
-
-          <VolumetricSkyAndClouds
+          <color attach="background" args={["#05070c"]} />
+          <PhysicalAtmosphericSky
             atmosphere={atmosphere}
             lightningRef={lightningRef}
           />
-          <HorizonGroundLayer atmosphere={atmosphere} />
-          <WeatherParticles3D atmosphere={atmosphere} />
-          <ScreenRainOverlay atmosphere={atmosphere} />
-          <EdgeFog atmosphere={atmosphere} />
+          <RealPrecipitationParticles atmosphere={atmosphere} />
+          <VisibilityMist atmosphere={atmosphere} />
           <CameraRig atmosphere={atmosphere} />
         </Canvas>
       </div>

@@ -30,16 +30,28 @@ export async function GET(request: NextRequest) {
 
   const location: GeoLocation = {
     id: `${lat.toFixed(2)}_${lon.toFixed(2)}`,
-    name: name || (latRaw === null ? DEFAULT_LOCATION.name : `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`),
+    name:
+      name ||
+      (latRaw === null
+        ? DEFAULT_LOCATION.name
+        : `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`),
     country: country || (latRaw === null ? DEFAULT_LOCATION.country : ""),
     lat,
     lon
   };
 
-  const bundle = await fetchWeatherBundle(location);
-  return NextResponse.json(bundle, {
-    headers: {
-      "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600"
-    }
-  });
+  try {
+    const bundle = await fetchWeatherBundle(location);
+    return NextResponse.json(bundle, {
+      headers: {
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600"
+      }
+    });
+  } catch (err) {
+    console.error("Weather API error:", err);
+    return NextResponse.json(
+      { error: "Meteoroloji veri servisine şu an ulaşılamıyor." },
+      { status: 503 }
+    );
+  }
 }

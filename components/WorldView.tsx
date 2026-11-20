@@ -4,11 +4,15 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
+  ArrowDownRight,
+  ArrowRight,
   ArrowUpRight,
   Droplets,
   Gauge,
   Globe,
   MapPin,
+  Radio,
+  RefreshCw,
   Star,
   Wind
 } from "lucide-react";
@@ -20,12 +24,13 @@ import {
   windDirectionToCompass
 } from "@/lib/weather";
 import type { GeoLocation, WeatherBundle } from "@/lib/weather-types";
+import LiveRadarMap from "./LiveRadarMap";
 
 const GlobeScene = dynamic(() => import("./GlobeScene"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full w-full items-center justify-center text-sm text-neon-white/60">
-      3D Dünya Küresi hazırlanıyor...
+    <div className="flex h-full w-full items-center justify-center bg-[#05080f] text-xs font-mono text-ink-muted">
+      3D Dünya Küresi yükleniyor...
     </div>
   )
 });
@@ -41,18 +46,21 @@ export default function WorldView() {
     unit
   } = useWeather();
 
+  const [viewMode, setViewMode] = useState<"radar" | "globe">("radar");
   const [selectedLoc, setSelectedLoc] = useState<GeoLocation>(activeLocation);
-  const [pointBundle, setPointBundle] = useState<WeatherBundle>(bundle);
+  const [pointBundle, setPointBundle] = useState<WeatherBundle | null>(bundle);
   const [fetching, setFetching] = useState(false);
+  const [pointError, setPointError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedLoc(activeLocation);
-    setPointBundle(bundle);
+    if (bundle) setPointBundle(bundle);
   }, [activeLocation, bundle]);
 
   const fetchPoint = useCallback(async (loc: GeoLocation) => {
     setSelectedLoc(loc);
     setFetching(true);
+    setPointError(null);
     try {
       const qs = new URLSearchParams({
         lat: String(loc.lat),
@@ -61,13 +69,19 @@ export default function WorldView() {
         country: loc.country ?? ""
       });
       const res = await fetch(`/api/weather?${qs.toString()}`);
-      if (res.ok) {
-        const data: WeatherBundle = await res.json();
-        setPointBundle({
-          ...data,
-          location: { ...data.location, name: loc.name, country: loc.country }
-        });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
+      const data: WeatherBundle = await res.json();
+      setPointBundle({
+        ...data,
+        location: { ...data.location, name: loc.name, country: loc.country }
+      });
+    } catch (e) {
+      setPointError(
+        e instanceof Error ? e.message : "Seçili koordinat için veri alınamadı."
+      );
     } finally {
       setFetching(false);
     }
@@ -88,11 +102,11 @@ export default function WorldView() {
           country = geo.country || country;
         }
       } catch {
-        // fallback koordinat
+        // koordinat adı korunur
       }
 
       const loc: GeoLocation = {
-        id: `globe_${lat.toFixed(2)}_${lon.toFixed(2)}`,
+        id: `coord_${lat.toFixed(2)}_${lon.toFixed(2)}`,
         name,
         country,
         lat,
@@ -107,154 +121,245 @@ export default function WorldView() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
+      {/* Üst Başlık + Görünüm Geçişi */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.22em] text-neon-cyan">
-            <Globe className="h-4 w-4" />
-            İnteraktif 3D Gezegen & Jet Stream
+          <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-muted">
+            Canlı Radar & Küresel Gözlem
           </p>
-          <h1 className="mt-1 font-display text-3xl font-bold text-neon-white sm:text-4xl">
-            3D Dünya Hava Küresi
+          <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-ink-primary">
+            Radar & Dünya Küresi
           </h1>
-          <p className="mt-1 text-sm text-neon-white/65">
-            Küreyi çevir, yakınlaştır ve yeryüzünde herhangi bir noktaya tıklayarak canlı atmosfer verisini ölç.
+          <p className="mt-1 text-sm text-ink-secondary">
+            Canlı yağış radarını oynat veya harita/küre üzerinde herhangi bir noktaya tıklayıp anlık ölçüm al.
           </p>
         </div>
 
-        {/* Hızlı Şehir Pin Çubuğu */}
-        <div className="flex flex-wrap gap-1.5">
-          {GLOBE_CITIES.map((city) => {
-            const active =
-              Math.abs(selectedLoc.lat - city.lat) < 0.2 &&
-              Math.abs(selectedLoc.lon - city.lon) < 0.2;
-            return (
-              <button
-                key={city.id}
-                type="button"
-                onClick={() => void fetchPoint(city)}
-                className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  active
-                    ? "border-neon-orange/70 bg-neon-orange/20 text-neon-white"
-                    : "border-white/10 bg-white/5 text-neon-white/75 hover:bg-white/10 hover:text-neon-white"
-                }`}
-              >
-                {city.name}
-              </button>
-            );
-          })}
+        {/* Mod Seçici */}
+        <div
+          className="inline-flex rounded-xl border border-white/10 bg-obsidian-900/90 p-1"
+          role="tablist"
+          aria-label="Harita görünüm modu"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "radar"}
+            onClick={() => setViewMode("radar")}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition-colors ${
+              viewMode === "radar"
+                ? "bg-white/15 text-ink-primary"
+                : "text-ink-secondary hover:text-ink-primary"
+            }`}
+          >
+            <Radio className="h-3.5 w-3.5 text-signal-sky" />
+            <span>Canlı Yağış Radarı</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "globe"}
+            onClick={() => setViewMode("globe")}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition-colors ${
+              viewMode === "globe"
+                ? "bg-white/15 text-ink-primary"
+                : "text-ink-secondary hover:text-ink-primary"
+            }`}
+          >
+            <Globe className="h-3.5 w-3.5 text-signal-sky" />
+            <span>3D Dünya Küresi</span>
+          </button>
         </div>
       </div>
 
-      {/* 3D Küre + Sağ Telemetri Paneli */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,0.85fr)]">
-        <div className="glass-panel relative h-[480px] overflow-hidden sm:h-[580px]">
-          <GlobeScene
-            selectedLat={selectedLoc.lat}
-            selectedLon={selectedLoc.lon}
-            presetCities={GLOBE_CITIES}
-            onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
-            onPickCity={(city) => void fetchPoint(city)}
-          />
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/15 bg-night-950/75 px-3 py-2 text-xs text-neon-white/75 backdrop-blur-md">
-            Sürükle: Döndür · Tekerlek: Yakınlaştır · Tıkla: Canlı Hava Ölç
-          </div>
+      {/* Hızlı İstasyon Şeridi */}
+      <div className="flex flex-wrap gap-1.5">
+        {GLOBE_CITIES.map((city) => {
+          const active =
+            Math.abs(selectedLoc.lat - city.lat) < 0.2 &&
+            Math.abs(selectedLoc.lon - city.lon) < 0.2;
+          return (
+            <button
+              key={city.id}
+              type="button"
+              onClick={() => void fetchPoint(city)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                active
+                  ? "border-white/25 bg-white/15 text-ink-primary"
+                  : "border-white/[0.08] bg-white/[0.03] text-ink-secondary hover:bg-white/[0.07] hover:text-ink-primary"
+              }`}
+            >
+              {city.name}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Ana Harita / Küre + Sağ Ölçüm Kartı */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.85fr)]">
+        <div className="surface-panel relative h-[480px] overflow-hidden sm:h-[580px]">
+          {viewMode === "radar" ? (
+            <LiveRadarMap
+              selectedLat={selectedLoc.lat}
+              selectedLon={selectedLoc.lon}
+              presetCities={GLOBE_CITIES}
+              onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
+              onPickCity={(city) => void fetchPoint(city)}
+            />
+          ) : (
+            <GlobeScene
+              selectedLat={selectedLoc.lat}
+              selectedLon={selectedLoc.lon}
+              presetCities={GLOBE_CITIES}
+              onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
+              onPickCity={(city) => void fetchPoint(city)}
+            />
+          )}
         </div>
 
-        {/* Sağ Seçili Nokta Paneli */}
-        <div className="glass-panel flex flex-col justify-between p-6 space-y-6">
+        {/* Sağ Seçili Nokta Telemetri Kartı */}
+        <div className="surface-panel flex flex-col justify-between p-5 sm:p-6 space-y-5">
           <div className="space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="flex items-center gap-1.5 text-xs font-mono text-neon-cyan">
-                  <MapPin className="h-3.5 w-3.5 text-neon-orange" />
-                  {selectedLoc.lat.toFixed(2)}°, {selectedLoc.lon.toFixed(2)}°
+                <p className="flex items-center gap-1.5 font-mono text-xs text-ink-muted tabular">
+                  <MapPin className="h-3.5 w-3.5 text-signal-sky" />
+                  {selectedLoc.lat.toFixed(3)}°, {selectedLoc.lon.toFixed(3)}°
                 </p>
-                <h2 className="mt-1 font-display text-2xl font-bold text-neon-white">
+                <h2 className="mt-1 font-display text-2xl font-semibold text-ink-primary">
                   {selectedLoc.name}
                 </h2>
                 {selectedLoc.country && (
-                  <p className="text-xs text-neon-white/60">{selectedLoc.country}</p>
+                  <p className="text-xs text-ink-secondary">{selectedLoc.country}</p>
                 )}
               </div>
               {fetching && (
-                <span className="rounded-lg border border-neon-cyan/40 bg-neon-cyan/15 px-2.5 py-1 text-xs text-neon-cyan">
+                <span className="rounded-md border border-white/10 bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-ink-secondary">
                   Ölçülüyor...
                 </span>
               )}
             </div>
 
-            <div className="flex items-baseline gap-3 border-y border-white/10 py-4">
-              <span className="font-display text-6xl font-black text-transparent bg-gradient-to-br from-white to-neon-orange bg-clip-text">
-                {formatTemperature(pointBundle.current.temperature, unit)}
-              </span>
-              <div>
-                <p className="text-base font-semibold text-neon-white">
-                  {pointBundle.current.condition}
-                </p>
-                <p className="text-xs text-neon-white/60">
-                  Hissedilen{" "}
-                  {formatTemperature(pointBundle.current.apparentTemperature, unit)}
-                </p>
+            {pointError && (
+              <div className="rounded-xl border border-signal-rose/35 bg-signal-rose/10 p-3 text-xs text-ink-primary flex items-center justify-between gap-2">
+                <span>{pointError}</span>
+                <button
+                  type="button"
+                  onClick={() => void fetchPoint(selectedLoc)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[11px] hover:bg-white/10"
+                >
+                  <RefreshCw className="h-3 w-3" /> Tekrar
+                </button>
               </div>
-            </div>
+            )}
 
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="glass-card p-3 space-y-1">
-                <span className="flex items-center gap-1.5 text-neon-white/55">
-                  <Wind className="h-3.5 w-3.5 text-neon-cyan" /> Rüzgar
-                </span>
-                <p className="font-mono text-base font-semibold text-neon-white">
-                  {formatWindSpeed(pointBundle.current.windSpeed, unit)}
-                </p>
-                <p className="text-neon-white/55">
-                  Yön: {windDirectionToCompass(pointBundle.current.windDirection)}
-                </p>
-              </div>
+            {pointBundle ? (
+              <>
+                <div className="flex items-baseline justify-between gap-3 border-y border-white/[0.08] py-4">
+                  <div className="flex items-baseline gap-3">
+                    <span className="font-display text-5xl font-semibold tracking-tight text-ink-primary tabular">
+                      {formatTemperature(pointBundle.current.temperature, unit)}
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium text-ink-primary">
+                        {pointBundle.current.condition}
+                      </p>
+                      <p className="text-xs text-ink-muted tabular">
+                        Hissedilen{" "}
+                        {formatTemperature(pointBundle.current.apparentTemperature, unit)}
+                      </p>
+                    </div>
+                  </div>
+                  {pointBundle.current.temp850hPa !== null && (
+                    <div className="text-right font-mono text-xs tabular">
+                      <span className="block text-[10px] uppercase text-ink-muted">
+                        850 hPa
+                      </span>
+                      <span className="font-semibold text-signal-sky">
+                        {pointBundle.current.temp850hPa > 0
+                          ? `+${pointBundle.current.temp850hPa}°`
+                          : `${pointBundle.current.temp850hPa}°`}
+                      </span>
+                    </div>
+                  )}
+                </div>
 
-              <div className="glass-card p-3 space-y-1">
-                <span className="flex items-center gap-1.5 text-neon-white/55">
-                  <Droplets className="h-3.5 w-3.5 text-neon-cyan" /> Nem
-                </span>
-                <p className="font-mono text-base font-semibold text-neon-white">
-                  %{pointBundle.current.humidity}
-                </p>
-                <p className="text-neon-white/55">
-                  Bulut %{pointBundle.current.cloudCover}
-                </p>
-              </div>
+                <div className="grid grid-cols-2 gap-2.5 text-xs">
+                  <div className="surface-tile p-3 space-y-1">
+                    <span className="flex items-center gap-1.5 text-ink-muted">
+                      <Wind className="h-3.5 w-3.5 text-signal-sky" /> Rüzgar
+                    </span>
+                    <p className="font-mono text-base font-semibold text-ink-primary tabular">
+                      {formatWindSpeed(pointBundle.current.windSpeed, unit)}
+                    </p>
+                    <p className="text-ink-muted tabular">
+                      {windDirectionToCompass(pointBundle.current.windDirection)} · Hamle{" "}
+                      {formatWindSpeed(pointBundle.current.windGusts, unit)}
+                    </p>
+                  </div>
 
-              <div className="glass-card p-3 space-y-1">
-                <span className="flex items-center gap-1.5 text-neon-white/55">
-                  <Gauge className="h-3.5 w-3.5 text-neon-violet" /> Basınç
-                </span>
-                <p className="font-mono text-base font-semibold text-neon-white">
-                  {pointBundle.current.pressure} hPa
-                </p>
-                <p className="text-neon-white/55">
-                  Görüş {pointBundle.current.visibilityKm} km
-                </p>
-              </div>
+                  <div className="surface-tile p-3 space-y-1">
+                    <span className="flex items-center gap-1.5 text-ink-muted">
+                      <Droplets className="h-3.5 w-3.5 text-signal-sky" /> Nem & Çiy
+                    </span>
+                    <p className="font-mono text-base font-semibold text-ink-primary tabular">
+                      %{pointBundle.current.humidity}
+                    </p>
+                    <p className="text-ink-muted tabular">
+                      Td {formatTemperature(pointBundle.current.dewPoint, unit)} · Bulut %
+                      {pointBundle.current.cloudCover}
+                    </p>
+                  </div>
 
-              <div className="glass-card p-3 space-y-1">
-                <span className="text-neon-white/55">Hava Kalitesi</span>
-                <p className="font-mono text-base font-semibold text-neon-white">
-                  AQI {pointBundle.airQuality.europeanAqi}
-                </p>
-                <p className="text-neon-white/55">{pointBundle.airQuality.label}</p>
+                  <div className="surface-tile p-3 space-y-1">
+                    <span className="flex items-center gap-1.5 text-ink-muted">
+                      <Gauge className="h-3.5 w-3.5 text-ink-secondary" /> Basınç
+                    </span>
+                    <p className="flex items-center gap-1 font-mono text-base font-semibold text-ink-primary tabular">
+                      <span>{pointBundle.current.pressure} hPa</span>
+                      {pointBundle.current.pressureTrend === "yükseliyor" ? (
+                        <ArrowUpRight className="h-3.5 w-3.5 text-signal-emerald" />
+                      ) : pointBundle.current.pressureTrend === "düşüyor" ? (
+                        <ArrowDownRight className="h-3.5 w-3.5 text-signal-amber" />
+                      ) : (
+                        <ArrowRight className="h-3.5 w-3.5 text-ink-muted" />
+                      )}
+                    </p>
+                    <p className="text-ink-muted tabular">
+                      3s: {pointBundle.current.pressureDelta3h > 0 ? "+" : ""}
+                      {pointBundle.current.pressureDelta3h} hPa · Görüş{" "}
+                      {pointBundle.current.visibilityKm} km
+                    </p>
+                  </div>
+
+                  <div className="surface-tile p-3 space-y-1">
+                    <span className="text-ink-muted">Hava Kalitesi</span>
+                    <p className="font-mono text-base font-semibold text-ink-primary tabular">
+                      EAQI {pointBundle.airQuality.europeanAqi}
+                    </p>
+                    <p className="text-ink-muted tabular">
+                      {pointBundle.airQuality.label} · PM2.5 {pointBundle.airQuality.pm25}
+                    </p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="surface-tile p-6 text-center text-xs text-ink-muted">
+                Ölçüm verisi bekleniyor...
               </div>
-            </div>
+            )}
           </div>
 
-          <div className="flex flex-col gap-2.5 sm:flex-row">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
               onClick={() => {
                 setActiveLocation(selectedLoc);
                 router.push("/");
               }}
-              className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-neon-orange to-amber-500 px-4 py-3 text-sm font-semibold text-night-950 hover:brightness-110 transition"
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-ink-primary px-4 py-2.5 text-sm font-medium text-obsidian-950 hover:bg-white transition-colors"
             >
-              <span>3D Sahnede Aç</span>
+              <span>Hava Durumunda Aç</span>
               <ArrowUpRight className="h-4 w-4" />
             </button>
 
@@ -262,10 +367,12 @@ export default function WorldView() {
               type="button"
               onClick={() => addFavorite(selectedLoc)}
               disabled={fav}
-              className="flex items-center justify-center gap-2 rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-medium text-neon-white hover:bg-white/10 disabled:opacity-60 transition"
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-ink-primary hover:bg-white/[0.08] disabled:opacity-50 transition-colors"
             >
-              <Star className={`h-4 w-4 ${fav ? "fill-amber-300 text-amber-300" : ""}`} />
-              <span>{fav ? "Panoda" : "Panoma Ekle"}</span>
+              <Star
+                className={`h-4 w-4 ${fav ? "fill-signal-amber text-signal-amber" : "text-ink-secondary"}`}
+              />
+              <span>{fav ? "İstasyonlarda" : "İstasyonlara Ekle"}</span>
             </button>
           </div>
         </div>
