@@ -1,14 +1,19 @@
 import type { SoundingLevel } from "./weather-types";
 
-// Fiziksel sabitler
-const R_D = 287.05; // J/(kg·K)
-const C_P = 1004.0; // J/(kg·K)
-const L_V = 2.5e6; // J/kg
+// WMO / Bolton (1980) fiziksel sabitler
+const R_D = 287.05; // J/(kg·K) kuru hava gaz sabiti
+const C_P = 1004.0; // J/(kg·K) sabit basınçta özgül ısı
+const L_V = 2.501e6; // J/kg 0°C buharlaşma gizli ısısı
+const G_0 = 9.80665; // m/s² standart yerçekimi
 const KAPPA = R_D / C_P; // ~0.2859
-const EPSILON = 0.622;
+const EPSILON = 0.622; // Mw / Md
 
+/**
+ * Bolton (1980, Monthly Weather Review, Vol. 108, Eq. 10)
+ * Doygunluk buhar basıncı e_s(T) [hPa]. -30°C..+35°C aralığında <%0.1 hata.
+ */
 export function saturationVaporPressure(tempC: number): number {
-  return 6.112 * Math.exp((17.502 * tempC) / (240.97 + tempC));
+  return 6.112 * Math.exp((17.67 * tempC) / (tempC + 243.5));
 }
 
 export function vaporPressureFromRH(tempC: number, rhPercent: number): number {
@@ -16,10 +21,13 @@ export function vaporPressureFromRH(tempC: number, rhPercent: number): number {
   return saturationVaporPressure(tempC) * (rh / 100);
 }
 
+/**
+ * Bolton (1980) Eq. 10 tam tersi: sıcaklık ve bağıl nemden çiy noktası [°C].
+ */
 export function dewPointMagnus(tempC: number, rhPercent: number): number {
   const rh = Math.max(1, Math.min(100, rhPercent));
-  const beta = 17.502;
-  const gamma = 240.97;
+  const beta = 17.67;
+  const gamma = 243.5;
   const lnRh = Math.log(rh / 100);
   const alpha = lnRh + (beta * tempC) / (gamma + tempC);
   return (gamma * alpha) / (beta - alpha);
@@ -46,14 +54,39 @@ export function potentialTemperatureK(tempC: number, pressureHpa: number): numbe
   return tK * Math.pow(1000 / Math.max(50, pressureHpa), KAPPA);
 }
 
+/**
+ * Bolton (1980, Eq. 22) — Yoğunlaşma Seviyesi Sıcaklığı T_LCL [K] (< 0.1 K hata)
+ */
+export function computeLclTempK(tempC: number, dewPointC: number): number {
+  const tK = tempC + 273.15;
+  const tdK = Math.min(dewPointC, tempC) + 273.15;
+  return 1 / (1 / Math.max(150, tdK - 56) + Math.log(tK / tdK) / 800) + 56;
+}
+
+/**
+ * Bolton (1980, Monthly Weather Review, Eq. 43) — Eşdeğer Potansiyel Sıcaklık θ_e [K].
+ * Tam integral çözümüyle < 0.2 K (tipik 0.02 K) tutarlılık sağlar.
+ */
 export function equivalentPotentialTemperatureK(
   tempC: number,
   pressureHpa: number,
-  w: number
+  w: number,
+  dewPointC?: number
 ): number {
-  const theta = potentialTemperatureK(tempC, pressureHpa);
   const tK = tempC + 273.15;
-  return theta * Math.exp((L_V * w) / (C_P * Math.max(180, tK)));
+  const e = (w * pressureHpa) / (EPSILON + w);
+
+  let tdC = dewPointC;
+  if (tdC === undefined) {
+    const clampedE = Math.max(0.05, e);
+    const lnRatio = Math.log(clampedE / 6.112);
+    tdC = Math.min(tempC, (243.5 * lnRatio) / (17.67 - lnRatio));
+  }
+
+  const tLclK = computeLclTempK(tempC, tdC);
+  const thetaM =
+    tK * Math.pow(1000 / Math.max(50, pressureHpa), 0.2854 * (1 - 0.28 * w));
+  return thetaM * Math.exp(w * (1 + 0.81 * w) * (3376 / Math.max(180, tLclK) - 2.54));
 }
 
 function moistAdiabaticDtdP(tempC: number, pressureHpa: number): number {
@@ -65,25 +98,33 @@ function moistAdiabaticDtdP(tempC: number, pressureHpa: number): number {
   return numerator / (Math.max(50, pressureHpa) * denominator);
 }
 
+/**
+ * Bolton (1980, Eq. 22) + Hipsometrik denklem ile LCL basıncı, sıcaklığı ve yüksekliği.
+ */
 export function computeLCL(
   surfaceTempC: number,
   surfaceDewPointC: number,
   surfacePressureHpa: number
 ): { lclHeightM: number; lclTempC: number; lclPressureHpa: number } {
-  const spread = Math.max(0, surfaceTempC - surfaceDewPointC);
-  const lclHeightM = Math.max(0, 125 * spread);
   const tK = surfaceTempC + 273.15;
-  const tdK = Math.min(surfaceDewPointC, surfaceTempC) + 273.15;
-  const lclTempK =
-    1 / (1 / Math.max(150, tdK - 56) + Math.log(tK / tdK) / 800) + 56;
+  const lclTempK = computeLclTempK(surfaceTempC, surfaceDewPointC);
   const lclTempC = Math.min(surfaceTempC, lclTempK - 273.15);
-  const lclPressureHpa =
-    surfacePressureHpa * Math.pow(lclTempK / tK, 1 / KAPPA);
+  const lclPressureHpa = Math.max(
+    300,
+    Math.min(surfacePressureHpa, surfacePressureHpa * Math.pow(lclTempK / tK, 1 / KAPPA))
+  );
+
+  // Hipsometrik yükseklik: Z_LCL = (R_d * T_mean / g) * ln(P_sfc / P_LCL)
+  const tMeanK = 0.5 * (tK + lclTempK);
+  const lclHeightM = Math.max(
+    0,
+    ((R_D * tMeanK) / G_0) * Math.log(surfacePressureHpa / Math.max(1, lclPressureHpa))
+  );
 
   return {
     lclHeightM,
     lclTempC,
-    lclPressureHpa: Math.max(300, Math.min(surfacePressureHpa, lclPressureHpa))
+    lclPressureHpa
   };
 }
 
@@ -147,7 +188,8 @@ export type CapeAnalysisResult = {
   totalTotals: number;
   sweatIndex: number;
   bulkShear06Kt: number;
-  lapseRate700500: number; // °C/km
+  lapseRate700500: number; // °C/km (gerçek jeopotansiyel yükseklik farkından)
+  thickness5001000Dam: number; // 500–1000 hPa jeopotansiyel kalınlık (dam; <=540 kar eşiği)
   surfaceDewPointC: number;
   capeRisk: RiskLevel;
   liRisk: RiskLevel;
@@ -211,12 +253,19 @@ export function classifyKIndexRisk(k: number): RiskLevel {
 function interpolateProfile(
   sortedLevels: SoundingLevel[],
   pressureHpa: number
-): { tempC: number; dewPointC: number; windSpeedKt: number; windDirection: number } {
+): {
+  tempC: number;
+  dewPointC: number;
+  altitudeM: number;
+  windSpeedKt: number;
+  windDirection: number;
+} {
   if (pressureHpa >= sortedLevels[0].pressure) {
     const first = sortedLevels[0];
     return {
       tempC: first.temperature,
       dewPointC: first.dewPoint,
+      altitudeM: first.altitudeM,
       windSpeedKt: first.windSpeedKt,
       windDirection: first.windDirection
     };
@@ -226,6 +275,7 @@ function interpolateProfile(
     return {
       tempC: last.temperature,
       dewPointC: last.dewPoint,
+      altitudeM: last.altitudeM,
       windSpeedKt: last.windSpeedKt,
       windDirection: last.windDirection
     };
@@ -241,6 +291,7 @@ function interpolateProfile(
       return {
         tempC: low.temperature + (high.temperature - low.temperature) * frac,
         dewPointC: low.dewPoint + (high.dewPoint - low.dewPoint) * frac,
+        altitudeM: low.altitudeM + (high.altitudeM - low.altitudeM) * frac,
         windSpeedKt: low.windSpeedKt + (high.windSpeedKt - low.windSpeedKt) * frac,
         windDirection: low.windDirection + (high.windDirection - low.windDirection) * frac
       };
@@ -250,6 +301,7 @@ function interpolateProfile(
   return {
     tempC: last.temperature,
     dewPointC: last.dewPoint,
+    altitudeM: last.altitudeM,
     windSpeedKt: last.windSpeedKt,
     windDirection: last.windDirection
   };
@@ -440,15 +492,21 @@ export function analyzeConvectiveProfile(
     env500.windDirection
   );
 
-  // 700-500 hPa orta troposfer lapse rate (°C / km; ~2.55 km fark)
-  const lapseRate700500 = Number(((env700.tempC - env500.tempC) / 2.55).toFixed(1));
+  // Gerçek dinamik jeopotansiyel yükseklik farkından 700–500 hPa lapse rate (°C/km)
+  const dz700500Km = Math.max(1.5, (env500.altitudeM - env700.altitudeM) / 1000);
+  const lapseRate700500 = Number(((env700.tempC - env500.tempC) / dz700500Km).toFixed(1));
+
+  // 500–1000 hPa jeopotansiyel kalınlık (dam; <=540 dam klasik kar sınırı)
+  const thickness5001000Dam = Number(
+    ((env500.altitudeM - env1000.altitudeM) / 10).toFixed(1)
+  );
 
   const levels: ComputedLevelMetrics[] = sortedLevels.map((lvl) => {
     const e = saturationVaporPressure(Math.min(lvl.dewPoint, lvl.temperature));
     const w = mixingRatio(e, lvl.pressure);
     return {
       pressure: lvl.pressure,
-      altitudeM: lvl.altitudeM,
+      altitudeM: Math.round(lvl.altitudeM),
       temperature: Number(lvl.temperature.toFixed(1)),
       dewPoint: Number(lvl.dewPoint.toFixed(1)),
       humidity: Math.round(relativeHumidityFromDewPoint(lvl.temperature, lvl.dewPoint)),
@@ -458,7 +516,12 @@ export function analyzeConvectiveProfile(
       virtualTempK: Number(virtualTemperatureK(lvl.temperature, w).toFixed(2)),
       potentialTempK: Number(potentialTemperatureK(lvl.temperature, lvl.pressure).toFixed(1)),
       equivPotentialTempK: Number(
-        equivalentPotentialTemperatureK(lvl.temperature, lvl.pressure, w).toFixed(1)
+        equivalentPotentialTemperatureK(
+          lvl.temperature,
+          lvl.pressure,
+          w,
+          lvl.dewPoint
+        ).toFixed(1)
       )
     };
   });
@@ -479,6 +542,7 @@ export function analyzeConvectiveProfile(
     sweatIndex: Math.round(sweatIndex),
     bulkShear06Kt,
     lapseRate700500,
+    thickness5001000Dam,
     surfaceDewPointC: Number(surfaceDewPointC.toFixed(1)),
     capeRisk: classifyCapeRisk(roundedCape),
     liRisk: classifyLiftedIndexRisk(liftedIndex),

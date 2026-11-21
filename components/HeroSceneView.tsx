@@ -17,6 +17,7 @@ import {
   Eye,
   Gauge,
   Layers,
+  Radio,
   RefreshCw,
   ShieldCheck,
   Star,
@@ -27,10 +28,13 @@ import {
 } from "lucide-react";
 import { useWeather } from "@/context/WeatherContext";
 import {
+  classifyUvIndex,
   formatTemperature,
   formatWindSpeed,
-  windDirectionToCompass
+  windDirectionToCompass,
+  windKmhToBeaufort
 } from "@/lib/weather";
+import { FIVE_MODEL_META } from "@/lib/metar-verify";
 import { analyzeConvectiveProfile } from "@/lib/thermo-cape";
 import TimeScrubber from "./TimeScrubber";
 import HourlyCharts from "./HourlyCharts";
@@ -288,6 +292,7 @@ export default function HeroSceneView() {
         weatherCode: activeHour.weatherCode,
         temp850hPa: activeHour.temp850hPa,
         freezingLevelM: activeHour.freezingLevelM,
+        precipConsensus: activeHour.precipConsensus,
         timeLabel: `${activeHour.dayLabel} · ${activeHour.hourLabel}`
       }
     : {
@@ -306,8 +311,13 @@ export default function HeroSceneView() {
         weatherCode: bundle.current.weatherCode,
         temp850hPa: bundle.current.temp850hPa,
         freezingLevelM: bundle.nativeConvective.freezingLevelM,
+        precipConsensus: bundle.current.precipConsensus,
         timeLabel: `Gözlem · ${bundle.current.time.slice(11, 16)}`
       };
+
+  const displayBeaufort = windKmhToBeaufort(display.windSpeed);
+  const displayUvLabel = classifyUvIndex(display.uvIndex);
+  const metarStation = bundle.hybrid?.verification?.station ?? null;
 
   const fav = isFavorite(activeLocation);
   const weekMin = Math.min(...bundle.daily.map((d) => d.tempMin));
@@ -342,7 +352,11 @@ export default function HeroSceneView() {
                   className="inline-flex items-center gap-1.5 rounded-lg border border-signal-sky/30 bg-signal-sky/10 px-2.5 py-1 font-mono text-signal-sky hover:bg-signal-sky/15 transition-colors backdrop-blur-md tabular"
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  <span>Hibrit Uzlaşı %{bundle.hybrid.confidencePct}</span>
+                  <span>
+                    {bundle.hybrid.verification.mode === "live-metar-24h"
+                      ? `METAR Doğrulamalı (${metarStation?.icaoId}) · %${bundle.hybrid.confidencePct}`
+                      : `5-Model Uzlaşı %${bundle.hybrid.confidencePct}`}
+                  </span>
                 </a>
               )}
               <button
@@ -409,7 +423,7 @@ export default function HeroSceneView() {
               </div>
             </div>
 
-            {/* Gerçek Üst Atmosfer Hızlı Satırı (850 hPa + 0°C Donma Seviyesi) */}
+            {/* Gerçek Üst Atmosfer & Yağış Uzlaşısı Hızlı Satırı */}
             <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-ink-secondary tabular">
               {display.temp850hPa !== null && (
                 <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
@@ -423,6 +437,26 @@ export default function HeroSceneView() {
                   <strong className="text-ink-primary">{display.freezingLevelM} m</strong>
                 </span>
               )}
+              {display.precipConsensus && display.precipConsensus.totalModels > 0 && (
+                <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
+                  Yağış Uzlaşısı:{" "}
+                  <strong
+                    className={
+                      display.precipConsensus.agreeingModels >= 3
+                        ? "text-signal-sky"
+                        : "text-ink-primary"
+                    }
+                  >
+                    {display.precipConsensus.agreeingModels}/{display.precipConsensus.totalModels} model
+                  </strong>
+                  {display.precipConsensus.maxMm > 0 && (
+                    <span className="text-ink-muted">
+                      {" "}
+                      ({display.precipConsensus.minMm}–{display.precipConsensus.maxMm} mm)
+                    </span>
+                  )}
+                </span>
+              )}
               {liveSoundingSummary && (
                 <Link
                   href="/lab"
@@ -432,7 +466,7 @@ export default function HeroSceneView() {
                   <strong className="text-ink-primary">
                     {bundle.nativeConvective.cape ?? liveSoundingSummary.cape} J/kg
                   </strong>{" "}
-                  · ECMWF/GFS/ICON →
+                  · 5-Model & Skew-T →
                 </Link>
               )}
             </div>
@@ -452,7 +486,7 @@ export default function HeroSceneView() {
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 tabular">
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
-                  <span>Rüzgar</span>
+                  <span>Rüzgar · Bft {displayBeaufort.scale}</span>
                   <Wind className="h-3.5 w-3.5" />
                 </div>
                 <div className="flex items-center justify-between gap-2">
@@ -479,7 +513,7 @@ export default function HeroSceneView() {
                   %{display.humidity}
                 </p>
                 <p className="text-xs text-ink-muted">
-                  Çiy {formatTemperature(display.dewPoint, unit)}
+                  Çiy {formatTemperature(display.dewPoint, unit)} · Bolton
                 </p>
               </div>
 
@@ -493,10 +527,13 @@ export default function HeroSceneView() {
                     <p className="font-mono text-lg font-semibold text-ink-primary">
                       {Math.round(display.pressure)} hPa
                     </p>
-                    <p className="flex items-center gap-1 text-[11px] text-ink-muted">
-                      {bundle.current.pressureTrend === "yükseliyor" ? (
+                    <p
+                      className="flex items-center gap-1 text-[11px] text-ink-muted"
+                      title={bundle.current.pressureTrendDetail}
+                    >
+                      {bundle.current.pressureTrend.includes("yükseliyor") ? (
                         <ArrowUpRight className="h-3.5 w-3.5 text-signal-emerald" />
-                      ) : bundle.current.pressureTrend === "düşüyor" ? (
+                      ) : bundle.current.pressureTrend.includes("düşüyor") ? (
                         <ArrowDownRight className="h-3.5 w-3.5 text-signal-amber" />
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 text-ink-muted" />
@@ -519,7 +556,9 @@ export default function HeroSceneView() {
                 <p className="font-mono text-lg font-semibold text-ink-primary">
                   %{display.cloudCover}
                 </p>
-                <p className="text-xs text-ink-muted">UV {display.uvIndex.toFixed(1)}</p>
+                <p className="text-xs text-ink-muted">
+                  UV {display.uvIndex.toFixed(1)} · {displayUvLabel}
+                </p>
               </div>
 
               <div className="surface-tile p-3 space-y-1">
@@ -547,8 +586,8 @@ export default function HeroSceneView() {
                 <p className="font-mono text-lg font-semibold text-ink-primary">
                   {bundle.airQuality.label}
                 </p>
-                <p className="text-xs text-ink-muted">
-                  PM2.5: {bundle.airQuality.pm25} µg
+                <p className="text-[11px] text-ink-muted">
+                  Baskın: {bundle.airQuality.dominantPollutant} ({bundle.airQuality.dominantValueText})
                 </p>
               </div>
             </div>
@@ -584,27 +623,30 @@ export default function HeroSceneView() {
         </div>
       </section>
 
-      {/* BÖLÜM 1.5: ÇOKLU MODEL HİBRİT SENTEZ & VERİ KAYNAKLARI */}
+      {/* BÖLÜM 1.5: GERÇEK FİZİKSEL İSTASYON (METAR) & CANLI 24s DOĞRULAMA KANIT TABLOSU */}
       {bundle.hybrid && (
         <section id="hibrit" className="scroll-mt-20 surface-panel p-5 sm:p-6 space-y-5">
+          {/* Üst Başlık & Doğrulama Modu */}
           <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.08] pb-4">
             <div>
               <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-signal-sky">
                 <Layers className="h-3.5 w-3.5" />
-                Parametre Bazlı Çoklu Model Hibrit Sentezi
+                Canlı Kanıtlı 5-Model Hibrit Doğrulama Motoru
               </p>
               <h2 className="mt-1 font-display text-lg font-semibold text-ink-primary">
-                Canlı Model Karşılaştırması & Uzlaşı Skoru
+                Fiziksel Yer İstasyonu (METAR) & 24 Saatlik Model RMSE Skor Kartı
               </h2>
               <p className="mt-0.5 text-xs text-ink-muted">
-                Her meteorolojik değişken, WMO doğrulama puanı en yüksek sayısal tahmin modellerinden ağırlıklı sentezlenir.
+                {bundle.hybrid.verification.mode === "live-metar-24h"
+                  ? `Ağırlıklar sabit tahminle değil, ${metarStation?.icaoId} istasyonundaki son 24 saatlik ${bundle.hybrid.verification.matchedHours} gerçek fiziksel ölçüme karşı Ters-RMSE² ile hesaplandı.`
+                  : "Bu koordinata 65 km içinde fiziksel ICAO METAR istasyonu bulunamadı; WMO LC-DNV ve ECMWF 2025 referans ağırlıkları şeffaf biçimde devrede."}
               </p>
             </div>
 
             <div className="flex items-center gap-4">
               <div className="text-right font-mono tabular">
                 <span className="block text-[10px] uppercase tracking-wider text-ink-muted">
-                  Anlık Model Uzlaşısı
+                  5-Model Uzlaşısı
                 </span>
                 <span className="text-xl font-semibold text-signal-emerald">
                   %{bundle.hybrid.confidencePct}
@@ -617,63 +659,174 @@ export default function HeroSceneView() {
                 href="/lab"
                 className="rounded-xl border border-white/15 bg-white/[0.05] px-3 py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
               >
-                72s Grafik →
+                5-Model 72s →
               </Link>
             </div>
           </div>
 
-          {/* 3 Model Canlı Anlık Karşılaştırma Şeridi */}
-          <div className="grid gap-3 md:grid-cols-3 font-mono text-xs tabular">
-            {[
-              {
-                key: "ecmwf" as const,
-                name: "ECMWF IFS 0.25°",
-                org: "Avrupa Merkezi · Sıcaklık & Basınç Lideri",
-                accent: "text-[#38bdf8]",
-                dot: "bg-[#38bdf8]"
-              },
-              {
-                key: "icon" as const,
-                name: "DWD ICON-EU (7 km)",
-                org: "Alman Meteoroloji · Yağış & Rüzgar Lideri",
-                accent: "text-[#10b981]",
-                dot: "bg-[#10b981]"
-              },
-              {
-                key: "gfs" as const,
-                name: "NOAA GFS",
-                org: "ABD Küresel · Konveksiyon & Üst Atmosfer",
-                accent: "text-[#f59e0b]",
-                dot: "bg-[#f59e0b]"
-              }
-            ].map((m) => {
-              const t = bundle.hybrid.currentBreakdown.temperature[m.key];
-              const p = bundle.hybrid.currentBreakdown.pressure[m.key];
-              const w = bundle.hybrid.currentBreakdown.windSpeed[m.key];
-              const t850 = bundle.hybrid.currentBreakdown.temp850hPa[m.key];
-              return (
-                <div key={m.key} className="surface-tile p-3.5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className={`flex items-center gap-1.5 font-semibold ${m.accent}`}>
-                      <span className={`h-2 w-2 rounded-full ${m.dot}`} />
-                      {m.name}
-                    </span>
-                    <span className="text-sm font-semibold text-ink-primary">
-                      {t !== null ? formatTemperature(t, unit) : "—"}
-                    </span>
-                  </div>
-                  <p className="font-sans text-[11px] text-ink-muted">{m.org}</p>
-                  <div className="flex items-center justify-between border-t border-white/[0.06] pt-2 text-[11px] text-ink-secondary">
-                    <span>{p !== null ? `${p} hPa` : "—"}</span>
-                    <span>{w !== null ? formatWindSpeed(w, unit) : "—"}</span>
-                    <span>850 hPa: {t850 !== null ? `${t850}°` : "—"}</span>
-                  </div>
+          {/* En Yakın Gerçek Fiziksel İstasyon (NOAA AviationWeather ICAO METAR) */}
+          {metarStation && (
+            <div className="rounded-xl border border-signal-emerald/25 bg-signal-emerald/[0.06] p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Radio className="h-4 w-4 text-signal-emerald" />
+                  <span className="font-mono text-xs font-semibold text-signal-emerald">
+                    GERÇEK FİZİKSEL SENSÖR · {metarStation.icaoId}
+                  </span>
+                  <span className="text-xs text-ink-primary font-medium">
+                    {metarStation.stationName}
+                  </span>
                 </div>
-              );
-            })}
+                <span className="font-mono text-[11px] text-ink-secondary tabular">
+                  Mesafe {metarStation.distanceKm} km · Rakım {metarStation.elevationM} m ·{" "}
+                  {metarStation.ageMinutes} dk önce
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 font-mono text-xs tabular">
+                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
+                  <span className="text-[10px] text-ink-muted">Termometre</span>
+                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
+                    {metarStation.tempC !== null
+                      ? formatTemperature(metarStation.tempC, unit)
+                      : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
+                  <span className="text-[10px] text-ink-muted">Çiy Sensörü</span>
+                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
+                    {metarStation.dewPointC !== null
+                      ? formatTemperature(metarStation.dewPointC, unit)
+                      : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
+                  <span className="text-[10px] text-ink-muted">QNH Barometre</span>
+                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
+                    {metarStation.qnhHpa !== null ? `${metarStation.qnhHpa} hPa` : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
+                  <span className="text-[10px] text-ink-muted">Anemometre</span>
+                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
+                    {metarStation.windSpeedKmh !== null
+                      ? `${formatWindSpeed(metarStation.windSpeedKmh, unit)}${
+                          metarStation.windDirectionDeg !== null
+                            ? ` ${windDirectionToCompass(metarStation.windDirectionDeg)}`
+                            : ""
+                        }`
+                      : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2 col-span-2 sm:col-span-1">
+                  <span className="text-[10px] text-ink-muted">Görüş Sensörü</span>
+                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
+                    {metarStation.visibilityKm !== null
+                      ? `${metarStation.visibilityKm} km`
+                      : "—"}
+                  </p>
+                </div>
+              </div>
+
+              {metarStation.rawOb && (
+                <p className="truncate rounded-md bg-obsidian-950/75 px-2.5 py-1.5 font-mono text-[11px] text-ink-muted">
+                  {metarStation.rawOb}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* 5 Tier-1 Model Canlı 24s RMSE & Dinamik Ağırlık Kanıt Tablosu */}
+          <div className="overflow-x-auto rounded-xl border border-white/[0.08] bg-obsidian-950/55">
+            <table className="w-full min-w-[780px] text-left font-mono text-xs tabular">
+              <thead>
+                <tr className="border-b border-white/[0.08] text-[11px] text-ink-muted">
+                  <th className="px-3.5 py-2.5 font-medium">Model (Çözünürlük)</th>
+                  <th className="px-2.5 py-2.5 font-medium">Anlık T</th>
+                  <th className="px-2.5 py-2.5 font-medium">MSLP</th>
+                  <th className="px-2.5 py-2.5 font-medium">Rüzgar</th>
+                  <th className="px-2.5 py-2.5 font-medium">850 hPa</th>
+                  <th className="px-2.5 py-2.5 font-medium">24s T RMSE</th>
+                  <th className="px-2.5 py-2.5 font-medium">24s P RMSE</th>
+                  <th className="px-2.5 py-2.5 font-medium">24s W RMSE</th>
+                  <th className="px-3.5 py-2.5 font-medium text-right">
+                    Aktif Ağırlık (T / P / W)
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.06]">
+                {bundle.hybrid.verification.rows.map((row) => {
+                  const meta = FIVE_MODEL_META[row.modelKey];
+                  const tNow = bundle.hybrid.currentBreakdown.temperature[row.modelKey];
+                  const pNowVal = bundle.hybrid.currentBreakdown.pressure[row.modelKey];
+                  const wNow = bundle.hybrid.currentBreakdown.windSpeed[row.modelKey];
+                  const t850Now = bundle.hybrid.currentBreakdown.temp850hPa[row.modelKey];
+                  const winT = bundle.hybrid.verification.winners.temperature === row.modelKey;
+                  const winP = bundle.hybrid.verification.winners.pressure === row.modelKey;
+                  const winW = bundle.hybrid.verification.winners.wind === row.modelKey;
+
+                  return (
+                    <tr key={row.modelKey} className="hover:bg-white/[0.025]">
+                      <td className="px-3.5 py-2.5">
+                        <span className="flex items-center gap-2 font-semibold text-ink-primary">
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ backgroundColor: meta.color }}
+                          />
+                          <span>{row.label}</span>
+                          <span className="text-[10px] font-normal text-ink-muted">
+                            {row.resolution}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="px-2.5 py-2.5 text-ink-primary">
+                        {tNow !== null ? formatTemperature(tNow, unit) : "—"}
+                      </td>
+                      <td className="px-2.5 py-2.5 text-ink-secondary">
+                        {pNowVal !== null ? `${pNowVal}` : "—"}
+                      </td>
+                      <td className="px-2.5 py-2.5 text-ink-secondary">
+                        {wNow !== null ? formatWindSpeed(wNow, unit) : "—"}
+                      </td>
+                      <td className="px-2.5 py-2.5 text-signal-sky">
+                        {t850Now !== null ? `${t850Now}°` : "—"}
+                      </td>
+                      <td
+                        className={`px-2.5 py-2.5 ${
+                          winT ? "font-semibold text-signal-emerald" : "text-ink-secondary"
+                        }`}
+                      >
+                        {row.tempRmseC !== null ? `${row.tempRmseC}°C` : "—"}
+                        {winT && <span className="ml-1 text-[10px]">#1</span>}
+                      </td>
+                      <td
+                        className={`px-2.5 py-2.5 ${
+                          winP ? "font-semibold text-signal-emerald" : "text-ink-secondary"
+                        }`}
+                      >
+                        {row.pressureRmseHpa !== null ? `${row.pressureRmseHpa} hPa` : "—"}
+                        {winP && <span className="ml-1 text-[10px]">#1</span>}
+                      </td>
+                      <td
+                        className={`px-2.5 py-2.5 ${
+                          winW ? "font-semibold text-signal-emerald" : "text-ink-secondary"
+                        }`}
+                      >
+                        {row.windRmseKmh !== null ? `${row.windRmseKmh} km/s` : "—"}
+                        {winW && <span className="ml-1 text-[10px]">#1</span>}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-right text-ink-secondary">
+                        %{row.weightsPct.temperature} / %{row.weightsPct.pressure} / %
+                        {row.weightsPct.wind}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
-          {/* Parametre Bazlı Model Yönlendirme Matrisi */}
+          {/* Parametre Bazlı Bilimsel Kaynak & Standart Matrisi */}
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 text-xs">
             {bundle.hybrid.attributions.map((item) => (
               <div
@@ -688,6 +841,9 @@ export default function HeroSceneView() {
                 </div>
                 <p className="font-mono text-[10px] text-ink-secondary tabular">
                   {item.weightsLabel}
+                </p>
+                <p className="font-mono text-[10px] text-signal-emerald/90">
+                  {item.standardRef}
                 </p>
                 <p className="text-[11px] text-ink-muted leading-relaxed">
                   {item.reason}

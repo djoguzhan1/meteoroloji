@@ -317,9 +317,9 @@ export default function WorldView() {
                     </span>
                     <p className="flex items-center gap-1 font-mono text-base font-semibold text-ink-primary tabular">
                       <span>{pointBundle.current.pressure} hPa</span>
-                      {pointBundle.current.pressureTrend === "yükseliyor" ? (
+                      {pointBundle.current.pressureTrend.includes("yükseliyor") ? (
                         <ArrowUpRight className="h-3.5 w-3.5 text-signal-emerald" />
-                      ) : pointBundle.current.pressureTrend === "düşüyor" ? (
+                      ) : pointBundle.current.pressureTrend.includes("düşüyor") ? (
                         <ArrowDownRight className="h-3.5 w-3.5 text-signal-amber" />
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 text-ink-muted" />

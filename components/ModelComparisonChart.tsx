@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { FIVE_MODEL_KEYS, FIVE_MODEL_META } from "@/lib/metar-verify";
 import type {
+  FiveModelKey,
   GeoLocation,
   ModelSeriesPoint,
   MultiModelBundle,
@@ -17,13 +19,13 @@ const TAB_CONFIG: Record<
 > = {
   temp2m: {
     label: "2m Sıcaklık",
-    subtitle: "Yüzey hava sıcaklığı karşılaştırması",
+    subtitle: "5 Tier-1 model yüzey hava sıcaklığı karşılaştırması",
     unitMetric: "°C",
     unitImperial: "°F"
   },
   temp850: {
     label: "850 hPa",
-    subtitle: "~1500m üst atmosfer sıcaklığı (kar / soğuk cephe takibi)",
+    subtitle: "~1500m üst atmosfer sıcaklığı (soğuk cephe & kar sınırı takibi)",
     unitMetric: "°C",
     unitImperial: "°C"
   },
@@ -50,9 +52,7 @@ function convertValue(val: number | null, tab: MetricTab, unit: UnitSystem): num
   return Number(val.toFixed(1));
 }
 
-function buildLinePath(
-  points: Array<{ x: number; y: number | null }>
-): string {
+function buildLinePath(points: Array<{ x: number; y: number | null }>): string {
   let d = "";
   let open = false;
   for (const pt of points) {
@@ -78,6 +78,21 @@ export default function ModelComparisonChart({
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<MetricTab>("temp2m");
   const [hoverIdx, setHoverIdx] = useState<number>(0);
+  const [visibleModels, setVisibleModels] = useState<Record<FiveModelKey, boolean>>({
+    ecmwfIfs: true,
+    ecmwfAifs: true,
+    icon: true,
+    ukmo: true,
+    gfs: true
+  });
+
+  const toggleModel = (k: FiveModelKey) => {
+    setVisibleModels((prev) => {
+      const enabledCount = FIVE_MODEL_KEYS.filter((m) => prev[m]).length;
+      if (prev[k] && enabledCount <= 1) return prev;
+      return { ...prev, [k]: !prev[k] };
+    });
+  };
 
   const loadModels = useCallback(async () => {
     setLoading(true);
@@ -99,7 +114,7 @@ export default function ModelComparisonChart({
       setError(
         e instanceof Error
           ? e.message
-          : "ECMWF / GFS / ICON model verileri alınamadı."
+          : "5-Model sayısal tahmin verileri alınamadı."
       );
     } finally {
       setLoading(false);
@@ -117,7 +132,7 @@ export default function ModelComparisonChart({
 
   const chart = useMemo(() => {
     const W = 920;
-    const H = 220;
+    const H = 230;
     const padL = 44;
     const padR = 16;
     const padT = 16;
@@ -127,8 +142,9 @@ export default function ModelComparisonChart({
 
     const allVals: number[] = [];
     for (const pt of activeSeries) {
-      for (const raw of [pt.ecmwf, pt.gfs, pt.icon]) {
-        const v = convertValue(raw, tab, unit);
+      for (const k of FIVE_MODEL_KEYS) {
+        if (!visibleModels[k]) continue;
+        const v = convertValue(pt[k], tab, unit);
         if (v !== null) allVals.push(v);
       }
     }
@@ -146,15 +162,15 @@ export default function ModelComparisonChart({
     const xAt = (i: number) => padL + (i / (n - 1)) * plotW;
     const yAt = (v: number) => padT + plotH - ((v - minVal) / span) * plotH;
 
-    const toCoords = (getter: (pt: ModelSeriesPoint) => number | null) =>
-      activeSeries.map((pt, i) => {
-        const v = convertValue(getter(pt), tab, unit);
-        return { x: xAt(i), y: v === null ? null : yAt(v) };
-      });
-
-    const ecmwfPath = buildLinePath(toCoords((p) => p.ecmwf));
-    const gfsPath = buildLinePath(toCoords((p) => p.gfs));
-    const iconPath = buildLinePath(toCoords((p) => p.icon));
+    const paths = {} as Record<FiveModelKey, string>;
+    for (const k of FIVE_MODEL_KEYS) {
+      paths[k] = buildLinePath(
+        activeSeries.map((pt, i) => {
+          const v = convertValue(pt[k], tab, unit);
+          return { x: xAt(i), y: v === null ? null : yAt(v) };
+        })
+      );
+    }
 
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => {
       const val = minVal + span * frac;
@@ -177,29 +193,30 @@ export default function ModelComparisonChart({
       plotH,
       xAt,
       yAt,
-      ecmwfPath,
-      gfsPath,
-      iconPath,
+      paths,
       yTicks,
       zeroY
     };
-  }, [activeSeries, tab, unit]);
+  }, [activeSeries, tab, unit, visibleModels]);
 
   const clampedIdx = Math.max(0, Math.min(activeSeries.length - 1, hoverIdx));
   const inspected = activeSeries[clampedIdx] ?? null;
 
   const inspectedValues = useMemo(() => {
     if (!inspected) return null;
-    const ecmwf = convertValue(inspected.ecmwf, tab, unit);
-    const gfs = convertValue(inspected.gfs, tab, unit);
-    const icon = convertValue(inspected.icon, tab, unit);
-    const present = [ecmwf, gfs, icon].filter((v): v is number => v !== null);
+    const map = {} as Record<FiveModelKey, number | null>;
+    const present: number[] = [];
+    for (const k of FIVE_MODEL_KEYS) {
+      const v = convertValue(inspected[k], tab, unit);
+      map[k] = v;
+      if (v !== null && visibleModels[k]) present.push(v);
+    }
     const spread =
       present.length >= 2
         ? Number((Math.max(...present) - Math.min(...present)).toFixed(1))
         : null;
-    return { ecmwf, gfs, icon, spread };
-  }, [inspected, tab, unit]);
+    return { map, spread };
+  }, [inspected, tab, unit, visibleModels]);
 
   const unitSuffix =
     unit === "imperial" ? TAB_CONFIG[tab].unitImperial : TAB_CONFIG[tab].unitMetric;
@@ -218,10 +235,10 @@ export default function ModelComparisonChart({
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-ink-muted">
-            72 Saatlik Çoklu Sayısal Tahmin (NWP)
+            72 Saatlik 5-Model Sayısal Tahmin (NWP + AI)
           </p>
           <h2 className="mt-1 font-display text-lg font-semibold text-ink-primary">
-            ECMWF IFS 0.25° · NOAA GFS · DWD ICON Karşılaştırması
+            ECMWF IFS 9km · ECMWF AIFS v1 · DWD ICON-EU · UKMO 10km · NOAA GFS
           </h2>
           <p className="mt-0.5 text-xs text-ink-muted">
             {location.name} · {TAB_CONFIG[tab].subtitle}
@@ -262,64 +279,67 @@ export default function ModelComparisonChart({
 
       {loading && !models && !error && (
         <div className="h-[260px] rounded-xl border border-white/[0.06] bg-obsidian-950/60 flex items-center justify-center font-mono text-xs text-ink-muted">
-          ECMWF, GFS ve ICON verileri çekiliyor...
+          5 Tier-1 model verisi çekiliyor...
         </div>
       )}
 
       {models && activeSeries.length > 0 && (
         <>
-          {/* Seçili Saat Model Değerleri Bandı */}
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-obsidian-950/60 px-3.5 py-2.5 text-xs font-mono tabular">
+          {/* Seçili Saat + Tıklanabilir 5-Model Filtre Bandı */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.07] bg-obsidian-950/60 px-3.5 py-2.5 text-xs font-mono tabular">
             <span className="text-ink-secondary">
               {inspected ? `${inspected.dayLabel} · ${inspected.hourLabel}` : "--"}
             </span>
-            <div className="flex flex-wrap items-center gap-4">
-              <span className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-[#38bdf8]" />
-                <span className="text-ink-muted">ECMWF</span>
-                <strong className="text-ink-primary">
-                  {inspectedValues?.ecmwf !== null && inspectedValues?.ecmwf !== undefined
-                    ? `${inspectedValues.ecmwf}${unitSuffix}`
-                    : "--"}
-                </strong>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-[#f59e0b]" />
-                <span className="text-ink-muted">GFS</span>
-                <strong className="text-ink-primary">
-                  {inspectedValues?.gfs !== null && inspectedValues?.gfs !== undefined
-                    ? `${inspectedValues.gfs}${unitSuffix}`
-                    : "--"}
-                </strong>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-[#10b981]" />
-                <span className="text-ink-muted">ICON</span>
-                <strong className="text-ink-primary">
-                  {inspectedValues?.icon !== null && inspectedValues?.icon !== undefined
-                    ? `${inspectedValues.icon}${unitSuffix}`
-                    : "--"}
-                </strong>
-              </span>
-              {inspectedValues?.spread !== null && inspectedValues?.spread !== undefined && (
-                <span className="text-ink-muted">
-                  Fark: <strong className="text-ink-secondary">Δ{inspectedValues.spread}{unitSuffix}</strong>
-                </span>
-              )}
+            <div className="flex flex-wrap items-center gap-2">
+              {FIVE_MODEL_KEYS.map((k) => {
+                const meta = FIVE_MODEL_META[k];
+                const active = visibleModels[k];
+                const val = inspectedValues?.map[k];
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => toggleModel(k)}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 transition-opacity ${
+                      active
+                        ? "border-white/15 bg-white/[0.04] opacity-100"
+                        : "border-white/[0.05] opacity-40"
+                    }`}
+                  >
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: meta.color }}
+                    />
+                    <span className="text-ink-muted">{meta.shortLabel}</span>
+                    <strong className="text-ink-primary">
+                      {val !== null && val !== undefined ? `${val}${unitSuffix}` : "--"}
+                    </strong>
+                  </button>
+                );
+              })}
+              {inspectedValues?.spread !== null &&
+                inspectedValues?.spread !== undefined && (
+                  <span className="pl-1 text-ink-muted">
+                    Fark:{" "}
+                    <strong className="text-ink-secondary">
+                      Δ{inspectedValues.spread}
+                      {unitSuffix}
+                    </strong>
+                  </span>
+                )}
             </div>
           </div>
 
-          {/* 3-Model SVG Grafiği */}
+          {/* 5-Model SVG Grafiği */}
           <div className="rounded-xl border border-white/[0.07] bg-[#070b14] p-2">
             <svg
               viewBox={`0 0 ${chart.W} ${chart.H}`}
               onPointerMove={handlePointer}
               onPointerDown={handlePointer}
-              className="h-56 w-full cursor-crosshair select-none touch-none"
+              className="h-60 w-full cursor-crosshair select-none touch-none"
               role="img"
-              aria-label="ECMWF, GFS ve ICON 72 saatlik tahmin grafiği"
+              aria-label="5 Tier-1 meteoroloji modeli 72 saatlik karşılaştırma grafiği"
             >
-              {/* Yatay ızgara ve Y değerleri */}
               {chart.yTicks.map((tick) => (
                 <g key={tick.val}>
                   <line
@@ -343,7 +363,6 @@ export default function ModelComparisonChart({
                 </g>
               ))}
 
-              {/* 0°C izotermi (sıcaklık / 850 hPa için kritik eşik) */}
               {chart.zeroY !== null && (
                 <line
                   x1={chart.padL}
@@ -356,7 +375,6 @@ export default function ModelComparisonChart({
                 />
               )}
 
-              {/* Gün ayraçları (her 12 saatte bir) */}
               {activeSeries.map((pt, idx) => {
                 if (idx % 12 !== 0) return null;
                 const x = chart.xAt(idx);
@@ -386,33 +404,21 @@ export default function ModelComparisonChart({
                 );
               })}
 
-              {/* 3 Model Eğrisi */}
-              <path
-                d={chart.iconPath}
-                fill="none"
-                stroke="#10b981"
-                strokeWidth="2"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
-              <path
-                d={chart.gfsPath}
-                fill="none"
-                stroke="#f59e0b"
-                strokeWidth="2"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
-              <path
-                d={chart.ecmwfPath}
-                fill="none"
-                stroke="#38bdf8"
-                strokeWidth="2.4"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
+              {FIVE_MODEL_KEYS.map((k) => {
+                if (!visibleModels[k] || !chart.paths[k]) return null;
+                return (
+                  <path
+                    key={k}
+                    d={chart.paths[k]}
+                    fill="none"
+                    stroke={FIVE_MODEL_META[k].color}
+                    strokeWidth={k === "ecmwfIfs" || k === "ecmwfAifs" ? 2.2 : 1.8}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                );
+              })}
 
-              {/* Aktif Saat İmleci */}
               <line
                 x1={chart.xAt(clampedIdx)}
                 x2={chart.xAt(clampedIdx)}
@@ -425,57 +431,43 @@ export default function ModelComparisonChart({
             </svg>
           </div>
 
-          {/* 3 Model Özet Kartları */}
+          {/* 5-Model Özet Kartları */}
           <div className="grid gap-3 sm:grid-cols-3 text-xs font-mono tabular">
-            <div className="surface-tile p-3.5 space-y-1">
-              <span className="text-[11px] text-ink-muted">72 Saat Toplam Yağış</span>
-              <div className="flex items-center justify-between pt-0.5">
-                <span className="text-[#38bdf8]">
-                  ECMWF: {models.summary.precip72h.ecmwf} mm
-                </span>
-                <span className="text-[#f59e0b]">
-                  GFS: {models.summary.precip72h.gfs} mm
-                </span>
-                <span className="text-[#10b981]">
-                  ICON: {models.summary.precip72h.icon} mm
-                </span>
+            <div className="surface-tile p-3.5 space-y-1.5">
+              <span className="text-[11px] text-ink-muted">72 Saat Toplam Yağış (mm)</span>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {FIVE_MODEL_KEYS.map((k) => (
+                  <span key={k} style={{ color: FIVE_MODEL_META[k].color }}>
+                    {FIVE_MODEL_META[k].shortLabel}: {models.summary.precip72h[k]}
+                  </span>
+                ))}
               </div>
             </div>
 
-            <div className="surface-tile p-3.5 space-y-1">
-              <span className="text-[11px] text-ink-muted">72s En Düşük 850 hPa</span>
-              <div className="flex items-center justify-between pt-0.5">
-                <span className="text-[#38bdf8]">
-                  ECMWF:{" "}
-                  {models.summary.min850hPa.ecmwf !== null
-                    ? `${models.summary.min850hPa.ecmwf}°`
-                    : "--"}
-                </span>
-                <span className="text-[#f59e0b]">
-                  GFS:{" "}
-                  {models.summary.min850hPa.gfs !== null
-                    ? `${models.summary.min850hPa.gfs}°`
-                    : "--"}
-                </span>
-                <span className="text-[#10b981]">
-                  ICON:{" "}
-                  {models.summary.min850hPa.icon !== null
-                    ? `${models.summary.min850hPa.icon}°`
-                    : "--"}
-                </span>
+            <div className="surface-tile p-3.5 space-y-1.5">
+              <span className="text-[11px] text-ink-muted">72s En Düşük 850 hPa (°C)</span>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {FIVE_MODEL_KEYS.map((k) => (
+                  <span key={k} style={{ color: FIVE_MODEL_META[k].color }}>
+                    {FIVE_MODEL_META[k].shortLabel}:{" "}
+                    {models.summary.min850hPa[k] !== null
+                      ? `${models.summary.min850hPa[k]}°`
+                      : "—"}
+                  </span>
+                ))}
               </div>
             </div>
 
-            <div className="surface-tile p-3.5 space-y-1">
-              <span className="text-[11px] text-ink-muted">Maks. 2m Model Sapması</span>
-              <p className="pt-0.5 text-sm font-semibold text-ink-primary">
+            <div className="surface-tile p-3.5 space-y-1.5">
+              <span className="text-[11px] text-ink-muted">Maks. 2m 5-Model Sapması</span>
+              <p className="text-sm font-semibold text-ink-primary">
                 ±{models.summary.maxSpreadTemp2m}°C{" "}
                 <span className="text-[11px] font-normal text-ink-muted">
                   ({models.summary.maxSpreadTemp2m <= 2.5
-                    ? "Yüksek model uzlaşısı"
+                    ? "Yüksek uzlaşı"
                     : models.summary.maxSpreadTemp2m <= 5
                       ? "Orta belirsizlik"
-                      : "Yüksek model ayrışması"})
+                      : "Yüksek ayrışma"})
                 </span>
               </p>
             </div>

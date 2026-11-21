@@ -1,28 +1,17 @@
-# ATMOS — Gerçek Zamanlı Meteoroloji Gözlem Platformu
+# ATMOS — Kanıta Dayalı Canlı Meteoroloji Gözlem & Doğrulama Platformu
 
-%100 gerçek meteoroloji verisiyle çalışan 4 sekmeli gözlem, radar, çoklu sayısal tahmin modeli ve dikey atmosfer sondaj platformu.
+%100 gerçek fiziksel gözlem ve çoklu sayısal hava tahmini (NWP + AI) verisiyle çalışan 4 sekmeli gözlem, canlı doğrulama, Doppler radar ve dikey atmosfer sondaj platformu.
 
-## Sekmeler & Özellikler
+## Canlı Veri & Doğrulama Mimarisi
 
-1. **Hava Durumu (`/`)**
-   - Gerçek güneş yükselme açısına (NOAA deklinasyon/saat açısı) ve anlık yağış/bulut/görüş verilerine bağlı fiziksel Rayleigh/Mie gökyüzü sahnesi.
-   - 48 saatlik kaydırılabilir tahmin çubuğu, saatlik sıcaklık/yağış/rüzgar/nem grafikleri, 7 günlük tahmin, 850 hPa sıcaklığı, 0°C donma seviyesi, 3 saatlik barometrik eğilim, 0–6 km rüzgar kırılması, EAQI (PM2.5, PM10, O₃, NO₂, SO₂) ve gerçek güneş döngüsü.
-2. **Radar & Küre (`/world`)**
-   - **Canlı Yağış Radarı:** CartoDB Dark Matter harita katmanı üzerinde RainViewer canlı 2 saatlik (10 dakikalık adımlar) hareketli yağış radarı. Haritada herhangi bir noktaya tıklayarak koordinat ölçümü.
-   - **3D Dünya Küresi:** Gerçek Natural Earth 110m kıyı hatları ve anlık astronomik gece-gündüz sınırı (solar terminator).
-3. **İstasyonlar (`/dashboard`)**
-   - Birden fazla şehrin/istasyonun canlı ölçümlerini (sıcaklık, 850 hPa, rüzgar, nem, basınç eğilimi, EAQI) tek ekranda kıyaslama ve kişisel eşik izleme kuralları.
-4. **Sondaj & Modeller (`/lab`)**
-   - **72 Saatlik Çoklu Model Karşılaştırması:** ECMWF IFS 0.25°, NOAA GFS ve DWD ICON modellerinin 2m sıcaklık, 850 hPa sıcaklık, yağış ve 10m rüzgar tahminleri + model sapması.
-   - **48 Saatlik Gerçek Radyosonda (1000 → 300 hPa):** Gerçek basınç seviyesi profilleri, Skew-T Log-P diyagramı, CAPE, CIN, LCL, LFC, EL, 0–6 km bulk shear, 700–500 lapse rate ve 5 konvektif indeks (LI, SI, K, TT, SWEAT).
-
-## Veri Kaynakları
-
-- **Open-Meteo Forecast & Pressure Levels:** Anlık, 48s/7g tahmin ve 1000–300 hPa dikey sondaj.
-- **Open-Meteo Multi-Model NWP:** `ecmwf_ifs025`, `gfs_seamless`, `icon_seamless`.
-- **Open-Meteo Air Quality:** Avrupa AQI, PM2.5, PM10, O₃, NO₂, SO₂, toz.
-- **RainViewer Weather Maps:** Canlı küresel yağış radarı kareleri.
-- **Natural Earth 110m (`public/geo/ne-110m-land.json`):** Gerçek kıyı poligonları.
+- **Gerçek Fiziksel Yer Gözlemi (METAR):** NOAA AviationWeather.gov resmi METAR API ile seçili konuma 65 km içindeki en yakın ICAO istasyonunun gerçek termometre, çiy noktası, QNH barometre, anemometre ve görüş sensörü okumaları.
+- **5 Tier-1 Model Canlı 24s Ters-RMSE² Hibrit Motoru:** `ECMWF IFS (9 km HRES)`, `ECMWF AIFS v1 (AI)`, `DWD ICON-EU (7 km)`, `UKMO Unified (10 km)` ve `NOAA GFS / HRRR (3 km)` modellerinin son 24 saatteki gerçek METAR gözlemlerine karşı canlı RMSE hatası ölçülür; her parametre (sıcaklık, basınç, rüzgar) için dinamik ağırlıklar hesaplanır. Yakın METAR olmayan noktalarda şeffafça WMO LC-DNV referans ağırlıkları kullanılır.
+- **Fiziksel Standartlar:**
+  - **Termodinamik:** Bolton (1980) Eq. 10 ($e_s$), Eq. 22 ($T_{LCL}$), Eq. 39 ($\theta_e$, `< 0.2 K` hata), dinamik jeopotansiyel yükseklik (`geopotential_height_1000..300hPa`) ve `500–1000 hPa` kalınlık (`dam`).
+  - **Astronomi:** Resmi NOAA Global Monitoring Laboratory Zaman Denklemi (EoT) + Fourier Deklinasyon + Saemundsson atmosferik kırılma düzeltmesi (`< 0.01°`).
+  - **Rüzgar & Basınç:** Vektörel rüzgar yönü ortalaması, WMO Beaufort 0–12 skalası, resmi WMO FM-12 barometrik eğilim eşikleri ve 4 fiziksel hamle modeli.
+  - **Hava Kalitesi:** Copernicus CAMS (10 km) + resmi EEA 6 bantlı EAQI ve baskın kirletici tespiti.
+  - **Radar & Küre:** RainViewer Doppler (Marshall-Palmer $Z = 200 R^{1.6}$ skalası) + filigransız Esri Koyu/Uydu katmanları + Natural Earth 110m 3D Dünya Küresi.
 
 ## Geliştirme Komutları
 

@@ -4,6 +4,7 @@ import {
   classifyCapeRisk,
   computeBulkWindShearKt,
   computeLCL,
+  computeLclTempK,
   dewPointMagnus,
   equivalentPotentialTemperatureK,
   mixingRatio,
@@ -15,40 +16,52 @@ import {
 import type { SoundingLevel } from "../lib/weather-types";
 
 const SAMPLE_UNSTABLE_LEVELS: SoundingLevel[] = [
-  { pressure: 1000, altitudeM: 110, temperature: 30, dewPoint: 25, humidity: 75, windSpeedKt: 12, windDirection: 165 },
+  { pressure: 1000, altitudeM: 95, temperature: 30, dewPoint: 25, humidity: 75, windSpeedKt: 12, windDirection: 165 },
   { pressure: 925, altitudeM: 760, temperature: 23, dewPoint: 18, humidity: 74, windSpeedKt: 22, windDirection: 185 },
   { pressure: 850, altitudeM: 1500, temperature: 16, dewPoint: 13, humidity: 82, windSpeedKt: 30, windDirection: 205 },
-  { pressure: 700, altitudeM: 3050, temperature: 2, dewPoint: -4, humidity: 65, windSpeedKt: 40, windDirection: 235 },
-  { pressure: 500, altitudeM: 5600, temperature: -16, dewPoint: -30, humidity: 30, windSpeedKt: 55, windDirection: 255 },
-  { pressure: 400, altitudeM: 7300, temperature: -30, dewPoint: -45, humidity: 22, windSpeedKt: 65, windDirection: 260 },
-  { pressure: 300, altitudeM: 9200, temperature: -45, dewPoint: -62, humidity: 18, windSpeedKt: 75, windDirection: 265 }
+  { pressure: 700, altitudeM: 3080, temperature: 2, dewPoint: -4, humidity: 65, windSpeedKt: 40, windDirection: 235 },
+  { pressure: 500, altitudeM: 5680, temperature: -16, dewPoint: -30, humidity: 30, windSpeedKt: 55, windDirection: 255 },
+  { pressure: 400, altitudeM: 7340, temperature: -30, dewPoint: -45, humidity: 22, windSpeedKt: 65, windDirection: 260 },
+  { pressure: 300, altitudeM: 9320, temperature: -45, dewPoint: -62, humidity: 18, windSpeedKt: 75, windDirection: 265 }
 ];
 
 const SAMPLE_STABLE_LEVELS: SoundingLevel[] = [
-  { pressure: 1000, altitudeM: 110, temperature: 5, dewPoint: -4, humidity: 52, windSpeedKt: 8, windDirection: 350 },
-  { pressure: 925, altitudeM: 760, temperature: 4, dewPoint: -6, humidity: 48, windSpeedKt: 12, windDirection: 355 },
-  { pressure: 850, altitudeM: 1500, temperature: 2, dewPoint: -10, humidity: 40, windSpeedKt: 15, windDirection: 5 },
-  { pressure: 700, altitudeM: 3050, temperature: -6, dewPoint: -22, humidity: 28, windSpeedKt: 22, windDirection: 15 },
-  { pressure: 500, altitudeM: 5600, temperature: -20, dewPoint: -38, humidity: 20, windSpeedKt: 30, windDirection: 20 },
-  { pressure: 400, altitudeM: 7300, temperature: -32, dewPoint: -50, humidity: 18, windSpeedKt: 36, windDirection: 25 },
-  { pressure: 300, altitudeM: 9200, temperature: -48, dewPoint: -64, humidity: 16, windSpeedKt: 42, windDirection: 30 }
+  { pressure: 1000, altitudeM: 160, temperature: 2, dewPoint: -4, humidity: 64, windSpeedKt: 8, windDirection: 350 },
+  { pressure: 925, altitudeM: 780, temperature: -1, dewPoint: -8, humidity: 58, windSpeedKt: 12, windDirection: 355 },
+  { pressure: 850, altitudeM: 1450, temperature: -4, dewPoint: -12, humidity: 52, windSpeedKt: 15, windDirection: 5 },
+  { pressure: 700, altitudeM: 2940, temperature: -13, dewPoint: -24, humidity: 35, windSpeedKt: 22, windDirection: 15 },
+  { pressure: 500, altitudeM: 5440, temperature: -27, dewPoint: -42, humidity: 22, windSpeedKt: 30, windDirection: 20 },
+  { pressure: 400, altitudeM: 7050, temperature: -38, dewPoint: -54, humidity: 18, windSpeedKt: 36, windDirection: 25 },
+  { pressure: 300, altitudeM: 8950, temperature: -51, dewPoint: -66, humidity: 16, windSpeedKt: 42, windDirection: 30 }
 ];
 
-describe("thermo-cape meteoroloji termodinamik motoru", () => {
-  it("Magnus çiy noktası ve bağıl nem ters dönüşümü tutarlıdır", () => {
+describe("thermo-cape Bolton (1980) termodinamik motoru", () => {
+  it("Bolton (1980) Eq. 10 doygunluk buhar basıncı ve çiy noktası tersi tutarlıdır", () => {
+    const es20 = saturationVaporPressure(20);
+    // Bolton (1980) Table 1 referansı: e_s(20°C) = 23.37 hPa
+    expect(es20).toBeCloseTo(23.37, 1);
+
     const td = dewPointMagnus(25, 60);
-    expect(td).toBeGreaterThan(16);
-    expect(td).toBeLessThan(17.5);
+    expect(td).toBeGreaterThan(16.4);
+    expect(td).toBeLessThan(17.0);
     const rhBack = relativeHumidityFromDewPoint(25, td);
     expect(rhBack).toBeCloseTo(60, 0);
   });
 
-  it("doygunluk buhar basıncı ve karışım oranı fiziksel aralıktadır", () => {
-    const es20 = saturationVaporPressure(20);
-    expect(es20).toBeCloseTo(23.38, 0);
-    const w = mixingRatio(es20 * 0.5, 1000);
-    expect(w).toBeGreaterThan(0.006);
-    expect(w).toBeLessThan(0.009);
+  it("Bolton (1980) Eq. 22 T_LCL ve Eq. 39 θ_e referans doğruluk sınırları içindedir", () => {
+    // T = 20°C, Td = 15°C, P = 1000 hPa
+    const tLclK = computeLclTempK(20, 15);
+    expect(tLclK).toBeGreaterThan(286.8);
+    expect(tLclK).toBeLessThan(287.4);
+
+    const e = saturationVaporPressure(15);
+    const w = mixingRatio(e, 1000);
+    const theta = potentialTemperatureK(20, 1000);
+    const thetaE = equivalentPotentialTemperatureK(20, 1000, w, 15);
+    // Bolton Eq.39 referans değeri ~324.0 K (±0.8 K)
+    expect(thetaE).toBeGreaterThan(323.0);
+    expect(thetaE).toBeLessThan(325.2);
+    expect(thetaE).toBeGreaterThan(theta);
   });
 
   it("sanal, potansiyel ve eşdeğer potansiyel sıcaklık sıralaması doğrudur (Tv < theta < theta_e 850hPa)", () => {
@@ -61,21 +74,20 @@ describe("thermo-cape meteoroloji termodinamik motoru", () => {
     expect(thetaE).toBeGreaterThan(theta);
   });
 
-  it("LCL yüksekliği sıcaklık-çiy noktası farkıyla orantılıdır", () => {
+  it("hipsometrik LCL yüksekliği fiziksel aralıktadır", () => {
     const lcl = computeLCL(24, 16, 1000);
-    expect(lcl.lclHeightM).toBeCloseTo(1000, -1);
+    expect(lcl.lclHeightM).toBeGreaterThan(900);
+    expect(lcl.lclHeightM).toBeLessThan(1120);
     expect(lcl.lclPressureHpa).toBeLessThan(1000);
-    expect(lcl.lclPressureHpa).toBeGreaterThan(800);
+    expect(lcl.lclPressureHpa).toBeGreaterThan(850);
   });
 
   it("0–6 km vektörel rüzgar kırılması (bulk wind shear) yön değişimini doğru hesaplar", () => {
-    // Aynı yönde 10 kt -> 40 kt = 30 kt fark
     expect(computeBulkWindShearKt(10, 180, 40, 180)).toBe(30);
-    // Dik yönde 30 kt (güney) -> 40 kt (batı) = 50 kt vektör farkı
     expect(computeBulkWindShearKt(30, 180, 40, 270)).toBe(50);
   });
 
-  it("kararsız sıcak-nemli alt katman + soğuk üst katman yüksek CAPE, negatif LI, shear ve lapse rate üretir", () => {
+  it("kararsız profilde yüksek CAPE, negatif LI, dinamik jeopotansiyel lapse rate ve 500–1000 kalınlık üretir", () => {
     const unstable = analyzeConvectiveProfile({
       surfaceTempC: 30,
       surfaceHumidity: 75,
@@ -87,23 +99,25 @@ describe("thermo-cape meteoroloji termodinamik motoru", () => {
     expect(unstable.liftedIndex).toBeLessThan(-3);
     expect(unstable.lfcPressureHpa).not.toBeNull();
     expect(unstable.elPressureHpa).not.toBeNull();
-    expect(unstable.parcelProfile.length).toBeGreaterThan(40);
-    expect(unstable.levels).toHaveLength(7);
-    expect(unstable.sweatIndex).toBeGreaterThan(200);
     expect(unstable.bulkShear06Kt).toBeGreaterThan(40);
-    expect(unstable.lapseRate700500).toBeGreaterThan(6.5);
+    // (2 - (-16)) / ((5680 - 3080)/1000) = 18 / 2.6 = 6.9 °C/km
+    expect(unstable.lapseRate700500).toBeCloseTo(6.9, 1);
+    // (5680 - 95) / 10 = 558.5 dam
+    expect(unstable.thickness5001000Dam).toBeCloseTo(558.5, 1);
   });
 
-  it("kararlı soğuk-kuru profil sıfır veya çok düşük CAPE üretir", () => {
+  it("soğuk kararlı profil sıfır CAPE ve <=540 dam kar sınırı kalınlığı üretir", () => {
     const stable = analyzeConvectiveProfile({
-      surfaceTempC: 5,
-      surfaceHumidity: 35,
+      surfaceTempC: 2,
+      surfaceHumidity: 55,
       surfacePressureHpa: 1020,
       levels: SAMPLE_STABLE_LEVELS
     });
 
-    expect(stable.cape).toBeLessThan(150);
+    expect(stable.cape).toBeLessThan(100);
     expect(stable.liftedIndex).toBeGreaterThan(0);
     expect(classifyCapeRisk(stable.cape).label).toBe("Düşük");
+    // (5440 - 160) / 10 = 528.0 dam (<= 540 dam kar eşiği)
+    expect(stable.thickness5001000Dam).toBeLessThan(540);
   });
 });

@@ -464,10 +464,10 @@ export default function LiveRadarMap({
                   : "Çevrimdışı"}
             </span>
           </div>
-          <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted">
-            <span>Hafif</span>
+          <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted tabular">
+            <span>20 dBZ (~0.5)</span>
             <span className="h-1.5 w-24 rounded-full bg-gradient-to-r from-[#38bdf8] via-[#10b981] via-[#facc15] via-[#f97316] to-[#ef4444]" />
-            <span>Şiddetli (dBZ)</span>
+            <span>50+ dBZ (~48 mm/sa)</span>
           </div>
         </div>
       </div>

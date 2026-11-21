@@ -71,7 +71,7 @@ export default function CapeLabView() {
             Sondaj & Modeller
           </h1>
           <p className="mt-1 text-sm text-ink-secondary">
-            {activeLocation.name} için ECMWF, GFS ve ICON 72 saatlik model karşılaştırması ve 48 saatlik gerçek 1000–300 hPa dikey atmosfer profili.
+            {activeLocation.name} için 5 Tier-1 model (ECMWF IFS 9km, AIFS v1, ICON-EU, UKMO, GFS) 72 saatlik karşılaştırması ve Bolton (1980) 48 saatlik gerçek 1000–300 hPa dikey radyosonda profili.
           </p>
         </div>
       </div>
@@ -227,19 +227,28 @@ export default function CapeLabView() {
                     <p className="mt-0.5 text-base font-semibold text-ink-primary">
                       {analysis.lapseRate700500}°/km
                     </p>
-                    <span className="text-[10px] text-ink-muted">Orta troposfer</span>
+                    <span className="text-[10px] text-ink-muted">Dinamik GPH</span>
                   </div>
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">0°C Donma</span>
-                    <p className="mt-0.5 text-base font-semibold text-signal-sky">
-                      {selectedHour?.freezingLevelM !== null &&
-                      selectedHour?.freezingLevelM !== undefined
-                        ? `${selectedHour.freezingLevelM} m`
-                        : bundle.nativeConvective.freezingLevelM !== null
-                          ? `${bundle.nativeConvective.freezingLevelM} m`
-                          : "—"}
+                    <span className="text-ink-muted">500–1000 Kalınlık</span>
+                    <p
+                      className={`mt-0.5 text-base font-semibold ${
+                        analysis.thickness5001000Dam <= 540
+                          ? "text-signal-sky"
+                          : "text-ink-primary"
+                      }`}
+                    >
+                      {analysis.thickness5001000Dam} dam
                     </p>
-                    <span className="text-[10px] text-ink-muted">İzoterm seviyesi</span>
+                    <span className="text-[10px] text-ink-muted">
+                      {analysis.thickness5001000Dam <= 540
+                        ? "≤540 Kar eşiği"
+                        : "0°C: " +
+                          (selectedHour?.freezingLevelM ??
+                            bundle.nativeConvective.freezingLevelM ??
+                            "—") +
+                          " m"}
+                    </span>
                   </div>
                 </div>
 
@@ -344,7 +353,7 @@ export default function CapeLabView() {
                 7 Basınç Seviyesi Dikey Ölçüm Profili (1000 → 300 hPa)
               </h2>
               <span className="font-mono text-[11px] text-ink-muted">
-                Kaynak: Open-Meteo Pressure Levels · Salt Okunur Gerçek Veri
+                Kaynak: Open-Meteo Pressure Levels + Dinamik Jeopotansiyel İrtifa · Bolton (1980) θe
               </span>
             </div>
 
@@ -370,7 +379,7 @@ export default function CapeLabView() {
                       <td className="py-2.5 pr-3 font-semibold text-signal-sky">
                         {lvl.pressure} hPa
                       </td>
-                      <td className="py-2.5 pr-3 text-ink-muted">~{lvl.altitudeM} m</td>
+                      <td className="py-2.5 pr-3 text-ink-muted">{lvl.altitudeM} m</td>
                       <td className="py-2.5 pr-3 font-medium text-ink-primary">
                         {lvl.temperature > 0 ? `+${lvl.temperature}` : lvl.temperature}°
                       </td>

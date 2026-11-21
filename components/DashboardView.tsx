@@ -404,9 +404,9 @@ export default function DashboardView() {
                   <p className="font-mono text-[11px] text-ink-muted tabular">
                     {city.country} · Yerel {formatLocalClock(b.timezone)} ·{" "}
                     {b.current.pressure} hPa{" "}
-                    {b.current.pressureTrend === "yükseliyor" ? (
+                    {b.current.pressureTrend.includes("yükseliyor") ? (
                       <ArrowUpRight className="inline h-3 w-3 text-signal-emerald" />
-                    ) : b.current.pressureTrend === "düşüyor" ? (
+                    ) : b.current.pressureTrend.includes("düşüyor") ? (
                       <ArrowDownRight className="inline h-3 w-3 text-signal-amber" />
                     ) : (
                       <ArrowRight className="inline h-3 w-3 text-ink-muted" />
