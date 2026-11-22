@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import {
   Activity,
   Cloud,
+  CloudLightning,
   LayoutList,
   Radar,
   Volume2,
@@ -25,7 +26,8 @@ const NAV_TABS = [
   { href: "/", label: "Hava Durumu", icon: Cloud },
   { href: "/world", label: "Radar & Küre", icon: Radar },
   { href: "/dashboard", label: "İstasyonlar", icon: LayoutList },
-  { href: "/lab", label: "Sondaj & Modeller", icon: Activity }
+  { href: "/lab", label: "Sondaj & Modeller", icon: Activity },
+  { href: "/play", label: "Bulut Savaşı", icon: CloudLightning }
 ] as const;
 
 export default function AppShell({ children }: { children: ReactNode }) {
@@ -42,12 +44,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
     atmosphere
   } = useWeather();
 
-  const isWorldRoute = pathname === "/world";
+  const skipSkyBackdrop = pathname === "/world" || pathname === "/play";
 
   return (
     <div className="relative min-h-screen">
       {/* Gerçek fiziksel gökyüzü sahnesi */}
-      {!isWorldRoute ? (
+      {!skipSkyBackdrop ? (
         <StormScene atmosphere={atmosphere} />
       ) : (
         <div className="fixed inset-0 z-0 bg-[#05080f]" />
@@ -151,7 +153,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         aria-label="Mobil sekmeler"
         className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-[#06090f]/95 backdrop-blur-2xl md:hidden"
       >
-        <div className="grid grid-cols-4 gap-1 px-2 py-1.5">
+        <div className="grid grid-cols-5 gap-1 px-2 py-1.5">
           {NAV_TABS.map(({ href, label, icon: Icon }) => {
             const active = pathname === href;
             return (
