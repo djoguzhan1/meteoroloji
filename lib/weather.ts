@@ -27,8 +27,10 @@ import type {
   PressureTrend,
   RadarMetadata,
   SoundingLevel,
+  SynopticSignal,
   UnitSystem,
-  WeatherBundle
+  WeatherBundle,
+  WindGridBundle
 } from "./weather-types";
 
 export const DEFAULT_LOCATION: GeoLocation = {
@@ -449,6 +451,118 @@ export function formatWindSpeed(kmh: number, unit: UnitSystem): string {
   return `${Math.round(kmh)} km/s`;
 }
 
+/**
+ * Güney ve Batı yarımküre koordinatlarını doğru K/G ve D/B yönleriyle biçimlendirir.
+ */
+export function formatLatLon(lat: number, lon: number, decimals = 2): string {
+  const latHem = lat >= 0 ? "K" : "G";
+  const lonHem = lon >= 0 ? "D" : "B";
+  return `${Math.abs(lat).toFixed(decimals)}°${latHem} · ${Math.abs(lon).toFixed(decimals)}°${lonHem}`;
+}
+
+/**
+ * Gerçek fiziksel meteorolojik eşiklerden sinoptik uyarı çipleri üretir (sıfır yapay uyarı).
+ */
+export function computeSynopticSignals(params: {
+  pressureDelta3h: number;
+  temp850hPa: number | null;
+  thickness5001000Dam?: number | null;
+  windGustsKmh: number;
+  cape: number | null;
+  isStorm: boolean;
+  europeanAqi: number;
+  dominantPollutant: string;
+  uvIndex: number;
+  freezingLevelM: number | null;
+  temperatureC: number;
+}): SynopticSignal[] {
+  const signals: SynopticSignal[] = [];
+
+  if (Math.abs(params.pressureDelta3h) >= 3.0) {
+    const dropping = params.pressureDelta3h < 0;
+    signals.push({
+      id: "pressure-tendency",
+      severity: dropping ? "warning" : "info",
+      title: dropping ? "Hızlı Basınç Düşüşü" : "Hızlı Basınç Yükselişi",
+      detail: `${params.pressureDelta3h > 0 ? "+" : ""}${params.pressureDelta3h} hPa/3s · ${
+        dropping ? "Aktif cephe geçişi" : "Cephe arkası yüksek basınç"
+      }`
+    });
+  }
+
+  if (params.isStorm || (params.cape !== null && params.cape >= 1000)) {
+    signals.push({
+      id: "convective",
+      severity: "warning",
+      title: params.isStorm ? "Aktif Oraj / Sağanak" : "Konvektif Kararsızlık",
+      detail:
+        params.cape !== null && params.cape > 0
+          ? `CAPE ${params.cape} J/kg`
+          : "Şimşek & gök gürültülü sağanak"
+    });
+  }
+
+  if (params.windGustsKmh >= 50) {
+    const bft = windKmhToBeaufort(params.windGustsKmh);
+    signals.push({
+      id: "wind-gusts",
+      severity: params.windGustsKmh >= 70 ? "warning" : "caution",
+      title: "Kuvvetli Rüzgar Hamlesi",
+      detail: `Hamle ${Math.round(params.windGustsKmh)} km/s · Bft ${bft.scale}`
+    });
+  }
+
+  if (
+    (params.temp850hPa !== null && params.temp850hPa <= 0) ||
+    (params.thickness5001000Dam !== undefined &&
+      params.thickness5001000Dam !== null &&
+      params.thickness5001000Dam <= 542)
+  ) {
+    const parts: string[] = [];
+    if (params.temp850hPa !== null) parts.push(`850 hPa ${params.temp850hPa}°C`);
+    if (
+      params.thickness5001000Dam !== undefined &&
+      params.thickness5001000Dam !== null
+    ) {
+      parts.push(`Kalınlık ${params.thickness5001000Dam} dam`);
+    }
+    if (params.freezingLevelM !== null) parts.push(`0°C: ${params.freezingLevelM} m`);
+    signals.push({
+      id: "cold-snow-threshold",
+      severity: "info",
+      title: "Soğuk Hava / Kar Eşiği",
+      detail: parts.join(" · ")
+    });
+  } else if (params.temperatureC <= 1.5) {
+    signals.push({
+      id: "frost",
+      severity: "caution",
+      title: "Don & Buzlanma Eşiği",
+      detail: `Yüzey ${params.temperatureC.toFixed(1)}°C`
+    });
+  }
+
+  if (params.europeanAqi >= 61) {
+    signals.push({
+      id: "air-quality",
+      severity: params.europeanAqi >= 81 ? "warning" : "caution",
+      title: "Hava Kalitesi Kötü",
+      detail: `EAQI ${params.europeanAqi} · Baskın ${params.dominantPollutant}`
+    });
+  }
+
+  if (params.uvIndex >= 6) {
+    signals.push({
+      id: "uv-high",
+      severity: params.uvIndex >= 8 ? "warning" : "caution",
+      title: `UV ${params.uvIndex.toFixed(1)} (${classifyUvIndex(params.uvIndex)})`,
+      detail: "WHO güneş korunma eşiği"
+    });
+  }
+
+  return signals.slice(0, 4);
+}
+
 const DAY_NAMES_TR = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
 
 function formatDayName(dateIso: string, index: number): string {
@@ -462,15 +576,18 @@ function formatDayName(dateIso: string, index: number): string {
 type CacheEntry<T> = { value: T; expiresAt: number };
 const weatherCache = new Map<string, CacheEntry<WeatherBundle>>();
 const modelCache = new Map<string, CacheEntry<MultiModelBundle>>();
+const windGridCache = new Map<string, CacheEntry<WindGridBundle>>();
 let radarCache: CacheEntry<RadarMetadata> | null = null;
 
 const WEATHER_TTL_MS = 5 * 60 * 1000;
 const MODEL_TTL_MS = 10 * 60 * 1000;
+const WIND_GRID_TTL_MS = 5 * 60 * 1000;
 const RADAR_TTL_MS = 2 * 60 * 1000;
 
 export function clearWeatherCache(): void {
   weatherCache.clear();
   modelCache.clear();
+  windGridCache.clear();
   radarCache = null;
   clearMetarCache();
 }
@@ -1421,6 +1538,94 @@ export async function fetchRadarMetadata(): Promise<RadarMetadata> {
 
   radarCache = { value: meta, expiresAt: Date.now() + RADAR_TTL_MS };
   return meta;
+}
+
+/**
+ * Tek HTTP isteğiyle görünür harita sınırları için 5x5 = 25 noktalı gerçek 10m rüzgar vektör ızgarası.
+ * Bilineer enterpolasyonla 60 FPS canlı Wind Streamlines katmanını besler.
+ */
+export async function fetchWindGrid(bounds: {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}): Promise<WindGridBundle> {
+  const rows = 5;
+  const cols = 5;
+  const south = Math.max(-80, Math.min(80, bounds.south));
+  const north = Math.max(-80, Math.min(80, bounds.north));
+  const west = Math.max(-180, Math.min(180, bounds.west));
+  const east = Math.max(-180, Math.min(180, bounds.east));
+
+  // 0.5° ızgaraya yuvarlayarak önbellek isabet oranını artır
+  const snap = (n: number) => (Math.round(n * 2) / 2).toFixed(1);
+  const cacheKey = `${snap(south)},${snap(west)},${snap(north)},${snap(east)}`;
+  const cached = windGridCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const lats: string[] = [];
+  const lons: string[] = [];
+  for (let r = 0; r < rows; r++) {
+    const lat = south + ((north - south) * r) / (rows - 1);
+    for (let c = 0; c < cols; c++) {
+      const lon = west + ((east - west) * c) / (cols - 1);
+      lats.push(lat.toFixed(3));
+      lons.push(lon.toFixed(3));
+    }
+  }
+
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats.join(",")}&longitude=${lons.join(",")}&current=wind_speed_10m,wind_direction_10m`;
+  const res = await fetchWithRetry(url, 9000, 1);
+  if (!res.ok) {
+    throw new Error(`Open-Meteo wind-grid HTTP ${res.status}`);
+  }
+
+  const raw = await res.json();
+  const list: Array<{ current?: { wind_speed_10m?: number; wind_direction_10m?: number } }> =
+    Array.isArray(raw) ? raw : [raw];
+
+  const u: number[] = [];
+  const v: number[] = [];
+  const speedKmh: number[] = [];
+  let maxSpeedKmh = 0;
+
+  for (let i = 0; i < rows * cols; i++) {
+    const item = list[i]?.current;
+    const spd =
+      typeof item?.wind_speed_10m === "number" && Number.isFinite(item.wind_speed_10m)
+        ? Number(item.wind_speed_10m.toFixed(1))
+        : 0;
+    const dirDeg =
+      typeof item?.wind_direction_10m === "number" &&
+      Number.isFinite(item.wind_direction_10m)
+        ? item.wind_direction_10m
+        : 0;
+    // Meteorolojik rüzgar yönü geldiği yöndür -> aktığı vektör: u = -spd*sin(dir), v = -spd*cos(dir)
+    const rad = (dirDeg * Math.PI) / 180;
+    u.push(Number((-spd * Math.sin(rad)).toFixed(2)));
+    v.push(Number((-spd * Math.cos(rad)).toFixed(2)));
+    speedKmh.push(spd);
+    if (spd > maxSpeedKmh) maxSpeedKmh = spd;
+  }
+
+  const grid: WindGridBundle = {
+    rows,
+    cols,
+    south,
+    west,
+    north,
+    east,
+    u,
+    v,
+    speedKmh,
+    maxSpeedKmh,
+    fetchedAt: new Date().toISOString()
+  };
+
+  windGridCache.set(cacheKey, { value: grid, expiresAt: Date.now() + WIND_GRID_TTL_MS });
+  return grid;
 }
 
 export { WMO_PRIOR_WEIGHTS };

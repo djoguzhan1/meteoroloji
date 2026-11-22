@@ -21,6 +21,7 @@ import { formatTemperature, formatWindSpeed } from "@/lib/weather";
 import type {
   AlertMetric,
   GeoLocation,
+  UnitSystem,
   WeatherAlertRule,
   WeatherBundle
 } from "@/lib/weather-types";
@@ -73,27 +74,62 @@ function MiniSpark({ temps }: { temps: number[] }) {
   );
 }
 
-const METRIC_LABELS: Record<AlertMetric, { label: string; unit: string }> = {
-  temperature: { label: "Sıcaklık", unit: "°C" },
-  windSpeed: { label: "Rüzgar", unit: "km/s" },
-  precipProbability: { label: "Yağış Olasılığı", unit: "%" },
-  aqi: { label: "Hava Kalitesi (EAQI)", unit: "" }
-};
+function getMetricMeta(metric: AlertMetric, unit: UnitSystem): { label: string; unit: string } {
+  if (metric === "temperature") {
+    return { label: "Sıcaklık", unit: unit === "imperial" ? "°F" : "°C" };
+  }
+  if (metric === "windSpeed") {
+    return { label: "Rüzgar", unit: unit === "imperial" ? " mph" : " km/s" };
+  }
+  if (metric === "precipProbability") {
+    return { label: "Yağış Olasılığı", unit: "%" };
+  }
+  return { label: "Hava Kalitesi (EAQI)", unit: "" };
+}
+
+function toDisplayRuleThreshold(
+  metric: AlertMetric,
+  metricThreshold: number,
+  unit: UnitSystem
+): number {
+  if (unit === "imperial") {
+    if (metric === "temperature") return Math.round((metricThreshold * 9) / 5 + 32);
+    if (metric === "windSpeed") return Math.round(metricThreshold * 0.621371);
+  }
+  return metricThreshold;
+}
+
+function toMetricThreshold(
+  metric: AlertMetric,
+  inputVal: number,
+  unit: UnitSystem
+): number {
+  if (unit === "imperial") {
+    if (metric === "temperature") return Math.round(((inputVal - 32) * 5) / 9);
+    if (metric === "windSpeed") return Math.round(inputVal / 0.621371);
+  }
+  return inputVal;
+}
 
 function evaluateRule(
   rule: WeatherAlertRule,
-  bundle: WeatherBundle | undefined
-): { triggered: boolean; currentVal: number | null } {
-  if (!bundle || !rule.enabled) return { triggered: false, currentVal: null };
-  let val = 0;
-  if (rule.metric === "temperature") val = Math.round(bundle.current.temperature);
-  else if (rule.metric === "windSpeed") val = Math.round(bundle.current.windSpeed);
-  else if (rule.metric === "precipProbability") val = bundle.current.precipProbability;
-  else val = bundle.airQuality.europeanAqi;
+  bundle: WeatherBundle | undefined,
+  unit: UnitSystem
+): { triggered: boolean; currentVal: number | null; displayThreshold: number } {
+  const displayThreshold = toDisplayRuleThreshold(rule.metric, rule.threshold, unit);
+  if (!bundle || !rule.enabled) {
+    return { triggered: false, currentVal: null, displayThreshold };
+  }
+  let metricVal = 0;
+  if (rule.metric === "temperature") metricVal = Math.round(bundle.current.temperature);
+  else if (rule.metric === "windSpeed") metricVal = Math.round(bundle.current.windSpeed);
+  else if (rule.metric === "precipProbability") metricVal = bundle.current.precipProbability;
+  else metricVal = bundle.airQuality.europeanAqi;
 
   const triggered =
-    rule.operator === ">" ? val > rule.threshold : val < rule.threshold;
-  return { triggered, currentVal: val };
+    rule.operator === ">" ? metricVal > rule.threshold : metricVal < rule.threshold;
+  const currentVal = toDisplayRuleThreshold(rule.metric, metricVal, unit);
+  return { triggered, currentVal, displayThreshold };
 }
 
 export default function DashboardView() {
@@ -128,8 +164,15 @@ export default function DashboardView() {
 
   const fetchCityList = useCallback(async (list: GeoLocation[]) => {
     setLoadingMap(true);
-    const results = await Promise.all(
-      list.map(async (loc) => {
+    const nextBundles: Record<string, WeatherBundle> = {};
+    const nextFailed: Record<string, string> = {};
+
+    // Kontrollü eşzamanlılık (en fazla 2 eşzamanlı istasyon isteği) ile dış API'leri koru
+    const CONCURRENCY = 2;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < list.length) {
+        const loc = list[cursor++];
         try {
           const qs = new URLSearchParams({
             lat: String(loc.lat),
@@ -139,26 +182,22 @@ export default function DashboardView() {
           });
           const res = await fetch(`/api/weather?${qs.toString()}`);
           if (!res.ok) {
-            return { id: loc.id, bundle: null, err: `HTTP ${res.status}` };
+            nextFailed[loc.id] = `HTTP ${res.status}`;
+            continue;
           }
           const data: WeatherBundle = await res.json();
-          return {
-            id: loc.id,
-            bundle: { ...data, location: { ...data.location, ...loc } },
-            err: null
-          };
+          nextBundles[loc.id] = { ...data, location: { ...data.location, ...loc } };
+          setCityBundles((prev) => ({ ...prev, [loc.id]: nextBundles[loc.id] }));
         } catch {
-          return { id: loc.id, bundle: null, err: "Bağlantı hatası" };
+          nextFailed[loc.id] = "Bağlantı hatası";
         }
-      })
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, list.length) }, () => worker())
     );
 
-    const nextBundles: Record<string, WeatherBundle> = {};
-    const nextFailed: Record<string, string> = {};
-    for (const r of results) {
-      if (r.bundle) nextBundles[r.id] = r.bundle;
-      else if (r.err) nextFailed[r.id] = r.err;
-    }
     setCityBundles(nextBundles);
     setFailedCities(nextFailed);
     setLoadingMap(false);
@@ -197,9 +236,9 @@ export default function DashboardView() {
     () =>
       alerts.map((rule) => ({
         rule,
-        ...evaluateRule(rule, cityBundles[rule.cityId])
+        ...evaluateRule(rule, cityBundles[rule.cityId], unit)
       })),
-    [alerts, cityBundles]
+    [alerts, cityBundles, unit]
   );
 
   const activeTriggered = evaluatedAlerts.filter((e) => e.triggered);
@@ -213,7 +252,7 @@ export default function DashboardView() {
       cityName: city.name,
       metric: alertMetric,
       operator: alertOperator,
-      threshold: Number(alertThreshold),
+      threshold: toMetricThreshold(alertMetric, Number(alertThreshold), unit),
       enabled: true
     });
   };
@@ -266,20 +305,23 @@ export default function DashboardView() {
             Eşik Aşımı Tespit Edildi ({activeTriggered.length})
           </p>
           <div className="flex flex-wrap gap-2">
-            {activeTriggered.map(({ rule, currentVal }) => (
-              <span
-                key={rule.id}
-                className="rounded-lg border border-signal-amber/30 bg-obsidian-950/75 px-3 py-1.5 text-xs text-ink-primary tabular"
-              >
-                <strong>{rule.cityName}</strong> · {METRIC_LABELS[rule.metric].label}{" "}
-                <span className="font-mono text-signal-amber">
-                  {currentVal}
-                  {METRIC_LABELS[rule.metric].unit}
-                </span>{" "}
-                ({rule.operator} {rule.threshold}
-                {METRIC_LABELS[rule.metric].unit})
-              </span>
-            ))}
+            {activeTriggered.map(({ rule, currentVal, displayThreshold }) => {
+              const meta = getMetricMeta(rule.metric, unit);
+              return (
+                <span
+                  key={rule.id}
+                  className="rounded-lg border border-signal-amber/30 bg-obsidian-950/75 px-3 py-1.5 text-xs text-ink-primary tabular"
+                >
+                  <strong>{rule.cityName}</strong> · {meta.label}{" "}
+                  <span className="font-mono text-signal-amber">
+                    {currentVal}
+                    {meta.unit}
+                  </span>{" "}
+                  ({rule.operator} {displayThreshold}
+                  {meta.unit})
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -529,8 +571,12 @@ export default function DashboardView() {
             aria-label="Eşik parametresi"
             className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
           >
-            <option value="windSpeed">Rüzgar Hızı (km/s)</option>
-            <option value="temperature">Sıcaklık (°C)</option>
+            <option value="windSpeed">
+              Rüzgar Hızı ({unit === "imperial" ? "mph" : "km/s"})
+            </option>
+            <option value="temperature">
+              Sıcaklık ({unit === "imperial" ? "°F" : "°C"})
+            </option>
             <option value="precipProbability">Yağış Olasılığı (%)</option>
             <option value="aqi">Hava Kalitesi (EAQI)</option>
           </select>
@@ -563,64 +609,67 @@ export default function DashboardView() {
         </form>
 
         <div className="divide-y divide-white/[0.07]">
-          {evaluatedAlerts.map(({ rule, triggered, currentVal }) => (
-            <div
-              key={rule.id}
-              className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
-            >
-              <div className="flex flex-wrap items-center gap-2.5">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    !rule.enabled
-                      ? "bg-white/20"
-                      : triggered
-                        ? "bg-signal-amber"
-                        : "bg-signal-emerald"
-                  }`}
-                />
-                <span className="font-medium text-ink-primary">{rule.cityName}</span>
-                <span className="text-xs text-ink-secondary">
-                  {METRIC_LABELS[rule.metric].label}{" "}
-                  <strong className="font-mono text-ink-primary tabular">
-                    {rule.operator} {rule.threshold}
-                    {METRIC_LABELS[rule.metric].unit}
-                  </strong>
-                </span>
-                {currentVal !== null && (
-                  <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-xs text-signal-sky tabular">
-                    Güncel: {currentVal}
-                    {METRIC_LABELS[rule.metric].unit}
+          {evaluatedAlerts.map(({ rule, triggered, currentVal, displayThreshold }) => {
+            const meta = getMetricMeta(rule.metric, unit);
+            return (
+              <div
+                key={rule.id}
+                className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
+              >
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      !rule.enabled
+                        ? "bg-white/20"
+                        : triggered
+                          ? "bg-signal-amber"
+                          : "bg-signal-emerald"
+                    }`}
+                  />
+                  <span className="font-medium text-ink-primary">{rule.cityName}</span>
+                  <span className="text-xs text-ink-secondary">
+                    {meta.label}{" "}
+                    <strong className="font-mono text-ink-primary tabular">
+                      {rule.operator} {displayThreshold}
+                      {meta.unit}
+                    </strong>
                   </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => toggleAlert(rule.id)}
-                  className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-xs text-ink-secondary hover:bg-white/[0.08] hover:text-ink-primary transition-colors"
-                >
-                  {rule.enabled ? (
-                    <span className="flex items-center gap-1">
-                      <Bell className="h-3.5 w-3.5 text-signal-emerald" /> Aktif
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1">
-                      <BellOff className="h-3.5 w-3.5 text-ink-muted" /> Pasif
+                  {currentVal !== null && (
+                    <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-xs text-signal-sky tabular">
+                      Güncel: {currentVal}
+                      {meta.unit}
                     </span>
                   )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => removeAlert(rule.id)}
-                  aria-label="Kuralı sil"
-                  className="rounded-lg border border-white/[0.08] p-1.5 text-ink-muted hover:border-signal-rose/40 hover:text-signal-rose transition-colors"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleAlert(rule.id)}
+                    className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-xs text-ink-secondary hover:bg-white/[0.08] hover:text-ink-primary transition-colors"
+                  >
+                    {rule.enabled ? (
+                      <span className="flex items-center gap-1">
+                        <Bell className="h-3.5 w-3.5 text-signal-emerald" /> Aktif
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1">
+                        <BellOff className="h-3.5 w-3.5 text-ink-muted" /> Pasif
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeAlert(rule.id)}
+                    aria-label="Kuralı sil"
+                    className="rounded-lg border border-white/[0.08] p-1.5 text-ink-muted hover:border-signal-rose/40 hover:text-signal-rose transition-colors"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
     </div>

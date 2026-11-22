@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useWeather } from "@/context/WeatherContext";
 import {
+  formatLatLon,
   formatTemperature,
   formatWindSpeed,
   GLOBE_CITIES,
@@ -224,7 +225,7 @@ export default function WorldView() {
               <div>
                 <p className="flex items-center gap-1.5 font-mono text-xs text-ink-muted tabular">
                   <MapPin className="h-3.5 w-3.5 text-signal-sky" />
-                  {selectedLoc.lat.toFixed(3)}°, {selectedLoc.lon.toFixed(3)}°
+                  {formatLatLon(selectedLoc.lat, selectedLoc.lon, 3)}
                 </p>
                 <h2 className="mt-1 font-display text-2xl font-semibold text-ink-primary">
                   {selectedLoc.name}

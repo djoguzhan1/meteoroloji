@@ -1,13 +1,15 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
+  AlertTriangle,
   ArrowDown,
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
+  Check,
   Cloud,
   CloudLightning,
   CloudRain,
@@ -19,6 +21,7 @@ import {
   Layers,
   Radio,
   RefreshCw,
+  Share2,
   ShieldCheck,
   Star,
   Sun,
@@ -28,7 +31,11 @@ import {
 } from "lucide-react";
 import { useWeather } from "@/context/WeatherContext";
 import {
+  classifyPressureTrend,
   classifyUvIndex,
+  computeSynopticSignals,
+  describePressureTrendDetail,
+  formatLatLon,
   formatTemperature,
   formatWindSpeed,
   windDirectionToCompass,
@@ -144,11 +151,13 @@ function BarometerDialMini({ pressure }: { pressure: number }) {
 function SunCycleCard({
   sunrise,
   sunset,
-  solarElevationDeg
+  solarElevationDeg,
+  timezone
 }: {
   sunrise: string;
   sunset: string;
   solarElevationDeg: number;
+  timezone: string;
 }) {
   const srTime = sunrise ? sunrise.slice(11, 16) : "--:--";
   const ssTime = sunset ? sunset.slice(11, 16) : "--:--";
@@ -158,8 +167,24 @@ function SunCycleCard({
     return (h || 0) * 60 + (m || 0);
   };
 
-  const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Seçili şehrin gerçek yerel saatini hesapla (tarayıcı saat dilimine değil şehir saat dilimine göre!)
+  let nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).formatToParts(new Date());
+    const hh = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+    const mm = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+    if (Number.isFinite(hh) && Number.isFinite(mm)) {
+      nowMin = (hh % 24) * 60 + mm;
+    }
+  } catch {
+    // geçersiz timezone ise yerel saat yedek
+  }
+
   const srMin = toMin(srTime);
   const ssMin = toMin(ssTime);
   const progress = Math.max(
@@ -241,6 +266,8 @@ export default function HeroSceneView() {
     setFrameIndex
   } = useWeather();
 
+  const [copiedLink, setCopiedLink] = useState(false);
+
   const liveSoundingSummary = useMemo(() => {
     if (!bundle || bundle.sounding.length === 0) return null;
     return analyzeConvectiveProfile({
@@ -275,6 +302,15 @@ export default function HeroSceneView() {
   }
 
   const activeHour = frameIndex > 0 ? bundle.hourly[frameIndex] : null;
+  const activeDelta3h = activeHour
+    ? Number(
+        (
+          activeHour.pressure -
+          (bundle.hourly[Math.max(0, frameIndex - 3)]?.pressure ?? activeHour.pressure)
+        ).toFixed(1)
+      )
+    : bundle.current.pressureDelta3h;
+
   const display = activeHour
     ? {
         temperature: activeHour.temperature,
@@ -286,10 +322,15 @@ export default function HeroSceneView() {
         humidity: activeHour.humidity,
         dewPoint: activeHour.dewPoint,
         pressure: activeHour.pressure,
+        pressureDelta3h: activeDelta3h,
+        pressureTrend: classifyPressureTrend(activeDelta3h),
+        pressureTrendDetail: describePressureTrendDetail(activeDelta3h),
         visibilityKm: activeHour.visibilityKm,
         uvIndex: activeHour.uvIndex,
         condition: activeHour.condition,
         weatherCode: activeHour.weatherCode,
+        isStorm: activeHour.isStorm,
+        cape: activeHour.cape,
         temp850hPa: activeHour.temp850hPa,
         freezingLevelM: activeHour.freezingLevelM,
         precipConsensus: activeHour.precipConsensus,
@@ -305,10 +346,15 @@ export default function HeroSceneView() {
         humidity: bundle.current.humidity,
         dewPoint: bundle.current.dewPoint,
         pressure: bundle.current.pressure,
+        pressureDelta3h: bundle.current.pressureDelta3h,
+        pressureTrend: bundle.current.pressureTrend,
+        pressureTrendDetail: bundle.current.pressureTrendDetail,
         visibilityKm: bundle.current.visibilityKm,
         uvIndex: bundle.current.uvIndex,
         condition: bundle.current.condition,
         weatherCode: bundle.current.weatherCode,
+        isStorm: bundle.current.isStorm,
+        cape: bundle.nativeConvective.cape,
         temp850hPa: bundle.current.temp850hPa,
         freezingLevelM: bundle.nativeConvective.freezingLevelM,
         precipConsensus: bundle.current.precipConsensus,
@@ -318,6 +364,41 @@ export default function HeroSceneView() {
   const displayBeaufort = windKmhToBeaufort(display.windSpeed);
   const displayUvLabel = classifyUvIndex(display.uvIndex);
   const metarStation = bundle.hybrid?.verification?.station ?? null;
+
+  const synopticSignals = useMemo(
+    () =>
+      computeSynopticSignals({
+        pressureDelta3h: display.pressureDelta3h,
+        temp850hPa: display.temp850hPa,
+        thickness5001000Dam: liveSoundingSummary?.thickness5001000Dam ?? null,
+        windGustsKmh: display.windGusts,
+        cape: display.cape ?? liveSoundingSummary?.cape ?? null,
+        isStorm: display.isStorm,
+        europeanAqi: bundle.airQuality.europeanAqi,
+        dominantPollutant: bundle.airQuality.dominantPollutant,
+        uvIndex: display.uvIndex,
+        freezingLevelM: display.freezingLevelM,
+        temperatureC: display.temperature
+      }),
+    [display, liveSoundingSummary, bundle.airQuality]
+  );
+
+  const handleShareStation = async () => {
+    try {
+      const qs = new URLSearchParams({
+        city: activeLocation.name,
+        lat: activeLocation.lat.toFixed(4),
+        lon: activeLocation.lon.toFixed(4)
+      });
+      if (activeLocation.country) qs.set("country", activeLocation.country);
+      const url = `${window.location.origin}/?${qs.toString()}`;
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      window.setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      // ignore clipboard restrictions
+    }
+  };
 
   const fav = isFavorite(activeLocation);
   const weekMin = Math.min(...bundle.daily.map((d) => d.tempMin));
@@ -385,6 +466,19 @@ export default function HeroSceneView() {
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Güncelle
               </button>
+              <button
+                type="button"
+                onClick={() => void handleShareStation()}
+                aria-label="İstasyon bağlantısını paylaş"
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 transition-colors backdrop-blur-md ${
+                  copiedLink
+                    ? "border-signal-emerald/45 bg-signal-emerald/15 text-signal-emerald"
+                    : "border-white/10 bg-obsidian-900/50 text-ink-secondary hover:text-ink-primary"
+                }`}
+              >
+                {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
+                <span>{copiedLink ? "Kopyalandı" : "Paylaş"}</span>
+              </button>
             </div>
 
             <div>
@@ -394,7 +488,7 @@ export default function HeroSceneView() {
                   {activeLocation.country ? `, ${activeLocation.country}` : ""}
                 </h1>
                 <span className="font-mono text-xs text-ink-muted tabular">
-                  {activeLocation.lat.toFixed(2)}°K · {activeLocation.lon.toFixed(2)}°D
+                  {formatLatLon(activeLocation.lat, activeLocation.lon)}
                 </span>
               </div>
 
@@ -470,6 +564,34 @@ export default function HeroSceneView() {
                 </Link>
               )}
             </div>
+
+            {/* Gerçek Fiziksel Sinoptik Eşik Şeridi (yalnızca eşik aşıldığında görünür) */}
+            {synopticSignals.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {synopticSignals.map((sig) => (
+                  <div
+                    key={sig.id}
+                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs backdrop-blur-md tabular ${
+                      sig.severity === "warning"
+                        ? "border-signal-amber/40 bg-signal-amber/15 text-amber-100"
+                        : sig.severity === "caution"
+                          ? "border-signal-sky/35 bg-signal-sky/10 text-sky-100"
+                          : "border-white/15 bg-obsidian-900/70 text-ink-primary"
+                    }`}
+                  >
+                    <AlertTriangle
+                      className={`h-3.5 w-3.5 shrink-0 ${
+                        sig.severity === "warning"
+                          ? "text-signal-amber"
+                          : "text-signal-sky"
+                      }`}
+                    />
+                    <span className="font-medium">{sig.title}</span>
+                    <span className="font-mono text-[11px] opacity-80">· {sig.detail}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Sağ: Meteorolojik Ölçüm Paneli */}
@@ -529,18 +651,18 @@ export default function HeroSceneView() {
                     </p>
                     <p
                       className="flex items-center gap-1 text-[11px] text-ink-muted"
-                      title={bundle.current.pressureTrendDetail}
+                      title={display.pressureTrendDetail}
                     >
-                      {bundle.current.pressureTrend.includes("yükseliyor") ? (
+                      {display.pressureTrend.includes("yükseliyor") ? (
                         <ArrowUpRight className="h-3.5 w-3.5 text-signal-emerald" />
-                      ) : bundle.current.pressureTrend.includes("düşüyor") ? (
+                      ) : display.pressureTrend.includes("düşüyor") ? (
                         <ArrowDownRight className="h-3.5 w-3.5 text-signal-amber" />
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 text-ink-muted" />
                       )}
-                      {bundle.current.pressureDelta3h > 0
-                        ? `+${bundle.current.pressureDelta3h}`
-                        : bundle.current.pressureDelta3h}{" "}
+                      {display.pressureDelta3h > 0
+                        ? `+${display.pressureDelta3h}`
+                        : display.pressureDelta3h}{" "}
                       hPa/3s
                     </p>
                   </div>
@@ -613,10 +735,10 @@ export default function HeroSceneView() {
             </a>
             <div className="hidden sm:flex items-center gap-5">
               <Link href="/world" className="hover:text-ink-primary transition-colors">
-                Canlı Yağış Radarı →
+                Canlı Yağış Radarı & Rüzgar Akışı →
               </Link>
               <Link href="/lab" className="hover:text-ink-primary transition-colors">
-                ECMWF · GFS · ICON & Skew-T →
+                5-Model & Skew-T →
               </Link>
             </div>
           </div>
@@ -961,6 +1083,7 @@ export default function HeroSceneView() {
             sunrise={bundle.current.sunrise}
             sunset={bundle.current.sunset}
             solarElevationDeg={bundle.current.solarElevationDeg}
+            timezone={bundle.timezone}
           />
 
           <div className="surface-panel p-5 flex flex-col justify-between space-y-3">
@@ -1066,7 +1189,7 @@ export default function HeroSceneView() {
               href="/lab"
               className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/[0.06] px-3 py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.12] transition-colors"
             >
-              Sondaj & ECMWF/GFS/ICON →
+              Sondaj & 5-Model →
             </Link>
           </div>
         </div>

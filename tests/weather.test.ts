@@ -9,8 +9,10 @@ import {
   computePrecipConsensus,
   computeSolarElevationDeg,
   computeSubsolarPoint,
+  computeSynopticSignals,
   describePressureTrendDetail,
   detectDominantPollutant,
+  formatLatLon,
   formatTemperature,
   formatWindSpeed,
   mapEuropeanAqi,
@@ -144,5 +146,42 @@ describe("weather WMO, NOAA, EEA ve 5-model hibrit yardımcıları", () => {
 
     expect(computeHybridConfidence(0.4, 0.3)).toBeGreaterThanOrEqual(98);
     expect(computeHybridConfidence(5.5, 3.0)).toBeLessThan(65);
+  });
+
+  it("Güney/Batı yarımküre koordinatları ve fiziksel sinoptik eşik sinyalleri doğrudur", () => {
+    expect(formatLatLon(-33.87, 151.21)).toBe("33.87°G · 151.21°D");
+    expect(formatLatLon(40.71, -74.01)).toBe("40.71°K · 74.01°B");
+
+    const calm = computeSynopticSignals({
+      pressureDelta3h: 0.4,
+      temp850hPa: 8,
+      thickness5001000Dam: 556,
+      windGustsKmh: 22,
+      cape: 100,
+      isStorm: false,
+      europeanAqi: 25,
+      dominantPollutant: "PM2.5",
+      uvIndex: 2,
+      freezingLevelM: 2800,
+      temperatureC: 16
+    });
+    expect(calm).toHaveLength(0);
+
+    const active = computeSynopticSignals({
+      pressureDelta3h: -4.2,
+      temp850hPa: -2.5,
+      thickness5001000Dam: 538,
+      windGustsKmh: 65,
+      cape: 1200,
+      isStorm: true,
+      europeanAqi: 72,
+      dominantPollutant: "PM2.5",
+      uvIndex: 1,
+      freezingLevelM: 950,
+      temperatureC: 3
+    });
+    expect(active.length).toBeGreaterThanOrEqual(3);
+    expect(active.some((s) => s.id === "pressure-tendency")).toBe(true);
+    expect(active.some((s) => s.id === "cold-snow-threshold")).toBe(true);
   });
 });

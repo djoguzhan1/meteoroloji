@@ -166,6 +166,36 @@ export function WeatherProvider({
       const savedUnit = localStorage.getItem(STORAGE_KEYS.unit);
       if (savedUnit === "metric" || savedUnit === "imperial") setUnitState(savedUnit);
 
+      // 1. Öncelik: Paylaşılabilir URL query parametreleri (?lat=&lon=&city=&country=)
+      const params = new URLSearchParams(window.location.search);
+      const urlLat = Number(params.get("lat"));
+      const urlLon = Number(params.get("lon"));
+      const urlCity = params.get("city");
+      const urlCountry = params.get("country") ?? "";
+
+      if (
+        params.has("lat") &&
+        params.has("lon") &&
+        Number.isFinite(urlLat) &&
+        Number.isFinite(urlLon) &&
+        urlLat >= -90 &&
+        urlLat <= 90 &&
+        urlLon >= -180 &&
+        urlLon <= 180
+      ) {
+        const urlLoc: GeoLocation = {
+          id: `url_${urlLat.toFixed(2)}_${urlLon.toFixed(2)}`,
+          name: urlCity || `${urlLat.toFixed(2)}°, ${urlLon.toFixed(2)}°`,
+          country: urlCountry,
+          lat: urlLat,
+          lon: urlLon
+        };
+        setActiveLocationState(urlLoc);
+        void loadForLocation(urlLoc);
+        return;
+      }
+
+      // 2. Öncelik: Kayıtlı son konum
       const savedLoc = localStorage.getItem(STORAGE_KEYS.location);
       if (savedLoc) {
         const loc: GeoLocation = JSON.parse(savedLoc);
@@ -193,6 +223,15 @@ export function WeatherProvider({
       setFrameIndex(0);
       try {
         localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
+        if (typeof window !== "undefined" && window.location.pathname === "/") {
+          const qs = new URLSearchParams({
+            city: loc.name,
+            lat: loc.lat.toFixed(4),
+            lon: loc.lon.toFixed(4)
+          });
+          if (loc.country) qs.set("country", loc.country);
+          window.history.replaceState(null, "", `/?${qs.toString()}`);
+        }
       } catch {
         // ignore
       }

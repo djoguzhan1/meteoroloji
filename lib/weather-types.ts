@@ -281,6 +281,27 @@ export type RadarMetadata = {
   frames: RadarFrame[];
 };
 
+export type WindGridBundle = {
+  rows: number;
+  cols: number;
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+  u: number[]; // m/s veya km/s doğu-batı bileşeni (+doğu)
+  v: number[]; // kuzey-güney bileşeni (+kuzey)
+  speedKmh: number[];
+  maxSpeedKmh: number;
+  fetchedAt: string;
+};
+
+export type SynopticSignal = {
+  id: string;
+  severity: "info" | "caution" | "warning";
+  title: string;
+  detail: string;
+};
+
 export type AlertMetric = "temperature" | "windSpeed" | "precipProbability" | "aqi";
 
 export type WeatherAlertRule = {
