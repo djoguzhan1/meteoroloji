@@ -673,9 +673,9 @@ export default function CumulusGameView() {
     hud.status === "victory" ? computeMedal(hud.elapsedSec, difficulty) : null;
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 sm:px-6 lg:px-8">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-2.5 px-4 sm:px-6 lg:px-8">
       {/* Üst Başlık + Canlı Hakimiyet Şeridi */}
-      <section className="rounded-2xl border border-white/10 bg-[#070b14]/85 p-4 backdrop-blur-xl">
+      <section className="rounded-2xl border border-white/10 bg-[#070b14]/85 px-4 py-3 backdrop-blur-xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-400/30 bg-sky-400/15 text-sky-300">
@@ -925,7 +925,7 @@ export default function CumulusGameView() {
 
       {/* Ana 60 FPS Atmosfer Arenası */}
       <section className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#050912] shadow-[0_24px_80px_rgba(0,0,0,0.65)]">
-        <div className="relative mx-auto aspect-[1000/620] w-full max-w-[1060px]">
+        <div className="relative mx-auto aspect-[1000/620] w-full max-w-[min(100%,clamp(420px,calc((100vh-235px)*1000/620),1120px))]">
           <canvas
             ref={canvasRef}
             onPointerDown={handlePointerDown}

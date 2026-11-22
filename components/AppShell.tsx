@@ -65,29 +65,29 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       {/* Minimalist Üst Bar */}
       <header className="fixed inset-x-0 top-0 z-40 border-b border-white/[0.08] bg-[#06090f]/80 backdrop-blur-2xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-4">
             <Link
               href="/"
-              className="flex items-center gap-2 font-display text-base font-bold tracking-[0.12em] text-ink-primary"
+              className="flex shrink-0 items-center gap-2 font-display text-base font-bold tracking-[0.12em] text-ink-primary"
             >
               <span>ATMOS</span>
             </Link>
 
-            <nav aria-label="Ana sekmeler" className="hidden md:flex items-center gap-1">
+            <nav aria-label="Ana sekmeler" className="hidden md:flex items-center gap-0.5">
               {NAV_TABS.map(({ href, label, icon: Icon }) => {
                 const active = pathname === href;
                 return (
                   <Link
                     key={href}
                     href={href}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                    className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors ${
                       active
                         ? "bg-white/[0.10] text-ink-primary"
                         : "text-ink-secondary hover:bg-white/[0.04] hover:text-ink-primary"
                     }`}
                   >
-                    <Icon className="h-3.5 w-3.5 opacity-80" />
+                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-80" />
                     <span>{label}</span>
                   </Link>
                 );
@@ -95,7 +95,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             </nav>
           </div>
 
-          <div className="hidden sm:block w-full max-w-xs lg:max-w-sm">
+          <div className="hidden sm:block w-full max-w-[220px] lg:max-w-[260px]">
             <CitySearch
               onSelect={setActiveLocation}
               onOpenChange={setSearchOpen}
