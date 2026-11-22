@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   CloudLightning,
   Flame,
@@ -47,6 +48,15 @@ import {
   renderCumulusArena,
   type AtmosphericVisualState
 } from "@/lib/cumulus-renderer";
+
+const CumulusIntro3D = dynamic(() => import("./CumulusIntro3D"), {
+  ssr: false,
+  loading: () => (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#061224] font-mono text-xs tracking-widest text-sky-200/80">
+      3D SÜPER HÜCRE SAHNESİ HAZIRLANIYOR...
+    </div>
+  )
+});
 
 type MedalTier = "gold" | "silver" | "bronze";
 
@@ -174,6 +184,7 @@ export default function CumulusGameView() {
   const [launchRatio, setLaunchRatio] = useState<number>(0.5);
   const [toolMode, setToolMode] = useState<"launch" | "supply">("launch");
   const [paused, setPaused] = useState<boolean>(false);
+  const [showIntro, setShowIntro] = useState<boolean>(true);
   const [sfxEnabled, setSfxEnabled] = useState<boolean>(true);
   const [career, setCareer] = useState<CareerStorage>({
     stages: {},
@@ -209,6 +220,7 @@ export default function CumulusGameView() {
   const launchRatioRef = useRef(launchRatio);
   const toolModeRef = useRef(toolMode);
   const pausedRef = useRef(paused);
+  const showIntroRef = useRef(showIntro);
   const recordedOutcomeRef = useRef(false);
 
   const [hud, setHud] = useState<HudSnapshot>(() => extractHud(gameRef.current));
@@ -224,6 +236,10 @@ export default function CumulusGameView() {
   useEffect(() => {
     pausedRef.current = paused;
   }, [paused]);
+
+  useEffect(() => {
+    showIntroRef.current = showIntro;
+  }, [showIntro]);
 
   useEffect(() => {
     cumulusAudio.setEnabled(sfxEnabled);
@@ -347,6 +363,7 @@ export default function CumulusGameView() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (showIntroRef.current) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -393,7 +410,7 @@ export default function CumulusGameView() {
       lastTs = now;
 
       const state = gameRef.current;
-      if (!pausedRef.current) {
+      if (!pausedRef.current && !showIntroRef.current) {
         const events = stepCumulusGame(state, rawDt);
         if (events.length > 0) {
           dispatchGameEvents(events);
@@ -422,7 +439,8 @@ export default function CumulusGameView() {
       }
 
       const canvas = canvasRef.current;
-      if (canvas) {
+      const shouldRender2D = !showIntroRef.current || hudTimer === 0;
+      if (canvas && shouldRender2D) {
         const rect = canvas.getBoundingClientRect();
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const targetW = Math.max(320, Math.round(rect.width * dpr));
@@ -737,8 +755,33 @@ export default function CumulusGameView() {
               className="block h-full w-full cursor-crosshair select-none touch-none"
             />
 
+            {/* Sadece Start Açılışında Çalışan 3D Volümetrik Süper Hücre Sinematiği */}
+            {showIntro && (
+              <CumulusIntro3D
+                stageId={stageId}
+                onSelectStage={(nextId) => {
+                  setStageId(nextId);
+                  resetGame(nextId, difficulty, windMode);
+                }}
+                windBadgeText={windBadgeText}
+                windKmh={hud.windKmh}
+                totalWins={career.totalWins}
+                onStartDive={() => {
+                  cumulusAudio.playIntroDive();
+                }}
+                onComplete={() => {
+                  resetGame(stageId, difficulty, windMode);
+                  setShowIntro(false);
+                }}
+                onSkip={() => {
+                  resetGame(stageId, difficulty, windMode);
+                  setShowIntro(false);
+                }}
+              />
+            )}
+
             {/* Duraklatıldı Katmanı */}
-            {paused && hud.status === "playing" && (
+            {paused && !showIntro && hud.status === "playing" && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#040914]/70 backdrop-blur-sm">
                 <p className="font-display text-2xl font-semibold tracking-wider text-ink-primary">
                   CEPHE DURAKLATILDI
@@ -993,6 +1036,19 @@ export default function CumulusGameView() {
             >
               <RotateCcw className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Yenile</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                resetGame();
+                setShowIntro(true);
+              }}
+              title="3D Süper Hücre açılış animasyonunu tekrar izle"
+              className="flex h-7 items-center gap-1 rounded-lg border border-sky-400/25 bg-sky-500/10 px-2.5 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">3D Açılış</span>
             </button>
           </div>
         </div>

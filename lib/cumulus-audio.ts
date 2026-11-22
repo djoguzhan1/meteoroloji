@@ -205,6 +205,61 @@ class CumulusAudioEngine {
       osc.stop(now + i * 0.08 + 0.78);
     });
   }
+
+  /**
+   * 3D Açılış -> Bulut Dalışı sinematik ses efekti:
+   * Barometrik sub-bass düşüş + yükselen yüksek irtifa rüzgar uğultusu + şimşek çakışı.
+   */
+  playIntroDive() {
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // 1. Derin barometrik sub-bass dalışı
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(118, now);
+    sub.frequency.exponentialRampToValueAtTime(34, now + 1.35);
+    const subGain = ctx.createGain();
+    subGain.gain.setValueAtTime(0.001, now);
+    subGain.gain.linearRampToValueAtTime(0.22, now + 0.14);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 1.45);
+    sub.connect(subGain).connect(ctx.destination);
+    sub.start(now);
+    sub.stop(now + 1.48);
+
+    // 2. Bulut katmanını yaran jet rüzgarı taraması
+    const wind = ctx.createBufferSource();
+    wind.buffer = this.createNoiseBuffer(ctx, 1.55);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(220, now);
+    bp.frequency.exponentialRampToValueAtTime(1450, now + 0.92);
+    bp.frequency.exponentialRampToValueAtTime(380, now + 1.5);
+    bp.Q.value = 1.6;
+    const windGain = ctx.createGain();
+    windGain.gain.setValueAtTime(0.001, now);
+    windGain.gain.linearRampToValueAtTime(0.16, now + 0.55);
+    windGain.gain.exponentialRampToValueAtTime(0.001, now + 1.52);
+    wind.connect(bp).connect(windGain).connect(ctx.destination);
+    wind.start(now);
+    wind.stop(now + 1.55);
+
+    // 3. Atmosferik akor parlaması (açılış heyecanı)
+    const notes = [220, 329.63, 440, 659.25];
+    notes.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(f, now + 0.08 + i * 0.06);
+      const og = ctx.createGain();
+      og.gain.setValueAtTime(0.001, now + 0.08 + i * 0.06);
+      og.gain.linearRampToValueAtTime(0.045, now + 0.25 + i * 0.06);
+      og.gain.exponentialRampToValueAtTime(0.001, now + 1.35);
+      osc.connect(og).connect(ctx.destination);
+      osc.start(now + 0.08 + i * 0.06);
+      osc.stop(now + 1.4);
+    });
+  }
 }
 
 export const cumulusAudio = new CumulusAudioEngine();
