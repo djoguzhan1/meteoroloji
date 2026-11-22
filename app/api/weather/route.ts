@@ -3,6 +3,7 @@ import { DEFAULT_LOCATION, fetchWeatherBundle } from "@/lib/weather";
 import type { GeoLocation } from "@/lib/weather-types";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);

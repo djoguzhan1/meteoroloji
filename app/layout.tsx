@@ -24,19 +24,20 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ATMOS — Canlı Hava Durumu, Radar & Atmosferik Sondaj",
+  title: "ATMOS — Canlı Meteoroloji, 5-Model Hibrit, Radar & Bulut Savaşı",
   description:
-    "Gerçek zamanlı meteoroloji gözlemi, RainViewer canlı yağış radarı, ECMWF · GFS · ICON model karşılaştırması ve 1000–300 hPa Skew-T Log-P radyosonda analizi.",
+    "Gerçek zamanlı METAR doğrulamalı 5-model hibrit tahmin (ECMWF IFS · AIFS · ICON · UKMO · GFS), canlı yağış radarı & rüzgar akım haritası, 1000–300 hPa Skew-T sondaj ve CUMULUS Bulut Savaşı.",
   openGraph: {
-    title: "ATMOS — Canlı Hava Durumu, Radar & Atmosferik Sondaj",
+    title: "ATMOS — Canlı Meteoroloji, 5-Model Hibrit & Radar",
     description:
-      "Canlı gözlem, küresel yağış radarı, ECMWF/GFS/ICON modelleri ve üst atmosfer radyosonda analizi.",
+      "Gerçek zamanlı ICAO METAR doğrulamalı 5-model hibrit tahmin, canlı Doppler radar + rüzgar akımı, Skew-T Log-P radyosonda ve CUMULUS Bulut Savaşı.",
     type: "website",
     locale: "tr_TR"
   }
 };
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 export default async function RootLayout({
   children

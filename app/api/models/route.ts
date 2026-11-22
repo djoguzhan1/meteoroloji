@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_LOCATION, fetchMultiModelBundle } from "@/lib/weather";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -22,7 +23,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     console.error("Multi-model API error:", err);
     return NextResponse.json(
-      { error: "ECMWF / GFS / ICON model verileri alınamadı." },
+      { error: "5-model (ECMWF / AIFS / ICON / UKMO / GFS) verileri alınamadı." },
       { status: 503 }
     );
   }
