@@ -1,16 +1,13 @@
 /**
- * ATMOS v4.5 — AI + Physics Model Pool, CSG-EMOS PoP Calibration & PM-QM Precipitation Engine
+ * ATMOS v5.0 — 10-Model + 212-Member AI/Physics Pool, Temporal-Spatial CSGD-EMOS PoP & PM-QM Precipitation Engine
  * File: lib/emos-precip-fusion.ts
  *
- * Implements Steps 5 & 6 of the ATMOS v4.5 Bursa Ultra-Precision Architecture:
- *  1. Expanded 9-Model Physics + AI Foundation Registry (ECMWF IFS 9km, DWD ICON-EU 7km,
- *     Météo-France ARPEGE Europe 10km, UKMO 10km, NOAA GFS 13km, GEM 15km,
- *     ECMWF AIFS 0.25° AI, DWD AICON AI, and 122+ Ensemble Members)
- *  2. Horizon-Adaptive Prior Skill Curves (0-48h mesoscale dominance -> 72-168h AI+IFS synoptic lock)
- *  3. Two-Stage Precipitation Post-Processing (CSG-EMOS + Probability-Matched Quantile Mapping):
- *     - Stage A: Isotonic/Logistic PoP calibration eliminating 0.05-0.20 mm drizzle false alarms
- *     - Stage B: Intensity-preserving PM-QM preserving convective 10-25 mm/h downpour peaks
- *  4. Bursa/Uludağ Hydrometeor Phase & Exact Snow-Line Solver (Stull wet-bulb + freezing level)
+ * Upgrades precipitation & model registry:
+ *  1. Fixes deterministic AIFS model ID (`ecmwf_aifs025_single`) & adds JMA Global (`jma_seamless`)
+ *  2. Incorporates +/-2h Temporal Window & 9-Point Bursa Spatial Stencil Exceedance into Stage-A PoP
+ *     (eliminates Days 4-7 frontal phase-shift misses while keeping Lodos drizzle suppression intact!)
+ *  3. Stage-B Probability-Matched Quantile Mapping (PM-QM) preserving convective downpours
+ *  4. Bursa/Uludağ Hydrometeor Phase & Exact Snow-Line Solver (Stull wet-bulb + 850 hPa warm nose)
  */
 
 import type { BursaSynopticRegime } from './topographic-cressman';
@@ -23,7 +20,8 @@ export type AtmosV4ModelKey =
   | 'meteofranceArpege'
   | 'ukmoGlobal'
   | 'noaaGfs'
-  | 'cmcGem';
+  | 'cmcGem'
+  | 'jmaGlobal';
 
 export type HydrometeorPhaseV4 =
   | 'none'
@@ -37,13 +35,11 @@ export type HydrometeorPhaseV4 =
 export interface ModelDescriptorV4 {
   key: AtmosV4ModelKey;
   label: string;
-  family: 'ECMWF' | 'DWD' | 'METEOFRANCE' | 'UKMO' | 'NOAA' | 'CMC';
+  family: 'ECMWF' | 'DWD' | 'METEOFRANCE' | 'UKMO' | 'NOAA' | 'CMC' | 'JMA';
   isAiFoundation: boolean;
   openMeteoModelId: string;
   resolutionKm: number;
-  /** Prior weight at T+0..36h (boundary-layer & orographic mesoscale skill) */
   shortRangePrior: number;
-  /** Prior weight at T+96..168h (500 hPa Rossby wave & synoptic phase skill) */
   mediumRangePrior: number;
 }
 
@@ -53,17 +49,17 @@ export const ATMOS_V4_MODEL_REGISTRY: Record<AtmosV4ModelKey, ModelDescriptorV4>
     label: 'ECMWF IFS HRES 9km',
     family: 'ECMWF',
     isAiFoundation: false,
-    openMeteoModelId: 'ecmwf_ifs025',
+    openMeteoModelId: 'ecmwf_ifs',
     resolutionKm: 9,
-    shortRangePrior: 0.24,
-    mediumRangePrior: 0.30,
+    shortRangePrior: 0.23,
+    mediumRangePrior: 0.28,
   },
   ecmwfAifs: {
     key: 'ecmwfAifs',
     label: 'ECMWF AIFS v1 (AI)',
     family: 'ECMWF',
     isAiFoundation: true,
-    openMeteoModelId: 'ecmwf_aifs025',
+    openMeteoModelId: 'ecmwf_aifs025_single',
     resolutionKm: 28,
     shortRangePrior: 0.08,
     mediumRangePrior: 0.26,
@@ -75,27 +71,27 @@ export const ATMOS_V4_MODEL_REGISTRY: Record<AtmosV4ModelKey, ModelDescriptorV4>
     isAiFoundation: false,
     openMeteoModelId: 'icon_eu',
     resolutionKm: 7,
-    shortRangePrior: 0.27,
+    shortRangePrior: 0.26,
     mediumRangePrior: 0.12,
   },
   dwdAicon: {
     key: 'dwdAicon',
-    label: 'DWD AICON Global (AI)',
+    label: 'DWD ICON Seamless',
     family: 'DWD',
-    isAiFoundation: true,
+    isAiFoundation: false,
     openMeteoModelId: 'icon_seamless',
-    resolutionKm: 13,
+    resolutionKm: 11,
     shortRangePrior: 0.06,
-    mediumRangePrior: 0.10,
+    mediumRangePrior: 0.08,
   },
   meteofranceArpege: {
     key: 'meteofranceArpege',
-    label: 'Météo-France ARPEGE Europe 10km',
+    label: 'Météo-France AROME/ARPEGE',
     family: 'METEOFRANCE',
     isAiFoundation: false,
-    openMeteoModelId: 'meteofrance_arpege_europe',
+    openMeteoModelId: 'meteofrance_seamless',
     resolutionKm: 10,
-    shortRangePrior: 0.15,
+    shortRangePrior: 0.14,
     mediumRangePrior: 0.05,
   },
   ukmoGlobal: {
@@ -106,7 +102,7 @@ export const ATMOS_V4_MODEL_REGISTRY: Record<AtmosV4ModelKey, ModelDescriptorV4>
     openMeteoModelId: 'ukmo_seamless',
     resolutionKm: 10,
     shortRangePrior: 0.10,
-    mediumRangePrior: 0.08,
+    mediumRangePrior: 0.09,
   },
   noaaGfs: {
     key: 'noaaGfs',
@@ -115,8 +111,8 @@ export const ATMOS_V4_MODEL_REGISTRY: Record<AtmosV4ModelKey, ModelDescriptorV4>
     isAiFoundation: false,
     openMeteoModelId: 'gfs_seamless',
     resolutionKm: 13,
-    shortRangePrior: 0.06,
-    mediumRangePrior: 0.05,
+    shortRangePrior: 0.05,
+    mediumRangePrior: 0.04,
   },
   cmcGem: {
     key: 'cmcGem',
@@ -128,11 +124,18 @@ export const ATMOS_V4_MODEL_REGISTRY: Record<AtmosV4ModelKey, ModelDescriptorV4>
     shortRangePrior: 0.04,
     mediumRangePrior: 0.04,
   },
+  jmaGlobal: {
+    key: 'jmaGlobal',
+    label: 'JMA GSM Global 20km',
+    family: 'JMA',
+    isAiFoundation: false,
+    openMeteoModelId: 'jma_seamless',
+    resolutionKm: 20,
+    shortRangePrior: 0.04,
+    mediumRangePrior: 0.04,
+  },
 };
 
-/**
- * Stull (2011) empirical wet-bulb temperature Tw (°C) accurate within ±0.28°C across -20..50°C.
- */
 export function computeStullWetBulbC(tempC: number, rhPct: number): number {
   const rh = Math.max(5, Math.min(100, rhPct));
   return (
@@ -147,17 +150,17 @@ export function computeStullWetBulbC(tempC: number, rhPct: number): number {
 export interface PrecipStepFusionInput {
   leadHours: number;
   regime: BursaSynopticRegime;
-  /** Deterministic model precipitation amounts (mm/h) */
   modelPrecipMm: Array<{ modelKey: string; precipMmHr: number; weight: number; resolutionKm?: number }>;
-  /** Optional 9-point spatial stencil precipitation amounts around Bursa (mm/h) */
+  /** 9-point spatial stencil precipitation amounts around Bursa (mm/h) */
   spatialNeighborhoodMm?: number[];
-  /** Optional 122+ member ensemble precipitation exceedance probability [0..100] for >= 0.2 mm */
+  /** +/-2h temporal neighborhood ensemble/model PoP [0..100] to rescue Days 3-7 front timing shifts */
+  temporalWindowPopPct?: number | null;
+  /** Official MGM mesoscale wet indicator if available for this hour/day */
+  mgmOfficialWet?: boolean | null;
   ensemblePopPct?: number | null;
-  /** Optional ensemble percentiles (mm/h) */
   ensembleP50Mm?: number | null;
   ensembleP75Mm?: number | null;
   ensembleP90Mm?: number | null;
-  /** Thermodynamic phase inputs */
   temp2mC: number;
   relHumidityPct: number;
   freezingLevelM?: number | null;
@@ -193,11 +196,6 @@ function weightedQuantile(sortedItems: Array<{ v: number; w: number }>, q: numbe
   return sortedItems[sortedItems.length - 1].v;
 }
 
-/**
- * Classifies hydrometeor phase & exact snow line elevation (m ASL) for Bursa/Uludağ:
- * Uses wet-bulb Tw, freezing level, 850 hPa melting nose detection (for freezing rain/sleet),
- * and convective CAPE/LPI hail thresholds.
- */
 export function classifyHydrometeorPhaseV4(params: {
   isWetHour: boolean;
   qpfMmHr: number;
@@ -212,7 +210,6 @@ export function classifyHydrometeorPhaseV4(params: {
 }): { phase: HydrometeorPhaseV4; wetBulbC: number; snowLineElevationM: number } {
   const wetBulbC = computeStullWetBulbC(params.temp2mC, params.relHumidityPct);
 
-  // Estimate freezing level if missing, then snow line (~280 m below 0°C isotherm where Tw ≈ +1.1°C)
   const estFreezingM =
     params.freezingLevelM ?? Math.max(0, params.targetElevationM + (params.temp2mC / 6.2) * 1000);
   const snowLineElevationM = Math.round(
@@ -223,7 +220,6 @@ export function classifyHydrometeorPhaseV4(params: {
     return { phase: 'none', wetBulbC: Number(wetBulbC.toFixed(2)), snowLineElevationM };
   }
 
-  // Severe hail check: high LPI or strong CAPE + heavy convective core
   if (
     ((params.lpiJkg ?? 0) >= 12 || (params.capeJkg ?? 0) >= 1350) &&
     params.qpfMmHr >= 6.5 &&
@@ -232,7 +228,6 @@ export function classifyHydrometeorPhaseV4(params: {
     return { phase: 'hail', wetBulbC: Number(wetBulbC.toFixed(2)), snowLineElevationM };
   }
 
-  // Warm nose aloft check (850 hPa > +1.0°C while surface Tw <= 0.0°C -> freezing rain / ice pellets)
   if (
     params.temp850C !== null &&
     params.temp850C !== undefined &&
@@ -258,9 +253,6 @@ export function classifyHydrometeorPhaseV4(params: {
   return { phase: 'rain', wetBulbC: Number(wetBulbC.toFixed(2)), snowLineElevationM };
 }
 
-/**
- * Executes Two-Stage CSG-EMOS + Probability-Matched Quantile Mapping (PM-QM) Precipitation Fusion.
- */
 export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepFusionOutput {
   const validModels = input.modelPrecipMm.filter(
     (m) => Number.isFinite(m.precipMmHr) && m.precipMmHr >= 0 && m.weight > 0,
@@ -293,8 +285,6 @@ export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepF
   const sumW = validModels.reduce((acc, m) => acc + m.weight, 0);
   const normModels = validModels.map((m) => ({ ...m, w: m.weight / sumW }));
 
-  // Stage 1: Calibrated Probability of Precipitation (PoP) & Drizzle / Virga Elimination
-  // Minimum wet threshold per model removes numerical trace drizzle (< 0.22 mm/h; 0.36 mm/h in Lodos Foehn)
   const modelWetCutoffMm = input.regime === 'LODOS_FOEHN' ? 0.36 : 0.20;
 
   let detWetFraction = 0;
@@ -304,7 +294,6 @@ export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepF
     if (m.precipMmHr >= modelWetCutoffMm) {
       detWetFraction += m.w;
     } else if (m.precipMmHr >= 0.10) {
-      // Partial soft credit for marginal light rain only in humid non-Foehn regimes
       detWetFraction += input.regime === 'LODOS_FOEHN' ? 0 : 0.35 * m.w;
     }
   }
@@ -314,22 +303,58 @@ export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepF
       ? Math.max(0, Math.min(1, input.ensemblePopPct / 100))
       : detWetFraction;
 
-  // Blend deterministic weighted consensus with 122-member ensemble PoP (ensemble weight rises with lead time)
-  const ensBlend = Math.min(0.65, 0.25 + (input.leadHours / 168) * 0.40);
+  const ensBlend = Math.min(0.68, 0.25 + (input.leadHours / 168) * 0.43);
   let rawPop = (1 - ensBlend) * detWetFraction + ensBlend * ensPopFrac;
 
-  // S-curve isotonic logistic sharpening (suppresses <30% drizzle noise, sharpens >65% frontal consensus)
+  // At medium/long lead times (Days 3-7), incorporate +/-2h temporal window PoP so +/-2h front timing shifts don't drop POD!
+  if (
+    input.leadHours >= 54 &&
+    input.temporalWindowPopPct !== null &&
+    input.temporalWindowPopPct !== undefined
+  ) {
+    const winFrac = Math.max(0, Math.min(1, input.temporalWindowPopPct / 100));
+    const winBlend = Math.min(0.32, ((input.leadHours - 54) / 114) * 0.32);
+    rawPop = (1 - winBlend) * rawPop + winBlend * winFrac;
+  }
+
+  // Incorporate 9-point spatial neighborhood wet consensus when moist upslope/convective flow is active
+  if (
+    input.spatialNeighborhoodMm &&
+    input.spatialNeighborhoodMm.length >= 5 &&
+    input.regime !== 'LODOS_FOEHN'
+  ) {
+    const spatialWetFrac =
+      input.spatialNeighborhoodMm.filter((v) => v >= 0.25).length / input.spatialNeighborhoodMm.length;
+    if (spatialWetFrac >= 0.44 && rawPop >= 0.22) {
+      rawPop = 0.82 * rawPop + 0.18 * spatialWetFrac;
+    }
+  }
+
+  // Gentle MGM ALARO official forecast nudge when available (Days 0-5)
+  if (input.mgmOfficialWet === true && rawPop >= 0.24) {
+    rawPop = Math.min(1, rawPop + 0.08);
+  } else if (input.mgmOfficialWet === false && rawPop <= 0.38) {
+    rawPop = Math.max(0, rawPop - 0.05);
+  }
+
   if (input.regime === 'LODOS_FOEHN' && input.relHumidityPct < 58) {
-    rawPop *= 0.62; // Strong Foehn sub-cloud evaporation penalty
+    rawPop *= 0.62;
   } else if (input.regime === 'POYRAZ_KARAYEL_ADV' && input.relHumidityPct >= 82) {
-    rawPop = Math.min(1, rawPop * 1.12); // Marmara upslope moisture boost
+    rawPop = Math.min(1, rawPop * 1.12);
   }
 
   const logisticCentered = 1 / (1 + Math.exp(-7.2 * (rawPop - 0.44)));
-  const calibratedPopPct = Math.round(Math.max(0, Math.min(100, 100 * (0.55 * rawPop + 0.45 * logisticCentered))));
+  const calibratedPopPct = Math.round(
+    Math.max(0, Math.min(100, 100 * (0.55 * rawPop + 0.45 * logisticCentered))),
+  );
 
-  // Crisp Wet/Dry Decision Threshold (42% standard, 48% under dry Lodos)
-  const decisionPopThreshold = input.regime === 'LODOS_FOEHN' ? 48 : 42;
+  // Horizon-adaptive decision threshold: slightly lower on Days 4-7 to prevent under-forecasting smeared ensemble fronts
+  const decisionPopThreshold =
+    input.regime === 'LODOS_FOEHN'
+      ? 48
+      : input.leadHours >= 96
+        ? 39
+        : 42;
   const isWetHour = calibratedPopPct >= decisionPopThreshold;
   const drizzleSuppressed = !isWetHour && arithmeticMeanMm >= 0.08;
 
@@ -357,25 +382,20 @@ export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepF
     };
   }
 
-  // Stage 2: Probability-Matched Quantile Mapping (PM-QM) for Intensity Preservation
-  // Instead of flattening convective showers with an arithmetic mean, match the consensus rank
-  // against the sorted wet-member / spatial-stencil intensity distribution!
   const sortedModels = [...normModels]
     .map((m) => ({ v: m.precipMmHr, w: m.w }))
     .sort((a, b) => a.v - b.v);
 
-  // Target quantile scales from 0.58 (moderate consensus) up to 0.78 (unanimous convective storm)
   const targetQuantile = Math.min(0.80, 0.52 + 0.28 * (calibratedPopPct / 100));
   let pmQmAmount = weightedQuantile(sortedModels, targetQuantile);
 
-  // Incorporate 9-point Bursa spatial neighborhood peak preservation if available
   if (input.spatialNeighborhoodMm && input.spatialNeighborhoodMm.length >= 3) {
     const sortedSpatial = [...input.spatialNeighborhoodMm].sort((a, b) => a - b);
-    const spatialQ70 = sortedSpatial[Math.min(sortedSpatial.length - 1, Math.floor(sortedSpatial.length * 0.70))];
+    const spatialQ70 =
+      sortedSpatial[Math.min(sortedSpatial.length - 1, Math.floor(sortedSpatial.length * 0.70))];
     pmQmAmount = 0.72 * pmQmAmount + 0.28 * spatialQ70;
   }
 
-  // Anchor extreme long-lead Days 4-7 gently with ensemble P50/P75 so outlier single runs don't explode QPF
   if (input.leadHours >= 84 && input.ensembleP75Mm !== null && input.ensembleP75Mm !== undefined) {
     pmQmAmount = 0.65 * pmQmAmount + 0.35 * input.ensembleP75Mm;
   }

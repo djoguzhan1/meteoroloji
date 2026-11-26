@@ -1,17 +1,22 @@
 /**
- * ATMOS v4.5 — Bursa Hyper-Local Multi-Tier Observation Mesh & Physics QC
+ * ATMOS v5.0 — Bursa 19-District Full Observation Mesh, MGM ALARO Forecast Adapter & 3-Layer Vertical Physics QC
  * File: lib/bursa-mesh.ts
  *
- * Solves the "LTBR Yenişehir Trap" (47 km east rural frost-hollow basin) by fusing:
- *  - Tier 1: All 19 official MGM Bursa stations via `merkezler/ililcesi?il=Bursa` + `sondurumlar`
+ * Solves both the "LTBR Yenişehir Trap" (47 km east rural frost-hollow basin) AND intra-Bursa microclimate skew by fusing:
+ *  - Tier 1: ALL 19 official MGM Bursa stations via `merkezler/ililcesi?il=Bursa` + `sondurumlar`
  *            (Osmangazi 17116, Nilüfer 18386, Yıldırım 18746, Uludağ Zirve 17676, Mudanya 18385,
- *             Gemlik 17663, Gürsu 18745, Kestel 18384, Karacabey 17673, Orhaneli 18083, Keles 17695)
+ *             Gemlik 17663, Gürsu 18745, Kestel 18384, Karacabey 17673, Orhaneli 18083, Keles 17695,
+ *             Büyükorhan 18382, Harmancık 18383, Mustafakemalpaşa 17675, Orhangazi 18387, İnegöl 17984, İznik 17661)
+ *  - Official MGM Mesoscale Forecasts:
+ *            `tahminler/saatlik?istno=17116` (ALARO 4.5 km 3-hourly forecast interpolated to hourly) +
+ *            `tahminler/gunluk?istno=91601..91618` (5-day district min/max + Gun0 observed extremes)
  *  - Tier 2: Precision-parsed NOAA AviationWeather METAR perimeter (LTBR, LTBG, LTFJ)
  *            with RMK T-group 0.1°C thermometer decoding
  *  - Tier 3: Citizen PWS mesh (OpenSenseMap) gated by 4-stage meteorological QC
- *  - Dual-Elevation Live Lapse Rate Solver (Bursa Ova 100-200m <-> Uludağ 1063-1877m)
+ *  - 3-Layer Piecewise Hydrostatic Lapse Rate Solver (Ova 100-450m <-> Mid-Slope 450-1250m <-> Alpine 1250-1877m)
  */
 
+import { recordStationObservationsToLedger, type LedgerStationPoint } from "./state-ledger";
 import type { MetarObservation, MetarWxFlags } from "./weather-types";
 
 export const ATMOS_HTTP_USER_AGENT =
@@ -58,6 +63,8 @@ export interface StationMetadata {
   wmoId?: string;
   icaoId?: string;
   mgmIstNo?: number;
+  mgmMerkezId?: number;
+  mgmGunlukIstNo?: number;
   name: string;
   district?: string;
   lat: number;
@@ -84,6 +91,7 @@ export interface RawStationObservation {
   precip10MinMm: number | null;
   precip1HrMm: number | null;
   precip24HrMm: number | null;
+  precipToday00Mm?: number | null;
   visibilityM: number | null;
   snowDepthCm: number | null;
   isPrecipitating: boolean | null;
@@ -103,6 +111,12 @@ export interface QcStationObservation extends RawStationObservation {
 
 export interface LiveVerticalProfile {
   lapseRateCPerKm: number;
+  /** 0..550 m Bursa Ova boundary-layer lapse rate (°C/km) — captures shallow 250 m inversions */
+  lowerLapseCPerKm?: number;
+  /** 550..1300 m Uludağ/Keles mid-slope lapse rate (°C/km) */
+  midLapseCPerKm?: number;
+  /** 1300..2000 m Sarıalan/Zirve alpine lapse rate (°C/km) */
+  upperLapseCPerKm?: number;
   inversionStrengthC: number;
   boundaryLayerState: BoundaryLayerState;
   ovaRefTempC: number | null;
@@ -121,12 +135,54 @@ export interface BursaMeshSnapshot {
   verticalProfile: LiveVerticalProfile;
 }
 
+export interface MgmHourlyStep {
+  utcHourKey: string; // "YYYY-MM-DDTHH:00"
+  tempC: number;
+  apparentTempC: number;
+  rhPct: number;
+  windDirDeg: number;
+  windSpeedKmh: number;
+  windGustKmh: number;
+  isWet: boolean;
+  isSnow: boolean;
+  isStorm: boolean;
+  wxCode: string;
+}
+
+export interface MgmDailyDistrictDay {
+  dateYmd: string; // "YYYY-MM-DD"
+  dayOffset: number; // 0..5 (0 = Bugün)
+  tempMinC: number;
+  tempMaxC: number;
+  rhMinPct: number | null;
+  rhMaxPct: number | null;
+  windSpeedKmh: number | null;
+  windDirDeg: number | null;
+  wxCode: string;
+  isWet: boolean;
+  /** District temperature differential vs Osmangazi 17116 (91601) */
+  deltaMinVs17116C: number;
+  deltaMaxVs17116C: number;
+}
+
+export interface MgmBursaForecastBundle {
+  fetchedAtIso: string;
+  targetDistrict: string;
+  targetGunlukIstNo: number;
+  hourly17116: Map<string, MgmHourlyStep>;
+  dailyDistrict: Map<string, MgmDailyDistrictDay>; // keyed by "YYYY-MM-DD"
+  todayObservedMinC: number | null;
+  todayObservedMaxC: number | null;
+}
+
 export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
   WMO_17116: {
     id: "WMO_17116",
     wmoId: "17116",
     icaoId: "17116-OSM",
     mgmIstNo: 17116,
+    mgmMerkezId: 91601,
+    mgmGunlukIstNo: 91601,
     name: "Bursa Osmangazi Merkez (17116)",
     district: "Osmangazi",
     lat: 40.2308,
@@ -141,6 +197,8 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
   MGM_OSMANGAZI_FOOTHILL: {
     id: "MGM_OSMANGAZI_FOOTHILL",
     icaoId: "OSM-ETEK",
+    mgmMerkezId: 91601,
+    mgmGunlukIstNo: 91601,
     name: "Bursa Osmangazi (Şehreküstü Etek)",
     district: "Osmangazi",
     lat: 40.1885,
@@ -156,51 +214,59 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     id: "MGM_NILUFER",
     icaoId: "NILUFER",
     mgmIstNo: 18386,
+    mgmMerkezId: 91617,
+    mgmGunlukIstNo: 91617,
     name: "Bursa Nilüfer",
     district: "Nilüfer",
-    lat: 40.2225,
-    lon: 28.8725,
+    lat: 40.2286,
+    lon: 28.8585,
     elevationM: 105,
     zone: "urban_plain",
     barrierGroup: "BURSA_OVA",
     tier: 1,
-    urbanFraction: 0.72,
-    coldPoolSusceptibility: 0.25
+    urbanFraction: 0.64,
+    coldPoolSusceptibility: 0.44
   },
   MGM_YILDIRIM: {
     id: "MGM_YILDIRIM",
     icaoId: "YILDIRIM",
     mgmIstNo: 18746,
+    mgmMerkezId: 91602,
+    mgmGunlukIstNo: 91618,
     name: "Bursa Yıldırım",
     district: "Yıldırım",
-    lat: 40.1915,
-    lon: 29.115,
+    lat: 40.1919,
+    lon: 29.1086,
     elevationM: 147,
     zone: "urban_foothill",
     barrierGroup: "BURSA_OVA",
     tier: 1,
-    urbanFraction: 0.84,
-    coldPoolSusceptibility: 0.14
+    urbanFraction: 0.8,
+    coldPoolSusceptibility: 0.24
   },
   MGM_KESTEL: {
     id: "MGM_KESTEL",
     icaoId: "KESTEL",
     mgmIstNo: 18384,
+    mgmMerkezId: 91604,
+    mgmGunlukIstNo: 91604,
     name: "Bursa Kestel",
     district: "Kestel",
-    lat: 40.1978,
-    lon: 29.2122,
+    lat: 40.1861,
+    lon: 29.2106,
     elevationM: 230,
     zone: "urban_foothill",
     barrierGroup: "BURSA_OVA",
     tier: 1,
-    urbanFraction: 0.5,
-    coldPoolSusceptibility: 0.35
+    urbanFraction: 0.44,
+    coldPoolSusceptibility: 0.58
   },
   MGM_GURSU: {
     id: "MGM_GURSU",
     icaoId: "GURSU",
     mgmIstNo: 18745,
+    mgmMerkezId: 91603,
+    mgmGunlukIstNo: 91603,
     name: "Bursa Gürsu",
     district: "Gürsu",
     lat: 40.2489,
@@ -209,17 +275,19 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     zone: "urban_plain",
     barrierGroup: "BURSA_OVA",
     tier: 1,
-    urbanFraction: 0.55,
-    coldPoolSusceptibility: 0.32
+    urbanFraction: 0.52,
+    coldPoolSusceptibility: 0.46
   },
   MGM_MUDANYA: {
     id: "MGM_MUDANYA",
     icaoId: "MUDANYA",
     mgmIstNo: 18385,
+    mgmMerkezId: 91610,
+    mgmGunlukIstNo: 91610,
     name: "Bursa Mudanya",
     district: "Mudanya",
-    lat: 40.3756,
-    lon: 28.8822,
+    lat: 40.3686,
+    lon: 28.9017,
     elevationM: 4,
     zone: "coastal_marmara",
     barrierGroup: "MARMARA_COAST",
@@ -231,6 +299,8 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     id: "MGM_GEMLIK",
     icaoId: "GEMLIK",
     mgmIstNo: 17663,
+    mgmMerkezId: 91605,
+    mgmGunlukIstNo: 91605,
     name: "Bursa Gemlik",
     district: "Gemlik",
     lat: 40.4401,
@@ -246,6 +316,8 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     id: "MGM_KARACABEY",
     icaoId: "KARACABEY",
     mgmIstNo: 17673,
+    mgmMerkezId: 91608,
+    mgmGunlukIstNo: 91608,
     name: "Bursa Karacabey",
     district: "Karacabey",
     lat: 40.1319,
@@ -262,6 +334,8 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     wmoId: "17676",
     icaoId: "ULUDAG",
     mgmIstNo: 17676,
+    mgmMerkezId: 91618,
+    mgmGunlukIstNo: 17676,
     name: "Uludağ Kayak Merkezi (17676)",
     district: "Uludağ",
     lat: 40.1075,
@@ -276,6 +350,7 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
   MGM_ULUDAG_SARIALAN: {
     id: "MGM_ULUDAG_SARIALAN",
     icaoId: "SARIALAN",
+    mgmGunlukIstNo: 17676,
     name: "Uludağ Sarıalan",
     district: "Osmangazi",
     lat: 40.138,
@@ -292,6 +367,8 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     icaoId: "LTBR",
     wmoId: "17118",
     mgmIstNo: 17118,
+    mgmMerkezId: 91619,
+    mgmGunlukIstNo: 91614,
     name: "Bursa Yenişehir Havalimanı (Kırsal Çanak)",
     district: "Yenişehir",
     lat: 40.2553,
@@ -345,7 +422,7 @@ export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: numb
 }
 
 export function isWithinBursaDomain(lat: number, lon: number): boolean {
-  return lat >= 39.85 && lat <= 40.65 && lon >= 28.2 && lon <= 29.8;
+  return lat >= 39.65 && lat <= 40.65 && lon >= 28.2 && lon <= 29.85;
 }
 
 export function computeMagnusDewPointC(tempC: number, rhPct: number): number {
@@ -391,16 +468,44 @@ const MGM_PRECIP_CODES = new Set([
   "HY", "Y", "KY", "SY", "KSY", "GSY", "KGY", "HKY", "K", "KKY", "DY", "D", "YKY"
 ]);
 
-interface MgmCenterEntry {
+const MGM_SNOW_CODES = new Set(["HKY", "K", "KKY", "YKY"]);
+const MGM_STORM_CODES = new Set(["GSY", "KGY", "DY", "D"]);
+
+export interface MgmCenterEntry {
   merkezId: number;
   istNo: number;
+  gunlukTahminIstNo: number;
+  saatlikTahminIstNo: number | null;
   ilce: string;
   enlem: number;
   boylam: number;
   yukseklik: number;
 }
 
+const FALLBACK_BURSA_MGM_CENTERS: MgmCenterEntry[] = [
+  { merkezId: 91601, istNo: 17116, gunlukTahminIstNo: 91601, saatlikTahminIstNo: 17116, ilce: "Osmangazi", enlem: 40.2308, boylam: 29.0133, yukseklik: 100 },
+  { merkezId: 91617, istNo: 18386, gunlukTahminIstNo: 91617, saatlikTahminIstNo: 17116, ilce: "Nilüfer", enlem: 40.2286, boylam: 28.8585, yukseklik: 105 },
+  { merkezId: 91602, istNo: 18746, gunlukTahminIstNo: 91618, saatlikTahminIstNo: 17116, ilce: "Yıldırım", enlem: 40.1919, boylam: 29.1086, yukseklik: 147 },
+  { merkezId: 91604, istNo: 18384, gunlukTahminIstNo: 91604, saatlikTahminIstNo: null, ilce: "Kestel", enlem: 40.1861, boylam: 29.2106, yukseklik: 230 },
+  { merkezId: 91603, istNo: 18745, gunlukTahminIstNo: 91603, saatlikTahminIstNo: null, ilce: "Gürsu", enlem: 40.2489, boylam: 29.2408, yukseklik: 124 },
+  { merkezId: 91610, istNo: 18385, gunlukTahminIstNo: 91610, saatlikTahminIstNo: null, ilce: "Mudanya", enlem: 40.3686, boylam: 28.9017, yukseklik: 4 },
+  { merkezId: 91605, istNo: 17663, gunlukTahminIstNo: 91605, saatlikTahminIstNo: null, ilce: "Gemlik", enlem: 40.4401, boylam: 29.1504, yukseklik: 85 },
+  { merkezId: 91618, istNo: 17676, gunlukTahminIstNo: 17676, saatlikTahminIstNo: null, ilce: "Uludağ Kayak Merkezi", enlem: 40.1075, boylam: 29.129, yukseklik: 1877 },
+  { merkezId: 91608, istNo: 17673, gunlukTahminIstNo: 91608, saatlikTahminIstNo: null, ilce: "Karacabey", enlem: 40.1319, boylam: 28.332, yukseklik: 15 },
+  { merkezId: 91611, istNo: 17675, gunlukTahminIstNo: 91611, saatlikTahminIstNo: null, ilce: "Mustafakemalpaşa", enlem: 40.0425, boylam: 28.3995, yukseklik: 60 },
+  { merkezId: 91612, istNo: 18083, gunlukTahminIstNo: 91612, saatlikTahminIstNo: null, ilce: "Orhaneli", enlem: 39.8967, boylam: 28.9925, yukseklik: 522 },
+  { merkezId: 91609, istNo: 17695, gunlukTahminIstNo: 91609, saatlikTahminIstNo: null, ilce: "Keles", enlem: 39.915, boylam: 29.2313, yukseklik: 1063 },
+  { merkezId: 91615, istNo: 18382, gunlukTahminIstNo: 91615, saatlikTahminIstNo: null, ilce: "Büyükorhan", enlem: 39.77, boylam: 28.9014, yukseklik: 770 },
+  { merkezId: 91616, istNo: 18383, gunlukTahminIstNo: 91616, saatlikTahminIstNo: null, ilce: "Harmancık", enlem: 39.6783, boylam: 29.1458, yukseklik: 667 },
+  { merkezId: 91613, istNo: 18387, gunlukTahminIstNo: 91613, saatlikTahminIstNo: null, ilce: "Orhangazi", enlem: 40.4911, boylam: 29.3278, yukseklik: 96 },
+  { merkezId: 91606, istNo: 17984, gunlukTahminIstNo: 91606, saatlikTahminIstNo: null, ilce: "İnegöl", enlem: 40.0657, boylam: 29.5619, yukseklik: 290 },
+  { merkezId: 91607, istNo: 17661, gunlukTahminIstNo: 91607, saatlikTahminIstNo: null, ilce: "İznik", enlem: 40.4267, boylam: 29.7302, yukseklik: 90 },
+  { merkezId: 91614, istNo: 19279, gunlukTahminIstNo: 91614, saatlikTahminIstNo: null, ilce: "Bursa/Yenişehir", enlem: 40.2552, boylam: 29.5624, yukseklik: 238 },
+  { merkezId: 91619, istNo: 17118, gunlukTahminIstNo: 91614, saatlikTahminIstNo: null, ilce: "Yenişehir Havalimanı", enlem: 40.2552, boylam: 29.5624, yukseklik: 238 }
+];
+
 let cachedBursaMgmCenters: { expiresAtMs: number; centers: MgmCenterEntry[] } | null = null;
+const cachedMgmForecasts = new Map<string, { expiresAtMs: number; bundle: MgmBursaForecastBundle }>();
 
 const MGM_HEADERS: Record<string, string> = {
   Accept: "application/json, text/plain, */*",
@@ -415,6 +520,8 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
     return {
       ...BURSA_REFERENCE_STATIONS.WMO_17676_ULUDAG,
       mgmIstNo: center.istNo,
+      mgmMerkezId: center.merkezId,
+      mgmGunlukIstNo: center.gunlukTahminIstNo,
       lat: center.enlem || BURSA_REFERENCE_STATIONS.WMO_17676_ULUDAG.lat,
       lon: center.boylam || BURSA_REFERENCE_STATIONS.WMO_17676_ULUDAG.lon,
       elevationM: center.yukseklik || BURSA_REFERENCE_STATIONS.WMO_17676_ULUDAG.elevationM
@@ -426,11 +533,13 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
     .replace(/[^A-ZÇĞİÖŞÜ]/g, "")
     .slice(0, 8);
 
-  if (ilceNorm.includes("YENİŞEHİR") || ilceNorm.includes("YENISEHIR") || ilceNorm.includes("İNEGÖL")) {
+  if (ilceNorm.includes("YENİŞEHİR") || ilceNorm.includes("YENISEHIR") || ilceNorm.includes("İNEGÖL") || ilceNorm.includes("INEGOL")) {
     return {
       id: `MGM_${center.istNo}`,
       icaoId: center.istNo === 17118 ? "LTBR" : shortIcao,
       mgmIstNo: center.istNo,
+      mgmMerkezId: center.merkezId,
+      mgmGunlukIstNo: center.gunlukTahminIstNo,
       name: `MGM Bursa ${center.ilce}`,
       district: center.ilce,
       lat: center.enlem,
@@ -439,15 +548,23 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
       zone: "rural_closed_basin",
       barrierGroup: "YENISEHIR_BASIN",
       tier: center.istNo === 17118 ? 2 : 1,
-      urbanFraction: 0.12,
-      coldPoolSusceptibility: 0.92
+      urbanFraction: ilceNorm.includes("İNEGÖL") ? 0.42 : 0.12,
+      coldPoolSusceptibility: ilceNorm.includes("İNEGÖL") ? 0.78 : 0.92
     };
   }
-  if (ilceNorm.includes("MUDANYA") || ilceNorm.includes("GEMLİK") || ilceNorm.includes("GEMLIK")) {
+  if (
+    ilceNorm.includes("MUDANYA") ||
+    ilceNorm.includes("GEMLİK") ||
+    ilceNorm.includes("GEMLIK") ||
+    ilceNorm.includes("ORHANGAZİ") ||
+    ilceNorm.includes("İZNİK")
+  ) {
     return {
       id: `MGM_${center.istNo}`,
       icaoId: shortIcao,
       mgmIstNo: center.istNo,
+      mgmMerkezId: center.merkezId,
+      mgmGunlukIstNo: center.gunlukTahminIstNo,
       name: `MGM Bursa ${center.ilce}`,
       district: center.ilce,
       lat: center.enlem,
@@ -456,15 +573,17 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
       zone: "coastal_marmara",
       barrierGroup: "MARMARA_COAST",
       tier: 1,
-      urbanFraction: 0.5,
-      coldPoolSusceptibility: 0.08
+      urbanFraction: 0.48,
+      coldPoolSusceptibility: 0.1
     };
   }
-  if (center.yukseklik >= 950) {
+  if (center.yukseklik >= 500) {
     return {
       id: `MGM_${center.istNo}`,
       icaoId: shortIcao,
       mgmIstNo: center.istNo,
+      mgmMerkezId: center.merkezId,
+      mgmGunlukIstNo: center.gunlukTahminIstNo,
       name: `MGM Bursa ${center.ilce}`,
       district: center.ilce,
       lat: center.enlem,
@@ -473,8 +592,8 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
       zone: "mountain_slope",
       barrierGroup: "ULUDAG_MASSIF",
       tier: 1,
-      urbanFraction: 0.08,
-      coldPoolSusceptibility: 0.08
+      urbanFraction: 0.1,
+      coldPoolSusceptibility: 0.12
     };
   }
   if (ilceNorm.includes("KARACABEY") || ilceNorm.includes("MUSTAFAKEMAL")) {
@@ -482,6 +601,8 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
       id: `MGM_${center.istNo}`,
       icaoId: shortIcao,
       mgmIstNo: center.istNo,
+      mgmMerkezId: center.merkezId,
+      mgmGunlukIstNo: center.gunlukTahminIstNo,
       name: `MGM Bursa ${center.ilce}`,
       district: center.ilce,
       lat: center.enlem,
@@ -491,15 +612,20 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
       barrierGroup: "WEST_CORRIDOR",
       tier: 1,
       urbanFraction: 0.35,
-      coldPoolSusceptibility: 0.35
+      coldPoolSusceptibility: 0.38
     };
   }
 
   const isFoothill = center.yukseklik >= 140 && center.yukseklik < 500;
+  const isKestelOrGursu = ilceNorm.includes("KESTEL") || ilceNorm.includes("GÜRSU");
+  const isNilufer = ilceNorm.includes("NİLÜFER") || ilceNorm.includes("NILUFER");
+
   return {
     id: `MGM_${center.istNo}`,
     icaoId: center.istNo === 17116 ? "17116-OSM" : shortIcao,
     mgmIstNo: center.istNo,
+    mgmMerkezId: center.merkezId,
+    mgmGunlukIstNo: center.gunlukTahminIstNo,
     name: `MGM Bursa ${center.ilce}`,
     district: center.ilce,
     lat: center.enlem,
@@ -508,72 +634,74 @@ function mapDistrictToStationMeta(center: MgmCenterEntry): StationMetadata {
     zone: isFoothill ? "urban_foothill" : "urban_plain",
     barrierGroup: "BURSA_OVA",
     tier: 1,
-    urbanFraction:
-      ilceNorm.includes("OSMANGAZİ") || ilceNorm.includes("YILDIRIM") || ilceNorm.includes("NİLÜFER")
-        ? 0.84
-        : 0.48,
-    coldPoolSusceptibility: isFoothill ? 0.14 : 0.28
+    urbanFraction: ilceNorm.includes("OSMANGAZİ")
+      ? 0.86
+      : ilceNorm.includes("YILDIRIM")
+        ? 0.8
+        : isNilufer
+          ? 0.64
+          : 0.48,
+    coldPoolSusceptibility: isKestelOrGursu ? 0.54 : isNilufer ? 0.44 : isFoothill ? 0.16 : 0.26
   };
 }
 
+export async function getMgmBursaCentersList(timeoutMs = 4500): Promise<MgmCenterEntry[]> {
+  const nowMs = Date.now();
+  if (cachedBursaMgmCenters && cachedBursaMgmCenters.expiresAtMs > nowMs) {
+    return cachedBursaMgmCenters.centers;
+  }
+  try {
+    const centerRes = await fetch("https://servis.mgm.gov.tr/web/merkezler/ililcesi?il=Bursa", {
+      headers: MGM_HEADERS,
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (centerRes.ok) {
+      const rawCenters = (await centerRes.json()) as Array<Record<string, unknown>>;
+      const parsed: MgmCenterEntry[] = [];
+      for (const c of rawCenters) {
+        const merkezId = Number(c.merkezId);
+        const istNo = Number(c.sondurumIstNo || c.gunlukTahminIstNo || c.saatlikTahminIstNo || c.merkezId);
+        const gunlukTahminIstNo = Number(c.gunlukTahminIstNo || c.merkezId);
+        const saatlikRaw = Number(c.saatlikTahminIstNo);
+        const enlem = Number(c.enlem);
+        const boylam = Number(c.boylam);
+        const yukseklik = Number(c.yukseklik ?? 120);
+        if (Number.isFinite(merkezId) && Number.isFinite(enlem) && Number.isFinite(boylam)) {
+          parsed.push({
+            merkezId,
+            istNo,
+            gunlukTahminIstNo: Number.isFinite(gunlukTahminIstNo) ? gunlukTahminIstNo : merkezId,
+            saatlikTahminIstNo: Number.isFinite(saatlikRaw) && saatlikRaw > 0 ? saatlikRaw : null,
+            ilce: String(c.ilce || "Merkez"),
+            enlem,
+            boylam,
+            yukseklik
+          });
+        }
+      }
+      if (parsed.length > 0) {
+        cachedBursaMgmCenters = {
+          expiresAtMs: nowMs + 12 * 3600 * 1000,
+          centers: parsed
+        };
+        return parsed;
+      }
+    }
+  } catch {
+    // Fallback to built-in 19-district registry
+  }
+  return FALLBACK_BURSA_MGM_CENTERS;
+}
+
 /**
- * Fetches live 5-10 minute official MGM observations across all 19 Bursa districts
- * via `merkezler/ililcesi?il=Bursa` (Osmangazi 17116, Nilüfer, Yıldırım, Uludağ 17676, Mudanya, etc.).
+ * Fetches live 5-10 minute official MGM observations across ALL 19 Bursa districts
+ * (no longer truncated at 13 stations!).
  */
 export async function fetchMgmBursaStations(timeoutMs = 4800): Promise<RawStationObservation[]> {
   try {
-    const nowMs = Date.now();
-    if (!cachedBursaMgmCenters || cachedBursaMgmCenters.expiresAtMs < nowMs) {
-      const centerRes = await fetch("https://servis.mgm.gov.tr/web/merkezler/ililcesi?il=Bursa", {
-        headers: MGM_HEADERS,
-        signal: AbortSignal.timeout(timeoutMs)
-      });
-      if (centerRes.ok) {
-        const rawCenters = (await centerRes.json()) as Array<Record<string, unknown>>;
-        const parsed: MgmCenterEntry[] = [];
-        for (const c of rawCenters) {
-          const merkezId = Number(c.merkezId);
-          const istNo = Number(c.sondurumIstNo || c.gunlukTahminIstNo || c.saatlikTahminIstNo || c.merkezId);
-          const enlem = Number(c.enlem);
-          const boylam = Number(c.boylam);
-          const yukseklik = Number(c.yukseklik ?? 120);
-          if (Number.isFinite(merkezId) && Number.isFinite(enlem) && Number.isFinite(boylam)) {
-            parsed.push({
-              merkezId,
-              istNo,
-              ilce: String(c.ilce || "Merkez"),
-              enlem,
-              boylam,
-              yukseklik
-            });
-          }
-        }
-        // Prioritize core Bursa Ova + Uludağ + Coast stations first
-        parsed.sort((a, b) => {
-          const priority = (x: MgmCenterEntry) =>
-            /Osmangazi|Nilüfer|Yıldırım|Uludağ|Mudanya|Gemlik|Gürsu|Kestel|Karacabey|Keles|Orhaneli/i.test(x.ilce)
-              ? 0
-              : 1;
-          return priority(a) - priority(b);
-        });
-        if (parsed.length > 0) {
-          cachedBursaMgmCenters = {
-            expiresAtMs: nowMs + 12 * 3600 * 1000,
-            centers: parsed
-          };
-        }
-      }
-    }
+    const centersToQuery = await getMgmBursaCentersList(timeoutMs);
 
-    const centersToQuery = cachedBursaMgmCenters?.centers ?? [
-      { merkezId: 91601, istNo: 17116, ilce: "Osmangazi", enlem: 40.2308, boylam: 29.0133, yukseklik: 100 },
-      { merkezId: 91617, istNo: 18386, ilce: "Nilüfer", enlem: 40.2225, boylam: 28.8725, yukseklik: 105 },
-      { merkezId: 91602, istNo: 18746, ilce: "Yıldırım", enlem: 40.1915, boylam: 29.115, yukseklik: 147 },
-      { merkezId: 91618, istNo: 17676, ilce: "Uludağ Kayak Merkezi", enlem: 40.1075, boylam: 29.1292, yukseklik: 1877 },
-      { merkezId: 91610, istNo: 18385, ilce: "Mudanya", enlem: 40.3756, boylam: 28.8822, yukseklik: 4 }
-    ];
-
-    const queries = centersToQuery.slice(0, 13).map(async (center): Promise<RawStationObservation | null> => {
+    const queries = centersToQuery.map(async (center): Promise<RawStationObservation | null> => {
       const url = `https://servis.mgm.gov.tr/web/sondurumlar?merkezid=${center.merkezId}`;
       const res = await fetch(url, {
         headers: MGM_HEADERS,
@@ -593,10 +721,11 @@ export async function fetchMgmBursaStations(timeoutMs = 4800): Promise<RawStatio
       const precip10MinMm = cleanMgmNumber(row.yagis10Dk);
       const precip1HrMm = cleanMgmNumber(row.yagis1Saat);
       const precip24HrMm = cleanMgmNumber(row.yagis24Saat);
+      const precipToday00Mm = cleanMgmNumber(row.yagis00Now);
       const hadise = typeof row.hadiseKodu === "string" ? row.hadiseKodu.trim() : "";
       const isPrecipitating =
-        (precip10MinMm !== null && precip10MinMm > 0.05) ||
-        (precip1HrMm !== null && precip1HrMm > 0.1) ||
+        (precip10MinMm !== null && precip10MinMm > 0.04) ||
+        (precip1HrMm !== null && precip1HrMm > 0.08) ||
         MGM_PRECIP_CODES.has(hadise);
 
       const stationMeta = mapDistrictToStationMeta({
@@ -619,6 +748,7 @@ export async function fetchMgmBursaStations(timeoutMs = 4800): Promise<RawStatio
         precip10MinMm,
         precip1HrMm,
         precip24HrMm,
+        precipToday00Mm,
         visibilityM: cleanMgmNumber(row.gorus),
         snowDepthCm: cleanMgmNumber(row.karYukseklik),
         isPrecipitating,
@@ -635,6 +765,201 @@ export async function fetchMgmBursaStations(timeoutMs = 4800): Promise<RawStatio
       .filter((v): v is RawStationObservation => v !== null && v.tempC !== null);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Fetches Official MGM Mesoscale (ALARO 4.5 km / WRF + Synoptic Forecaster QC) Forecasts:
+ *  - 3-hourly `tahminler/saatlik?istno=17116` interpolated smoothly to 1-hour UTC keys
+ *  - 5-day district `tahminler/gunluk` for BOTH Osmangazi (91601) and exact nearest Bursa district
+ *    to capture exact intra-Bursa microclimate min/max offsets (`deltaMinVs17116C`, `deltaMaxVs17116C`)
+ *    plus today's official `Gun0` extremes!
+ */
+export async function fetchMgmBursaForecasts(
+  targetLat: number,
+  targetLon: number,
+  targetElevationM = 155,
+  timeoutMs = 4500
+): Promise<MgmBursaForecastBundle | null> {
+  if (!isWithinBursaDomain(targetLat, targetLon)) return null;
+
+  const centers = await getMgmBursaCentersList(timeoutMs);
+  // Pick nearest district matching elevation band (prevents mapping Yıldırım 147m to Uludağ 1877m!)
+  let bestCenter = centers[0] ?? FALLBACK_BURSA_MGM_CENTERS[0];
+  let bestScore = Infinity;
+  for (const c of centers) {
+    const distKm = haversineKm(targetLat, targetLon, c.enlem, c.boylam);
+    const elevPenKm = Math.abs(targetElevationM - c.yukseklik) * 0.035;
+    const score = distKm + elevPenKm;
+    if (score < bestScore) {
+      bestScore = score;
+      bestCenter = c;
+    }
+  }
+
+  const cacheKey = `${bestCenter.gunlukTahminIstNo}`;
+  const nowMs = Date.now();
+  const cached = cachedMgmForecasts.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.bundle;
+  }
+
+  try {
+    const targetGunlukId = bestCenter.gunlukTahminIstNo || 91601;
+    const needSeparateOsmangazi = targetGunlukId !== 91601;
+
+    const [saatlikRes, targetGunlukRes, osmGunlukRes] = await Promise.all([
+      fetch("https://servis.mgm.gov.tr/web/tahminler/saatlik?istno=17116", {
+        headers: MGM_HEADERS,
+        signal: AbortSignal.timeout(timeoutMs)
+      }).catch(() => null),
+      fetch(`https://servis.mgm.gov.tr/web/tahminler/gunluk?istno=${targetGunlukId}`, {
+        headers: MGM_HEADERS,
+        signal: AbortSignal.timeout(timeoutMs)
+      }).catch(() => null),
+      needSeparateOsmangazi
+        ? fetch("https://servis.mgm.gov.tr/web/tahminler/gunluk?istno=91601", {
+            headers: MGM_HEADERS,
+            signal: AbortSignal.timeout(timeoutMs)
+          }).catch(() => null)
+        : Promise.resolve(null)
+    ]);
+
+    const hourly17116 = new Map<string, MgmHourlyStep>();
+    if (saatlikRes && saatlikRes.ok) {
+      const sArr = (await saatlikRes.json()) as Array<{
+        tahmin?: Array<Record<string, unknown>>;
+      }>;
+      const steps = Array.isArray(sArr?.[0]?.tahmin) ? sArr[0].tahmin! : [];
+      const parsedNodes: Array<{ ms: number; step: MgmHourlyStep }> = [];
+
+      for (const st of steps) {
+        const iso = typeof st.tarih === "string" ? st.tarih : null;
+        const t = cleanMgmNumber(st.sicaklik);
+        if (!iso || t === null) continue;
+        const ms = Date.parse(iso);
+        if (!Number.isFinite(ms)) continue;
+        const wx = typeof st.hadise === "string" ? st.hadise.trim() : "";
+        const uKey = new Date(ms).toISOString().slice(0, 16);
+        const wspd = cleanMgmNumber(st.ruzgarHizi) ?? 0;
+        const wgst = cleanMgmNumber(st.maksimumRuzgarHizi) ?? wspd;
+        const node: MgmHourlyStep = {
+          utcHourKey: uKey,
+          tempC: t,
+          apparentTempC: cleanMgmNumber(st.hissedilenSicaklik) ?? t,
+          rhPct: cleanMgmNumber(st.nem) ?? 65,
+          windDirDeg: cleanMgmNumber(st.ruzgarYonu) ?? 0,
+          windSpeedKmh: wspd,
+          windGustKmh: Math.max(wspd, wgst),
+          isWet: MGM_PRECIP_CODES.has(wx),
+          isSnow: MGM_SNOW_CODES.has(wx),
+          isStorm: MGM_STORM_CODES.has(wx),
+          wxCode: wx
+        };
+        parsedNodes.push({ ms, step: node });
+        hourly17116.set(uKey, node);
+      }
+
+      // Linearly interpolate intermediate hours between MGM's 3-hourly ALARO nodes
+      parsedNodes.sort((a, b) => a.ms - b.ms);
+      for (let i = 0; i < parsedNodes.length - 1; i++) {
+        const a = parsedNodes[i];
+        const b = parsedNodes[i + 1];
+        const diffH = Math.round((b.ms - a.ms) / 3600_000);
+        if (diffH >= 2 && diffH <= 6) {
+          for (let h = 1; h < diffH; h++) {
+            const frac = h / diffH;
+            const mMs = a.ms + h * 3600_000;
+            const uKey = new Date(mMs).toISOString().slice(0, 16);
+            if (!hourly17116.has(uKey)) {
+              const nearest = frac < 0.5 ? a.step : b.step;
+              hourly17116.set(uKey, {
+                utcHourKey: uKey,
+                tempC: Number((a.step.tempC + (b.step.tempC - a.step.tempC) * frac).toFixed(2)),
+                apparentTempC: Number(
+                  (a.step.apparentTempC + (b.step.apparentTempC - a.step.apparentTempC) * frac).toFixed(2)
+                ),
+                rhPct: Math.round(a.step.rhPct + (b.step.rhPct - a.step.rhPct) * frac),
+                windDirDeg: nearest.windDirDeg,
+                windSpeedKmh: Number(
+                  (a.step.windSpeedKmh + (b.step.windSpeedKmh - a.step.windSpeedKmh) * frac).toFixed(1)
+                ),
+                windGustKmh: Number(
+                  (a.step.windGustKmh + (b.step.windGustKmh - a.step.windGustKmh) * frac).toFixed(1)
+                ),
+                isWet: a.step.isWet && b.step.isWet ? true : nearest.isWet,
+                isSnow: nearest.isSnow,
+                isStorm: nearest.isStorm,
+                wxCode: nearest.wxCode
+              });
+            }
+          }
+        }
+      }
+    }
+
+    const dailyDistrict = new Map<string, MgmDailyDistrictDay>();
+    let todayObservedMinC: number | null = null;
+    let todayObservedMaxC: number | null = null;
+
+    const targetArr =
+      targetGunlukRes && targetGunlukRes.ok
+        ? ((await targetGunlukRes.json()) as Array<Record<string, unknown>>)
+        : [];
+    const targetRow = Array.isArray(targetArr) ? targetArr[0] : null;
+    const osmArr =
+      needSeparateOsmangazi && osmGunlukRes && osmGunlukRes.ok
+        ? ((await osmGunlukRes.json()) as Array<Record<string, unknown>>)
+        : null;
+    const osmRow = Array.isArray(osmArr) ? osmArr[0] : targetRow;
+
+    if (targetRow) {
+      for (let d = 0; d <= 5; d++) {
+        const rawDate = targetRow[`tarihGun${d}`];
+        const tMin = cleanMgmNumber(targetRow[`enDusukGun${d}`]);
+        const tMax = cleanMgmNumber(targetRow[`enYuksekGun${d}`]);
+        if (typeof rawDate !== "string" || tMin === null || tMax === null) continue;
+
+        const dateYmd = rawDate.slice(0, 10);
+        const oMin = osmRow ? cleanMgmNumber(osmRow[`enDusukGun${d}`]) : tMin;
+        const oMax = osmRow ? cleanMgmNumber(osmRow[`enYuksekGun${d}`]) : tMax;
+        const wx = typeof targetRow[`hadiseGun${d}`] === "string" ? String(targetRow[`hadiseGun${d}`]).trim() : "";
+
+        if (d === 0) {
+          todayObservedMinC = tMin;
+          todayObservedMaxC = tMax;
+        }
+
+        dailyDistrict.set(dateYmd, {
+          dateYmd,
+          dayOffset: d,
+          tempMinC: tMin,
+          tempMaxC: tMax,
+          rhMinPct: cleanMgmNumber(targetRow[`enDusukNemGun${d}`]),
+          rhMaxPct: cleanMgmNumber(targetRow[`enYuksekNemGun${d}`]),
+          windSpeedKmh: cleanMgmNumber(targetRow[`ruzgarHizGun${d}`]),
+          windDirDeg: cleanMgmNumber(targetRow[`ruzgarYonGun${d}`]),
+          wxCode: wx,
+          isWet: MGM_PRECIP_CODES.has(wx),
+          deltaMinVs17116C: oMin !== null ? Number((tMin - oMin).toFixed(2)) : 0,
+          deltaMaxVs17116C: oMax !== null ? Number((tMax - oMax).toFixed(2)) : 0
+        });
+      }
+    }
+
+    const bundle: MgmBursaForecastBundle = {
+      fetchedAtIso: new Date().toISOString(),
+      targetDistrict: bestCenter.ilce,
+      targetGunlukIstNo: targetGunlukId,
+      hourly17116,
+      dailyDistrict,
+      todayObservedMinC,
+      todayObservedMaxC
+    };
+    cachedMgmForecasts.set(cacheKey, { expiresAtMs: nowMs + 15 * 60 * 1000, bundle });
+    return bundle;
+  } catch {
+    return null;
   }
 }
 
@@ -811,6 +1136,51 @@ export async function fetchOpenSenseMapPws(
   }
 }
 
+function medianSlopeBetween(
+  lowGroup: RawStationObservation[],
+  highGroup: RawStationObservation[],
+  minDzKm: number
+): number | null {
+  const slopes: number[] = [];
+  for (const lo of lowGroup) {
+    for (const hi of highGroup) {
+      const dzKm = (hi.station.elevationM - lo.station.elevationM) / 1000;
+      if (dzKm >= minDzKm && lo.tempC !== null && hi.tempC !== null) {
+        slopes.push((hi.tempC - lo.tempC) / dzKm);
+      }
+    }
+  }
+  if (slopes.length === 0) return null;
+  slopes.sort((a, b) => a - b);
+  return Math.max(-10.5, Math.min(9.5, slopes[Math.floor(slopes.length / 2)]));
+}
+
+/**
+ * Integrates temperature transport vertically across the 3-layer piecewise Bursa hydrostatic column
+ * (Ova 0..550m, Mid-Slope 550..1300m, Alpine 1300..2200m). Falls back cleanly to `lapseRateCPerKm`
+ * when piecewise sub-layers are equal or unset.
+ */
+export function integratePiecewiseVerticalDeltaC(
+  fromElevationM: number,
+  toElevationM: number,
+  profile: LiveVerticalProfile
+): number {
+  if (Math.abs(toElevationM - fromElevationM) < 0.5) return 0;
+  const gLow = profile.lowerLapseCPerKm ?? profile.lapseRateCPerKm;
+  const gMid = profile.midLapseCPerKm ?? profile.lapseRateCPerKm;
+  const gHigh = profile.upperLapseCPerKm ?? profile.lapseRateCPerKm;
+
+  const sign = toElevationM >= fromElevationM ? 1 : -1;
+  const z0 = Math.min(fromElevationM, toElevationM);
+  const z1 = Math.max(fromElevationM, toElevationM);
+
+  const segLowM = Math.max(0, Math.min(z1, 550) - Math.min(z0, 550));
+  const segMidM = Math.max(0, Math.min(z1, 1300) - Math.max(550, Math.min(z0, 1300)));
+  const segHighM = Math.max(0, z1 - Math.max(1300, z0));
+
+  return sign * ((segLowM * gLow + segMidM * gMid + segHighM * gHigh) / 1000);
+}
+
 export function computeLiveBursaVerticalProfile(
   observations: RawStationObservation[],
   ambientContext?: {
@@ -832,8 +1202,14 @@ export function computeLiveBursaVerticalProfile(
   const ovaStations = validOfficial.filter(
     (o) => o.station.elevationM <= 350 && o.station.barrierGroup === "BURSA_OVA"
   );
+  const midSlopeStations = validOfficial.filter(
+    (o) => o.station.elevationM >= 480 && o.station.elevationM < 1250
+  );
   const mountainStations = validOfficial.filter(
     (o) => o.station.elevationM >= 900 && o.station.barrierGroup === "ULUDAG_MASSIF"
+  );
+  const alpineStations = validOfficial.filter(
+    (o) => o.station.elevationM >= 1300 && o.station.barrierGroup === "ULUDAG_MASSIF"
   );
 
   if (ovaStations.length > 0 && mountainStations.length > 0) {
@@ -852,19 +1228,37 @@ export function computeLiveBursaVerticalProfile(
       const rawSlope = slopes[Math.floor(slopes.length / 2)];
       const lapseRateCPerKm = Math.max(-10.2, Math.min(8.5, rawSlope));
 
+      // 3-layer piecewise gradients (captures shallow Ova inversions vs upper mountain slope)
+      const lowerSlope = medianSlopeBetween(ovaStations, midSlopeStations, 0.28) ?? lapseRateCPerKm;
+      const midSlope =
+        medianSlopeBetween(midSlopeStations, alpineStations.length > 0 ? alpineStations : mountainStations, 0.45) ??
+        lapseRateCPerKm;
+      const upperSlope =
+        alpineStations.length >= 2
+          ? medianSlopeBetween(
+              alpineStations.filter((s) => s.station.elevationM < 1750),
+              alpineStations.filter((s) => s.station.elevationM >= 1750),
+              0.18
+            ) ?? midSlope
+          : midSlope;
+
       const ovaMean =
         ovaStations.reduce((acc, s) => acc + (s.tempC ?? 0), 0) / ovaStations.length;
       const mtnMean =
         mountainStations.reduce((acc, s) => acc + (s.tempC ?? 0), 0) / mountainStations.length;
-      const inversionStrengthC = Math.max(0, mtnMean - ovaMean);
+      const midMean =
+        midSlopeStations.length > 0
+          ? midSlopeStations.reduce((acc, s) => acc + (s.tempC ?? 0), 0) / midSlopeStations.length
+          : mtnMean;
+      const inversionStrengthC = Math.max(0, mtnMean - ovaMean, midMean - ovaMean);
 
       const wDir = ambientContext?.wind850DirDeg ?? ovaStations[0]?.windDirDeg ?? 0;
       const isSoutherly = wDir >= 185 && wDir <= 255;
 
       let state: BoundaryLayerState = "STANDARD_MIXED";
-      if (lapseRateCPerKm >= 1.5 || inversionStrengthC >= 1.2) {
+      if (lapseRateCPerKm >= 1.5 || lowerSlope >= 2.0 || inversionStrengthC >= 1.2) {
         state = "STRONG_INVERSION";
-      } else if (lapseRateCPerKm >= -1.8) {
+      } else if (lapseRateCPerKm >= -1.8 || lowerSlope >= -0.8) {
         state = "SHALLOW_INVERSION";
       } else if (lapseRateCPerKm <= -8.1 && isSoutherly) {
         state = "LODOS_FOEHN";
@@ -877,6 +1271,9 @@ export function computeLiveBursaVerticalProfile(
 
       return {
         lapseRateCPerKm,
+        lowerLapseCPerKm: lowerSlope,
+        midLapseCPerKm: midSlope,
+        upperLapseCPerKm: upperSlope,
         inversionStrengthC,
         boundaryLayerState: state,
         ovaRefTempC: ovaMean,
@@ -895,6 +1292,9 @@ export function computeLiveBursaVerticalProfile(
   if (w850Dir >= 190 && w850Dir <= 250 && w850Kt >= 22) {
     return {
       lapseRateCPerKm: -8.9,
+      lowerLapseCPerKm: -9.2,
+      midLapseCPerKm: -8.8,
+      upperLapseCPerKm: -8.4,
       inversionStrengthC: 0,
       boundaryLayerState: "LODOS_FOEHN",
       ovaRefTempC: null,
@@ -907,6 +1307,9 @@ export function computeLiveBursaVerticalProfile(
   if (isNight && clouds < 35 && w850Kt < 12) {
     return {
       lapseRateCPerKm: 2.2,
+      lowerLapseCPerKm: 3.4,
+      midLapseCPerKm: -4.5,
+      upperLapseCPerKm: -6.0,
       inversionStrengthC: 1.8,
       boundaryLayerState: "SHALLOW_INVERSION",
       ovaRefTempC: null,
@@ -918,6 +1321,9 @@ export function computeLiveBursaVerticalProfile(
 
   return {
     lapseRateCPerKm: -6.2,
+    lowerLapseCPerKm: -6.2,
+    midLapseCPerKm: -6.2,
+    upperLapseCPerKm: -6.4,
     inversionStrengthC: 0,
     boundaryLayerState: "STANDARD_MIXED",
     ovaRefTempC: null,
@@ -996,8 +1402,8 @@ export function runBursaObservationQC(
       flags.push("GROSS_LIMIT_REJECT");
     }
 
-    const dzRefKm = (refElevM - obs.station.elevationM) / 1000;
-    const reducedTempAtRefC = obs.tempC + verticalProfile.lapseRateCPerKm * dzRefKm;
+    const reducedTempAtRefC =
+      obs.tempC + integratePiecewiseVerticalDeltaC(obs.station.elevationM, refElevM, verticalProfile);
 
     const tierBaseWeight = obs.station.tier === 1 ? 1.0 : obs.station.tier === 2 ? 0.82 : 0.45;
     const precisionFactor = obs.hasTenthDegreePrecision ? 1.0 : 0.88;
@@ -1128,6 +1534,43 @@ export async function fetchBursaObservationMesh(
 
   const { stations, verticalProfile } = runBursaObservationQC(mergedRaw, ctx);
   const accepted = stations.filter((s) => s.qcWeight > 0);
+
+  // Persist QC-accepted Tier-1/2 Bursa MGM & METAR observations into rolling 96h State Ledger!
+  const ledgerPoints: LedgerStationPoint[] = [];
+  for (const s of accepted) {
+    if (s.station.tier <= 2 && s.tempC !== null && s.station.barrierGroup !== "YENISEHIR_BASIN") {
+      const obsMs = Date.parse(s.observedAtIso);
+      if (!Number.isFinite(obsMs)) continue;
+      const roundedMs = Math.round(obsMs / 3600_000) * 3600_000;
+      const uKey = new Date(roundedMs).toISOString().slice(0, 16);
+      const rateMmHr =
+        s.precip10MinMm !== null
+          ? s.precip10MinMm * 6
+          : s.precip1HrMm !== null
+            ? s.precip1HrMm
+            : s.isPrecipitating
+              ? 0.4
+              : 0;
+      ledgerPoints.push({
+        stationId: s.station.icaoId ?? s.station.id,
+        utcHourKey: uKey,
+        observedAtMs: obsMs,
+        lat: s.station.lat,
+        lon: s.station.lon,
+        elevationM: s.station.elevationM,
+        tempC: s.tempC,
+        dewPointC: s.dewPointC,
+        pressureMslHpa: s.pressureMslHpa,
+        windSpeedKmh: s.windSpeedKt !== null ? Number((s.windSpeedKt * 1.852).toFixed(1)) : null,
+        windDirDeg: s.windDirDeg,
+        precipMmHr: Number(Math.max(0, rateMmHr).toFixed(2)),
+        hasPrecip: Boolean(s.isPrecipitating || rateMmHr >= 0.1)
+      });
+    }
+  }
+  if (ledgerPoints.length > 0) {
+    recordStationObservationsToLedger(ledgerPoints);
+  }
 
   return {
     fetchedAtIso: new Date().toISOString(),

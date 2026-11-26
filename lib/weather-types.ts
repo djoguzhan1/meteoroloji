@@ -256,6 +256,7 @@ export type HybridModelSnapshot = {
   gfs: number | null;
   meteofrance?: number | null;
   gem?: number | null;
+  jma?: number | null;
 };
 
 export type HybridSourceAttribution = {
@@ -358,6 +359,9 @@ export type AtmosV4Meta = {
   rainCessationMin: number | null;
   bursaTier1Online: number;
   ltbrIsolated: boolean;
+  marmaraSstC?: number | null;
+  bimodalHoursResolved?: number;
+  mgmDistrictMatched?: string | null;
 };
 
 export type HybridMeta = {
@@ -409,6 +413,7 @@ export type ModelSeriesPoint = {
   gfs: number | null;
   meteofrance?: number | null;
   gem?: number | null;
+  jma?: number | null;
 };
 
 export type MultiModelBundle = {

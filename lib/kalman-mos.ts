@@ -1,4 +1,5 @@
 import { isWithinBursaDomain } from "./bursa-mesh";
+import type { LedgerStationPoint } from "./state-ledger";
 import { computeRuralBasinToUrbanOffsetC } from "./topographic-cressman";
 import {
   computeInverseRmseWeights,
@@ -55,9 +56,9 @@ export type NowcastSensorAnchor = {
   dewObsCityC: number | null;
   pressObsHpa: number | null;
   windObsKmh: number | null;
-  tempKalmanGain: number; // 0..0.78
-  pressKalmanGain: number; // 0..0.85
-  windKalmanGain: number; // 0..0.55
+  tempKalmanGain: number; // 0..0.92
+  pressKalmanGain: number; // 0..0.88
+  windKalmanGain: number; // 0..0.62
   wxFlags: ReturnType<typeof parseMetarWxTokens>;
   primaryStationAgeMin: number;
   primaryStationDistKm: number;
@@ -84,6 +85,16 @@ function medianOf(arr: number[]): number {
   return s.length % 2 === 0 ? (s[m - 1] + s[m]) * 0.5 : s[m];
 }
 
+function haversineKmLocal(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+}
+
 /**
  * Huber/MAD tabanlı aykırı hata filtresi: sensör sıçramaları Kalman bias'ını bozamaz.
  */
@@ -103,7 +114,7 @@ function filterRobustErrors(
 }
 
 /**
- * 48 saatlik çoklu ICAO METAR ağından (<= 85 km, en yakın 4 istasyon)
+ * 48-72 saatlik çoklu ICAO METAR ağı + Kalıcı Bursa MGM 19-İlçe Defterinden (state-ledger)
  * Cressman / IDW + canlı atmosferik lapse rate düzeltmeli saatlik şehir gözlem serisi üretir.
  */
 export function buildCressmanMetarTimeline(
@@ -111,13 +122,17 @@ export function buildCressmanMetarTimeline(
   cityElevationM: number,
   envLapseRateCPerM: number,
   cityLat?: number,
-  cityLon?: number
+  cityLon?: number,
+  ledgerStationHistory?: LedgerStationPoint[]
 ): Map<string, CressmanHourlyObs> {
   const isBursaOvaTarget =
-    cityLat !== undefined && cityLon !== undefined &&
-    isWithinBursaDomain(cityLat, cityLon) && cityElevationM <= 450 && cityLon < 29.35;
+    cityLat !== undefined &&
+    cityLon !== undefined &&
+    isWithinBursaDomain(cityLat, cityLon) &&
+    cityElevationM <= 450 &&
+    cityLon < 29.35;
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
-  // Her UTC saati için tüm istasyon gözlemlerini topla
+
   type StationSample = {
     weight: number;
     distKm: number;
@@ -130,19 +145,49 @@ export function buildCressmanMetarTimeline(
   };
 
   const bucket = new Map<string, Map<string, StationSample>>();
+  const hasLedgerBursa = Boolean(ledgerStationHistory && ledgerStationHistory.length >= 6);
 
+  // 1. Assimilate persistent Tier-1/2 Bursa MGM 19-district hourly ledger points when available!
+  if (ledgerStationHistory && cityLat !== undefined && cityLon !== undefined) {
+    for (const pt of ledgerStationHistory) {
+      const distKm = Math.max(0.5, haversineKmLocal(cityLat, cityLon, pt.lat, pt.lon));
+      if (distKm > 48) continue;
+      const elevDiffToCity = cityElevationM - pt.elevationM;
+      if (Math.abs(elevDiffToCity) > 450) continue;
+
+      const tempElevDelta = safeLapse * elevDiffToCity;
+      const dewElevDelta =
+        Math.max(-0.0028, Math.min(0.0015, safeLapse * 0.35)) * elevDiffToCity;
+      const elevPenalty = 1 + Math.abs(elevDiffToCity) / 220;
+      const isEastBasin = isBursaOvaTarget && pt.lon >= 29.38;
+      const barrierFactor = isEastBasin ? 0.18 : 3.2; // Official in-basin MGM dominates distant airports!
+      const stationWeight = barrierFactor / ((distKm * distKm + 8 * 8) * elevPenalty);
+
+      const perStation = bucket.get(pt.utcHourKey) ?? new Map<string, StationSample>();
+      perStation.set(pt.stationId, {
+        weight: stationWeight,
+        distKm,
+        obsTimeMs: pt.observedAtMs,
+        tempCity: pt.tempC + tempElevDelta,
+        dewCity: pt.dewPointC !== null ? pt.dewPointC + dewElevDelta : null,
+        press: pt.pressureMslHpa,
+        windKmh: pt.windSpeedKmh,
+        wxFlags: parseMetarWxTokens(pt.hasPrecip ? "RA" : "")
+      });
+      bucket.set(pt.utcHourKey, perStation);
+    }
+  }
+
+  // 2. Assimilate regional METAR history (with LTBR frost-basin quarantine when targeting Bursa Ova)
   for (const net of network) {
     const elevDiffToCity = cityElevationM - net.station.elevationM;
-    // T_city = T_station + lapseRate * (Z_city - Z_station)
-    // Normal troposferde lapseRate = -0.0065 °C/m -> şehir havalimanından alçaksa daha sıcaktır (+ΔT)
     const tempElevDelta = safeLapse * elevDiffToCity;
-    // Çiy noktası gradyanı tipik olarak sıcaklığın ~%35'i (~-2°C/km)
     const dewElevDelta = Math.max(-0.0028, Math.min(0.0015, safeLapse * 0.35)) * elevDiffToCity;
 
     const distKm = Math.max(1, net.station.distanceKm);
     const elevPenalty = 1 + Math.abs(elevDiffToCity) / 280;
     const isLtbrTrap = isBursaOvaTarget && net.station.icaoId === "LTBR";
-    const barrierFactor = isLtbrTrap && network.length > 1 ? 0.22 : 1.0;
+    const barrierFactor = isLtbrTrap ? (hasLedgerBursa ? 0.05 : network.length > 1 ? 0.22 : 1.0) : 1.0;
     const stationWeight = barrierFactor / ((distKm * distKm + 14 * 14) * elevPenalty);
 
     for (const ob of net.history) {
@@ -151,7 +196,6 @@ export function buildCressmanMetarTimeline(
       const utcKey = new Date(roundedMs).toISOString().slice(0, 16);
 
       const perStation = bucket.get(utcKey) ?? new Map<string, StationSample>();
-      // Aynı saatte birden fazla SPECI/METAR varsa saat başına en yakın olanı tut
       const existing = perStation.get(net.station.icaoId);
       if (
         existing &&
@@ -160,16 +204,22 @@ export function buildCressmanMetarTimeline(
         continue;
       }
 
-      const localH = ((new Date(roundedMs).getUTCHours() + 3) % 24);
+      const localH = (new Date(roundedMs).getUTCHours() + 3) % 24;
       const isNightOb = localH >= 18 || localH <= 8;
       const ltbrBasinUnbias =
         isBursaOvaTarget && net.station.icaoId === "LTBR"
-          ? computeRuralBasinToUrbanOffsetC(0.04, 0.96, 0.85, {
-              isNight: isNightOb,
-              localHour: localH,
-              cloudCoverPct: ob.wxString?.includes("OVC") ? 90 : 25,
-              ambientWindSpeedKt: typeof ob.wspd === "number" ? ob.wspd : 4
-            }, typeof ob.wspd === "number" ? ob.wspd : null)
+          ? computeRuralBasinToUrbanOffsetC(
+              0.04,
+              0.96,
+              0.85,
+              {
+                isNight: isNightOb,
+                localHour: localH,
+                cloudCoverPct: ob.wxString?.includes("OVC") ? 90 : 25,
+                ambientWindSpeedKt: typeof ob.wspd === "number" ? ob.wspd : 4
+              },
+              typeof ob.wspd === "number" ? ob.wspd : null
+            )
           : 0;
       const tempCity =
         typeof ob.temp === "number" && Number.isFinite(ob.temp)
@@ -206,10 +256,14 @@ export function buildCressmanMetarTimeline(
 
   const out = new Map<string, CressmanHourlyObs>();
   for (const [utcKey, stMap] of bucket.entries()) {
-    let tNum = 0, tDen = 0;
-    let tdNum = 0, tdDen = 0;
-    let pNum = 0, pDen = 0;
-    let wNum = 0, wDen = 0;
+    let tNum = 0,
+      tDen = 0;
+    let tdNum = 0,
+      tdDen = 0;
+    let pNum = 0,
+      pDen = 0;
+    let wNum = 0,
+      wDen = 0;
     let nearStationCount = 0;
     let nearRain = false;
     let nearStorm = false;
@@ -226,7 +280,6 @@ export function buildCressmanMetarTimeline(
         tdDen += s.weight;
       }
       if (s.press !== null) {
-        // Basınç yatay olarak çok pürüzsüz değiştiği için mesafe sönümü daha yumuşak
         const pw = 1 / (s.distKm * s.distKm + 35 * 35);
         pNum += s.press * pw;
         pDen += pw;
@@ -280,10 +333,10 @@ function emptyBiasProfile(): ModelBiasProfile {
 }
 
 /**
- * ATMOS-Core v4.5 Kalman + Diurnal-Phase MOS Eğitim Motoru:
- * - Son 48 saatlik çoklu-istasyon METAR ağına karşı 7 modelin ayrı ayrı bias & UBRMSE'sini çıkarır.
+ * ATMOS-Core v5.0 Kalman + Diurnal-Phase MOS Eğitim Motoru:
+ * - Son 48-72 saatlik Bursa MGM Defteri + çoklu-istasyon METAR ağına karşı 7 modelin bias & UBRMSE'sini çıkarır.
  * - Ağırlıkları ham RMSE değil, bias temizlendikten sonraki rastgele hata (UBRMSE²) ile belirler.
- * - Yağış Brier skoruyla (METAR wxString) yağış ağırlıklarını da canlı kalibre eder.
+ * - Yağış Brier skoruyla yağış ağırlıklarını da canlı kalibre eder.
  */
 export function trainKalmanMos({
   network,
@@ -295,7 +348,8 @@ export function trainKalmanMos({
   utcTimeIndex,
   nowUtcMs,
   utcOffsetSeconds,
-  ensembleMembers = 0
+  ensembleMembers = 0,
+  ledgerStationHistory
 }: {
   network: MetarNetworkStation[];
   cityElevationM: number;
@@ -307,9 +361,26 @@ export function trainKalmanMos({
   nowUtcMs: number;
   utcOffsetSeconds: number;
   ensembleMembers?: number;
+  ledgerStationHistory?: LedgerStationPoint[];
 }): KalmanMosModel {
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
-  const timeline = buildCressmanMetarTimeline(network, cityElevationM, safeLapse, cityLat, cityLon);
+  const timeline = buildCressmanMetarTimeline(
+    network,
+    cityElevationM,
+    safeLapse,
+    cityLat,
+    cityLon,
+    ledgerStationHistory
+  );
+
+  // Note: when Bursa hybridUrl is locked to WMO 17116 (100m), align observation timeline to model grid elevation if specified
+  const isBursaWmo100mGrid =
+    cityLat !== undefined &&
+    cityLon !== undefined &&
+    isWithinBursaDomain(cityLat, cityLon) &&
+    Math.hypot((cityLat - 40.2308) * 111.32, (cityLon - 29.0133) * 85.0) <= 34 &&
+    cityElevationM <= 750;
+  const modelGridElevAdjustC = isBursaWmo100mGrid ? safeLapse * (100 - cityElevationM) : 0;
 
   const biases = {} as Record<SevenModelKey, ModelBiasProfile>;
   for (const k of SEVEN_MODEL_KEYS) biases[k] = emptyBiasProfile();
@@ -336,16 +407,18 @@ export function trainKalmanMos({
     for (const [utcKey, obs] of timeline.entries()) {
       const idx = utcTimeIndex.get(utcKey);
       if (idx === undefined) continue;
-      // Geleceğe taşan saatleri eğitimden dışla
       const ageHours = (nowUtcMs - obs.obsTimeMs) / 3600000;
-      if (ageHours < -0.5 || ageHours > 52) continue;
+      if (ageHours < -0.5 || ageHours > 72) continue;
       matchedHours++;
       if (obs.hasPrecip) observedRainHours++;
 
       const localHour = Math.floor(
         (((obs.obsTimeMs + utcOffsetSeconds * 1000) / 3600000) % 24 + 24) % 24
       );
-      const bin = Math.min(3, Math.floor(localHour / 6)); // 0:00-06, 1:06-12, 2:12-18, 3:18-24
+      const bin = Math.min(3, Math.floor(localHour / 6));
+
+      const obsTempForModel =
+        obs.tempC !== null ? obs.tempC + modelGridElevAdjustC : null;
 
       for (const mKey of SEVEN_MODEL_KEYS) {
         const apiId = SEVEN_MODEL_META[mKey].apiModel;
@@ -355,8 +428,12 @@ export function trainKalmanMos({
         const mWind = modelHourlyUtc[`wind_speed_10m_${apiId}`]?.[idx];
         const mPrecip = modelHourlyUtc[`precipitation_${apiId}`]?.[idx];
 
-        if (obs.tempC !== null && typeof mTemp === "number" && Number.isFinite(mTemp)) {
-          tSamples[mKey].push({ err: mTemp - obs.tempC, ageHours: Math.max(0, ageHours), bin });
+        if (obsTempForModel !== null && typeof mTemp === "number" && Number.isFinite(mTemp)) {
+          tSamples[mKey].push({
+            err: mTemp - obsTempForModel,
+            ageHours: Math.max(0, ageHours),
+            bin
+          });
         }
         if (obs.dewPointC !== null && typeof mDew === "number" && Number.isFinite(mDew)) {
           tdSamples[mKey].push({
@@ -384,7 +461,6 @@ export function trainKalmanMos({
           typeof mPrecip === "number" &&
           Number.isFinite(mPrecip)
         ) {
-          // Model mm değerini yumuşak yağış olasılığına (0..1) eşleyip Brier skoru hesapla
           const pModel = 1 - Math.exp(-Math.max(0, mPrecip) / 0.35);
           const yObs = obs.hasPrecip ? 1 : 0;
           const diff = pModel - yObs;
@@ -395,7 +471,8 @@ export function trainKalmanMos({
     }
   }
 
-  const hasLiveCalibration = network.length > 0 && matchedHours >= 8;
+  const hasLiveCalibration =
+    (network.length > 0 || (ledgerStationHistory?.length ?? 0) > 0) && matchedHours >= 6;
 
   const tempUbRmses: Partial<Record<SevenModelKey, number | null>> = {};
   const tempRmses: Partial<Record<SevenModelKey, number | null>> = {};
@@ -404,7 +481,12 @@ export function trainKalmanMos({
   const windRmses: Partial<Record<SevenModelKey, number | null>> = {};
   const precipBriers: Partial<Record<SevenModelKey, number | null>> = {};
 
-  const computeEwmaBias = (samples: Sample[], lambdaPerHour: number, shrinkN0: number, cap: number): number => {
+  const computeEwmaBias = (
+    samples: Sample[],
+    lambdaPerHour: number,
+    shrinkN0: number,
+    cap: number
+  ): number => {
     if (samples.length < 4) return 0;
     let wSum = 0;
     let eSum = 0;
@@ -418,7 +500,6 @@ export function trainKalmanMos({
     if (wSum <= 0) return 0;
     const rawMean = eSum / wSum;
     const nEff = (wSum * wSum) / Math.max(1e-6, wSqSum);
-    // Empirical Bayes shrinkage: az gözlemde aşırı düzeltme yapma
     const shrunk = rawMean * (nEff / (nEff + shrinkN0));
     return clamp(shrunk, -cap, cap);
   };
@@ -447,10 +528,7 @@ export function trainKalmanMos({
       prof.tempMeanBiasC = Number(meanErr.toFixed(2));
       prof.tempMaeC = Number(mae.toFixed(2));
 
-      // 3-Bileşenli Ayrıştırılmış Kalman + MOS Sapması:
-      // 1) Kalıcı 48s Topoğrafik/Mikroklima Sapması (τ = 60s)
       const persistentBias = clamp(meanErr * (n / (n + 5.0)), -4.5, 4.5);
-      // 2) Anlık Hava Kütlesi / Bulutluluk Sapması (son ~8-12s EWMA - kalıcı sapma, τ = 10s)
       const ewmaTotal = computeEwmaBias(ts, 0.86, 3.0, 4.5);
       const transientBias = clamp(ewmaTotal - persistentBias, -2.8, 2.8);
 
@@ -458,7 +536,6 @@ export function trainKalmanMos({
       prof.tempTransientBiasC = transientBias;
       prof.tempKalmanBiasC = clamp(persistentBias + transientBias, -4.5, 4.5);
 
-      // 3) Gündüz/gece 4 zaman dilimli artık faz sapması (kalıcı sapma düşüldükten sonra, τ = 72s)
       const binSums = [0, 0, 0, 0];
       const binCounts = [0, 0, 0, 0];
       for (const s of ts) {
@@ -472,7 +549,6 @@ export function trainKalmanMos({
       }) as [number, number, number, number];
 
       tempRmses[k] = prof.tempRmseC;
-      // UBRMSE ile toplam RMSE karışımı: sabit ofseti temizlediğimiz için %75 UBRMSE + %25 RMSE
       tempUbRmses[k] = Number((prof.tempUbRmseC * 0.75 + prof.tempRmseC * 0.25).toFixed(2));
       biasSumForAvg += Math.abs(prof.tempKalmanBiasC);
       biasCountForAvg++;
@@ -508,7 +584,6 @@ export function trainKalmanMos({
     }
   }
 
-  // Kısa vade ağırlıkları: UBRMSE² + yağış Brier (en az 1 yağışlı veya yanlış-alarm ayırt edici saat varsa)
   const usePrecipBrier =
     hasLiveCalibration &&
     (observedRainHours >= 1 ||
@@ -556,7 +631,6 @@ export function trainKalmanMos({
     precipitation: { ...MEDIUM_RANGE_PRIOR_WEIGHTS.precipitation }
   };
 
-  // 0–6 saatlik Fiziksel Sensör Asimilasyon Çıpası (Kalman Gain Anchor)
   const primary = network[0]?.station ?? null;
   let anchor: NowcastSensorAnchor = {
     active: false,
@@ -573,7 +647,6 @@ export function trainKalmanMos({
   };
 
   if (primary && primary.distanceKm <= 55 && primary.ageMinutes <= 65) {
-    // En taze çoklu-istasyon Cressman değerini veya birincil istasyonu şehir rakımına taşı
     const elevDiff = cityElevationM - primary.elevationM;
     const tempElevDelta = safeLapse * elevDiff;
     const dewElevDelta =
@@ -582,7 +655,6 @@ export function trainKalmanMos({
     const obsT = primary.tempC !== null ? primary.tempC + tempElevDelta : null;
     const obsTd = primary.dewPointC !== null ? primary.dewPointC + dewElevDelta : null;
 
-    // Gözlem belirsizliği σ_obs: mesafe + tazelik + rakım farkı arttıkça büyür -> Kalman kazancı azalır
     const sigmaObsT = Math.hypot(
       0.35,
       primary.distanceKm * 0.022,
@@ -662,7 +734,7 @@ export function trainKalmanMos({
     stationCount: network.length,
     stationIds: network.map((n) => n.station.icaoId),
     envLapseRateCPerKm: Number((safeLapse * 1000).toFixed(2)),
-    nowcastTempDeltaC: 0, // weather.ts anlık farkı hesaplayıp doldurur
+    nowcastTempDeltaC: 0,
     nowcastKalmanGain: anchor.tempKalmanGain,
     ensembleMembers,
     meanTempBiasRemovedC:
@@ -701,11 +773,6 @@ export function trainKalmanMos({
   };
 }
 
-/**
- * Vade bağımlı ağırlık harmanlaması:
- * 0–18s: %100 kısa vade (canlı METAR-UBRMSE² + yüksek çözünürlüklü modeller)
- * 18–78s: Kademeli olarak orta vade (ECMWF IFS + AIFS AI liderliği) ağırlıklarına yumuşak geçiş
- */
 export function getLeadTimeWeights(
   shortW: Record<SevenModelKey, number>,
   mediumW: Record<SevenModelKey, number>,
@@ -726,10 +793,6 @@ export function getLeadTimeWeights(
   return out;
 }
 
-/**
- * 7-Model Kalman + Diurnal-Phase Sapma Düzeltmeli Sıcaklık/Çiy/Basınç/Rüzgar Füzyonu
- * + 0–6s Fiziksel Sensör Asimilasyonu + Orta Vadede 122-Üye Ensemble Stabilizasyonu.
- */
 export function blendKalmanCorrectedScalar({
   snapshot,
   mos,
@@ -754,13 +817,13 @@ export function blendKalmanCorrectedScalar({
     leadHour
   );
 
-  const bin = Math.min(3, Math.max(0, Math.floor(((localHour % 24) + 24) % 24 / 6)));
+  const bin = Math.min(3, Math.max(0, Math.floor((((localHour % 24) + 24) % 24) / 6)));
   const persistDecay = Math.exp(-Math.max(0, leadHour) / 60);
   const transientDecay = Math.exp(-Math.max(0, leadHour) / 10);
   const diurnalDecay = Math.exp(-Math.max(0, leadHour) / 72);
   const dewDecay = Math.exp(-Math.max(0, leadHour) / 24);
 
-  const candidates: Array<{ corr: number; w: number }> = [];
+  const candidates: Array<{ corr: number; raw: number; w: number }> = [];
 
   for (const k of SEVEN_MODEL_KEYS) {
     const rawVal = snapshot[k];
@@ -785,11 +848,9 @@ export function blendKalmanCorrectedScalar({
       corr = Math.max(0, rawVal - b.windKalmanBiasKmh * Math.exp(-Math.max(0, leadHour) / 12));
     }
 
-    candidates.push({ corr, w });
+    candidates.push({ corr, raw: rawVal, w });
   }
 
-  // ATMOS v4.5 Orta-Uzun Vade (Gün 3-7, leadHour >= 66) Alfa-Kırpılmış (Alpha-Trimmed) Konsensüs:
-  // Tekil deterministik koşuların uç faz savrulmalarını (en sıcak 1 ve en soğuk 1 uç model) %70 sönümler!
   if (param === "temperature" && leadHour >= 66 && candidates.length >= 5) {
     candidates.sort((a, b) => a.corr - b.corr);
     const trimFactor = leadHour >= 114 ? 0.20 : 0.40;
@@ -798,23 +859,27 @@ export function blendKalmanCorrectedScalar({
   }
 
   let num = 0;
+  let rawNum = 0;
   let den = 0;
   for (const c of candidates) {
     num += c.corr * c.w;
+    rawNum += c.raw * c.w;
     den += c.w;
   }
 
   let fused = den > 0 ? num / den : fallback;
+  const meanKalmanShift = den > 0 ? fused - rawNum / den : 0;
 
-  // Orta-uzun vadede (24–168s) 122-üyeli gerçek ensemble medyanıyla faz kilitleme (%0 -> %38)
+  // Orta-uzun vadede (24–168s) 212-üyeli gerçek ensemble medyanıyla faz kilitleme (Kalman sapması korunarak!)
   if (
     ensembleP50 !== null &&
     Number.isFinite(ensembleP50) &&
     leadHour >= 24 &&
     param === "temperature"
   ) {
-    const ensWeight = clamp((leadHour - 24) / 120, 0, 0.38);
-    fused = fused * (1 - ensWeight) + ensembleP50 * ensWeight;
+    const ensWeight = clamp((leadHour - 24) / 120, 0, 0.36);
+    const biasAlignedEnsP50 = ensembleP50 + clamp(meanKalmanShift, -3.5, 3.5);
+    fused = fused * (1 - ensWeight) + biasAlignedEnsP50 * ensWeight;
   }
 
   // 0–6 saatlik Fiziksel Sensör Asimilasyonu (Kalman Gain Anchor)

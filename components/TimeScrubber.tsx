@@ -21,7 +21,7 @@ export default function TimeScrubber({
   unit
 }: TimeScrubberProps) {
   const [playing, setPlaying] = useState(false);
-  const [horizon, setHorizon] = useState<24 | 48>(24);
+  const [horizon, setHorizon] = useState<24 | 48 | 168>(24);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const slice = hourly.slice(0, Math.min(horizon, hourly.length));
   const maxIdx = Math.max(0, slice.length - 1);
@@ -131,6 +131,7 @@ export default function TimeScrubber({
                     onClick={() => {
                       atmosUiSfx.playNavTick();
                       setHorizon(48);
+                      if (frameIndex >= 48) onChange(47);
                     }}
                     className={`rounded px-1.5 py-0.5 transition-colors ${
                       horizon === 48
@@ -140,6 +141,22 @@ export default function TimeScrubber({
                   >
                     48s
                   </button>
+                  {hourly.length >= 96 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        atmosUiSfx.playNavTick();
+                        setHorizon(168);
+                      }}
+                      className={`rounded px-1.5 py-0.5 transition-colors ${
+                        horizon === 168
+                          ? "bg-white/15 text-ink-primary"
+                          : "text-ink-muted hover:text-ink-primary"
+                      }`}
+                    >
+                      168s
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -184,13 +201,12 @@ export default function TimeScrubber({
             onChange(idx);
           }}
         >
-          {/* Yüzen Hover Önizleme Balonu */}
           {hovered && hoverPctX !== null && (
             <div
               className="pointer-events-none absolute -top-8 z-20 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/15 bg-[#070c17]/95 px-2.5 py-1 font-mono text-[11px] text-ink-primary shadow-lg backdrop-blur-md tabular"
               style={{ left: `${Math.max(8, Math.min(92, hoverPctX))}%` }}
             >
-              {hovered.hourLabel} · {formatTemperature(hovered.temperature, unit)} · %
+              {hovered.dayLabel} {hovered.hourLabel} · {formatTemperature(hovered.temperature, unit)} · %
               {hovered.precipProbability}
             </div>
           )}
@@ -211,7 +227,7 @@ export default function TimeScrubber({
             {slice.map((h, i) => {
               const barH = (h.precipProbability / 100) * (height - 14);
               if (barH <= 1) return null;
-              const barW = horizon === 48 ? 7 : 12;
+              const barW = horizon === 168 ? 3.2 : horizon === 48 ? 7 : 12;
               const isFocus = i === clampedIdx || i === hoverIdx;
               return (
                 <rect
@@ -220,7 +236,7 @@ export default function TimeScrubber({
                   y={height - barH}
                   width={barW}
                   height={barH}
-                  rx={2.5}
+                  rx={horizon === 168 ? 1.2 : 2.5}
                   fill={
                     h.precipType === "snow"
                       ? isFocus
@@ -240,14 +256,13 @@ export default function TimeScrubber({
               d={tempPath}
               fill="none"
               stroke="rgba(243, 246, 251, 0.92)"
-              strokeWidth={2.2}
+              strokeWidth={horizon === 168 ? 1.7 : 2.2}
               vectorEffect="non-scaling-stroke"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
           </svg>
 
-          {/* Hover kılavuz çizgisi */}
           {hoverPctX !== null && (
             <div
               className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/20"
@@ -255,7 +270,6 @@ export default function TimeScrubber({
             />
           )}
 
-          {/* Aktif zaman ışıklı çizgisi */}
           <div
             className="pointer-events-none absolute top-0 bottom-0 w-px transition-[left] duration-150"
             style={{
@@ -265,7 +279,6 @@ export default function TimeScrubber({
             }}
           />
 
-          {/* Nefes Alan Aktif Sıcaklık Noktası */}
           <div
             className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 transition-[left,top] duration-150"
             style={{ left: `${activePctX}%`, top: `${activePctY}%` }}
@@ -298,13 +311,22 @@ export default function TimeScrubber({
 
         <div className="mt-1 flex justify-between font-mono text-xs text-ink-muted tabular">
           <span>{slice[0]?.hourLabel}</span>
-          <span>{slice[Math.floor(maxIdx * 0.25)]?.hourLabel}</span>
           <span>
-            {horizon === 48 ? "Yarın " : ""}
+            {horizon === 168 ? `${slice[Math.floor(maxIdx * 0.25)]?.dayLabel} ` : ""}
+            {slice[Math.floor(maxIdx * 0.25)]?.hourLabel}
+          </span>
+          <span>
+            {horizon >= 48 ? `${slice[Math.floor(maxIdx * 0.5)]?.dayLabel} ` : ""}
             {slice[Math.floor(maxIdx * 0.5)]?.hourLabel}
           </span>
-          <span>{slice[Math.floor(maxIdx * 0.75)]?.hourLabel}</span>
-          <span>{slice[maxIdx]?.hourLabel}</span>
+          <span>
+            {horizon === 168 ? `${slice[Math.floor(maxIdx * 0.75)]?.dayLabel} ` : ""}
+            {slice[Math.floor(maxIdx * 0.75)]?.hourLabel}
+          </span>
+          <span>
+            {horizon === 168 ? `${slice[maxIdx]?.dayLabel} ` : ""}
+            {slice[maxIdx]?.hourLabel}
+          </span>
         </div>
       </div>
     </div>

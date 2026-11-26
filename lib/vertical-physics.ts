@@ -1,17 +1,21 @@
 /**
- * ATMOS v4.5 — 9-Point Bursa Micro-Stencil, 3D Uludağ Physics & DWD ICON Native Grid Adapter
+ * ATMOS v5.0 — Live 9-Point Bursa Micro-Stencil, Live Marmara SST, 3D Uludağ Physics & DWD ICON Native Grid Adapter
  * File: lib/vertical-physics.ts
  *
  * Solves NWP grid-orography blurring over Bursa (100-200m plain adjacent to 2,543m Uludağ):
- *  1. 9-Point Bursa Spatial Stencil (Merkez, Nilüfer, Mudanya Marine, Uludağ Slope/Peak,
- *     Yıldırım/Kestel, Karacabey West Corridor, Gemlik Bay, Orhaneli Windward South Slope)
- *  2. 1000-700 hPa 3D Vertical Column Physics:
+ *  1. Live 9-Point Bursa Spatial Stencil Fetcher (`fetchBursa9PointStencil` across 168 hours!):
+ *     Merkez, Nilüfer, Mudanya Marine, Uludağ Slope/Peak, Yıldırım/Kestel, Karacabey West Corridor,
+ *     Gemlik Bay, Orhaneli Windward South Slope
+ *  2. Live Marmara Sea Surface Temperature (`fetchMarmaraLiveSst` via Open-Meteo Marine API)
+ *  3. 1000-700 hPa 3D Vertical Column Physics across ALL 168 forecast hours:
  *     - Mountain Froude Number Fr = U_perp / (N * H_uludag)
- *     - Lodos SW Foehn dry-adiabatic lee warming (+9.76°C/km) & sub-cloud virga evaporation
+ *     - Lodos SW Foehn dry-adiabatic lee warming & sub-cloud virga evaporation
  *     - Blocked Ova radiative cold-pool / temperature inversion profile interpolation
  *     - Poyraz/Karayel Marmara Sea-Effect (DEK) + Uludağ upslope orographic precip multiplier
- *  3. 30 November 2026 DWD ICON Native Grid migration & missing `visibility` physical diagnosis
+ *  4. 30 November 2026 DWD ICON Native Grid migration & missing `visibility` physical diagnosis
  */
+
+import { ATMOS_HTTP_USER_AGENT } from './bursa-mesh';
 
 export interface StencilNode {
   key:
@@ -43,16 +47,16 @@ export const BURSA_9POINT_STENCIL: readonly StencilNode[] = [
   {
     key: 'nilufer_west',
     label: 'Nilüfer / Görükle Ova',
-    lat: 40.2225,
-    lon: 28.8725,
-    elevationM: 112,
+    lat: 40.2286,
+    lon: 28.8585,
+    elevationM: 105,
     role: 'corridor',
   },
   {
     key: 'mudanya_sea',
     label: 'Mudanya Marmara Kıyısı',
-    lat: 40.3756,
-    lon: 28.8822,
+    lat: 40.3686,
+    lon: 28.9017,
     elevationM: 12,
     role: 'marine_upwind',
   },
@@ -75,9 +79,9 @@ export const BURSA_9POINT_STENCIL: readonly StencilNode[] = [
   {
     key: 'kestel_east',
     label: 'Yıldırım / Kestel Etek',
-    lat: 40.1978,
-    lon: 29.2122,
-    elevationM: 210,
+    lat: 40.1861,
+    lon: 29.2106,
+    elevationM: 230,
     role: 'corridor',
   },
   {
@@ -99,12 +103,153 @@ export const BURSA_9POINT_STENCIL: readonly StencilNode[] = [
   {
     key: 'orhaneli_windward_south',
     label: 'Orhaneli (Uludağ Güney Rüzgar-Üstü)',
-    lat: 39.9035,
-    lon: 28.9905,
-    elevationM: 520,
+    lat: 39.8967,
+    lon: 28.9925,
+    elevationM: 522,
     role: 'foehn_windward',
   },
 ] as const;
+
+export interface BursaStencilHourSlice {
+  windwardSouthRh850Pct: number | null;
+  marineUpwindPrecipMmHr: number;
+  uludagSlopePrecipMmHr: number;
+  spatialNeighborhoodMm: number[];
+  mudanyaTemp2mC: number | null;
+  orhaneliTemp2mC: number | null;
+}
+
+export interface MarmaraSstBundle {
+  currentSstC: number;
+  hourlySstByUtc: Map<string, number>;
+}
+
+let cachedMarmaraSst: { expiresAtMs: number; value: MarmaraSstBundle } | null = null;
+let cachedBursaStencil: { expiresAtMs: number; value: Map<string, BursaStencilHourSlice> } | null = null;
+
+/**
+ * Fetches live & 168-hour forecast Marmara Sea Surface Temperature off Mudanya/Gemlik (40.42°N, 28.90°E)
+ * so winter Sea-Effect Snow/Rain (DEK: SST - T850 >= 11.5°C) and summer sea-breeze cooling use REAL SST!
+ */
+export async function fetchMarmaraLiveSst(timeoutMs = 4200): Promise<MarmaraSstBundle | null> {
+  const nowMs = Date.now();
+  if (cachedMarmaraSst && cachedMarmaraSst.expiresAtMs > nowMs) {
+    return cachedMarmaraSst.value;
+  }
+  try {
+    const url =
+      'https://marine-api.open-meteo.com/v1/marine?latitude=40.42&longitude=28.90' +
+      '&current=sea_surface_temperature&hourly=sea_surface_temperature&forecast_days=8&timezone=GMT';
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': ATMOS_HTTP_USER_AGENT },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      current?: { sea_surface_temperature?: number };
+      hourly?: { time?: string[]; sea_surface_temperature?: Array<number | null> };
+    };
+    const hourlySstByUtc = new Map<string, number>();
+    const times = json.hourly?.time ?? [];
+    const vals = json.hourly?.sea_surface_temperature ?? [];
+    let fallbackSst: number | null =
+      typeof json.current?.sea_surface_temperature === 'number'
+        ? json.current.sea_surface_temperature
+        : null;
+
+    for (let i = 0; i < times.length; i++) {
+      const v = vals[i];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        hourlySstByUtc.set(String(times[i]).slice(0, 16), v);
+        if (fallbackSst === null) fallbackSst = v;
+      }
+    }
+    if (fallbackSst === null) return null;
+
+    const bundle: MarmaraSstBundle = {
+      currentSstC: Number(fallbackSst.toFixed(2)),
+      hourlySstByUtc,
+    };
+    cachedMarmaraSst = { expiresAtMs: nowMs + 60 * 60 * 1000, value: bundle };
+    return bundle;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetches the 168-hour 9-Point Bursa Spatial Stencil in ONE batched Open-Meteo call,
+ * activating live Uludağ windward Orhaneli RH850, Mudanya/Gemlik marine rain inflow,
+ * Uludağ slope precipitation enhancement, and 9-point spatial neighborhood PM-QM!
+ */
+export async function fetchBursa9PointStencil(
+  timeoutMs = 5500,
+): Promise<Map<string, BursaStencilHourSlice>> {
+  const nowMs = Date.now();
+  if (cachedBursaStencil && cachedBursaStencil.expiresAtMs > nowMs) {
+    return cachedBursaStencil.value;
+  }
+
+  const out = new Map<string, BursaStencilHourSlice>();
+  try {
+    const coords = buildBursaStencilQueryCoords();
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}` +
+      `&elevation=${coords.elevation}&hourly=temperature_2m,precipitation,relative_humidity_850hPa` +
+      `&forecast_days=8&timezone=GMT`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': ATMOS_HTTP_USER_AGENT },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return out;
+
+    const arr = (await res.json()) as Array<{
+      hourly?: {
+        time?: string[];
+        temperature_2m?: Array<number | null>;
+        precipitation?: Array<number | null>;
+        relative_humidity_850hPa?: Array<number | null>;
+      };
+    }>;
+    if (!Array.isArray(arr) || arr.length < 9) return out;
+
+    const times = arr[0]?.hourly?.time ?? [];
+    for (let i = 0; i < times.length; i++) {
+      const uKey = String(times[i]).slice(0, 16);
+      const spatialNeighborhoodMm: number[] = [];
+      for (let n = 0; n < 9; n++) {
+        const p = arr[n]?.hourly?.precipitation?.[i];
+        if (typeof p === 'number' && Number.isFinite(p)) {
+          spatialNeighborhoodMm.push(Math.max(0, p));
+        }
+      }
+
+      const mudanyaP = Math.max(0, Number(arr[2]?.hourly?.precipitation?.[i] ?? 0));
+      const gemlikP = Math.max(0, Number(arr[7]?.hourly?.precipitation?.[i] ?? 0));
+      const slopeP = Math.max(0, Number(arr[3]?.hourly?.precipitation?.[i] ?? 0));
+      const orhRh850 = arr[8]?.hourly?.relative_humidity_850hPa?.[i];
+      const mudT = arr[2]?.hourly?.temperature_2m?.[i];
+      const orhT = arr[8]?.hourly?.temperature_2m?.[i];
+
+      out.set(uKey, {
+        windwardSouthRh850Pct:
+          typeof orhRh850 === 'number' && Number.isFinite(orhRh850) ? orhRh850 : null,
+        marineUpwindPrecipMmHr: Math.max(mudanyaP, gemlikP),
+        uludagSlopePrecipMmHr: slopeP,
+        spatialNeighborhoodMm,
+        mudanyaTemp2mC: typeof mudT === 'number' && Number.isFinite(mudT) ? mudT : null,
+        orhaneliTemp2mC: typeof orhT === 'number' && Number.isFinite(orhT) ? orhT : null,
+      });
+    }
+
+    if (out.size > 0) {
+      cachedBursaStencil = { expiresAtMs: nowMs + 10 * 60 * 1000, value: out };
+    }
+  } catch {
+    // Non-fatal fallback
+  }
+  return out;
+}
 
 export interface PressureLevelSlice {
   pressureHpa: 1000 | 975 | 950 | 925 | 850 | 700;
@@ -125,7 +270,6 @@ export interface VerticalColumnInput {
   shortwaveRadiationWm2: number;
   isNight: boolean;
   marmaraSstC?: number;
-  /** Optional moisture/rain readings from southern windward Orhaneli & northern Mudanya stencil points */
   windwardSouthRh850Pct?: number;
   marineUpwindPrecipMmHr?: number;
   uludagSlopePrecipMmHr?: number;
@@ -151,19 +295,16 @@ export interface VerticalPhysicsAdjustment {
 }
 
 const G0 = 9.80665;
-const R_CP = 0.2857; // Rd / cp for dry air
+const R_CP = 0.2857;
 const ULUDAG_BARRIER_HEIGHT_M = 2200;
-// Uludağ ridge axis runs roughly WNW-ESE; perpendicular cross-barrier southerly flow is from ~210°
 const ULUDAG_SOUTH_NORMAL_DEG = 210;
 const ULUDAG_NORTH_NORMAL_DEG = 30;
 
-/** Potential temperature theta (K) from T (°C) and P (hPa) */
 export function computePotentialTempK(tempC: number, pressureHpa: number): number {
   const tempK = tempC + 273.15;
   return tempK * (1000 / Math.max(100, pressureHpa)) ** R_CP;
 }
 
-/** Builds Open-Meteo comma-separated multi-coordinate query parameters for the 9-point Bursa stencil */
 export function buildBursaStencilQueryCoords(): {
   latitude: string;
   longitude: string;
@@ -176,11 +317,6 @@ export function buildBursaStencilQueryCoords(): {
   };
 }
 
-/**
- * Diagnoses horizontal visibility (meters) physically when NWP `visibility` is null/removed
- * (mandatory compatibility for DWD ICON native grid feed migration on 30 November 2026).
- * Based on Gultepe et al. (2006) boundary-layer extinction & Marshall-Palmer hydrometeor attenuation.
- */
 export function diagnosePhysicalVisibilityM(params: {
   rawVisibilityM?: number | null;
   temp2mC: number;
@@ -202,7 +338,6 @@ export function diagnosePhysicalVisibilityM(params: {
   const windKt = params.windSpeedKt ?? 5;
   let visKm = 28.0;
 
-  // 1. Radiation / advection fog extinction when dew-point spread approaches zero
   if (dewDepressionC <= 0.4 && windKt <= 6) {
     visKm = 0.35 + 1.1 * dewDepressionC;
   } else if (dewDepressionC <= 1.2 && windKt <= 8) {
@@ -213,7 +348,6 @@ export function diagnosePhysicalVisibilityM(params: {
     visKm = Math.min(35, 10 + 4.5 * dewDepressionC);
   }
 
-  // 2. Precipitation hydrometeor optical extinction (snow attenuates ~3.5x stronger than rain per mm/h)
   if (params.precipMmHr > 0.05) {
     const precipVisKm = params.isSnow
       ? 3.2 * params.precipMmHr ** -0.68
@@ -230,10 +364,6 @@ function projectWindAlongAzimuthMs(windSpeedKt: number, windDirDeg: number, targ
   return windMs * Math.cos(diffRad);
 }
 
-/**
- * Solves 3D column thermodynamics, Uludağ Froude regime, Lodos Foehn warming + virga evaporation,
- * nocturnal Ova inversion trapping, and Poyraz sea-effect/upslope precipitation enhancement.
- */
 export function solveVerticalColumnPhysics(input: VerticalColumnInput): VerticalPhysicsAdjustment {
   const sortedLevels = [...input.levels].sort((a, b) => b.pressureHpa - a.pressureHpa);
   const lvl1000 = sortedLevels.find((l) => l.pressureHpa === 1000) ?? sortedLevels[0];
@@ -241,11 +371,9 @@ export function solveVerticalColumnPhysics(input: VerticalColumnInput): Vertical
   const lvl850 = sortedLevels.find((l) => l.pressureHpa === 850) ?? sortedLevels[Math.max(0, sortedLevels.length - 2)];
   const lvl700 = sortedLevels.find((l) => l.pressureHpa === 700) ?? sortedLevels[sortedLevels.length - 1];
 
-  // Lifting Condensation Level height above ground: Espy-Bolton approximation z_LCL ≈ 125 * (T - Td)
   const surfaceSpreadC = Math.max(0, input.rawModelTemp2mC - input.rawModelDew2mC);
   const lclHeightAglM = 125 * surfaceSpreadC;
 
-  // Compute Brunt-Väisälä static stability N between 925 hPa and 700 hPa (or available endpoints)
   let bruntVaisala = 0.011;
   if (lvl1000 && lvl850 && lvl850.geopotentialHeightM > lvl1000.geopotentialHeightM + 200) {
     const thetaLow = computePotentialTempK(lvl1000.tempC, lvl1000.pressureHpa);
@@ -256,7 +384,6 @@ export function solveVerticalColumnPhysics(input: VerticalColumnInput): Vertical
     bruntVaisala = Math.sqrt((G0 / meanTheta) * dThetaDz);
   }
 
-  // Cross-barrier wind components at 850 hPa (~1,500 m, Uludağ mid-barrier crest flow)
   const uSouthCrossMs = lvl850
     ? projectWindAlongAzimuthMs(lvl850.windSpeedKt, lvl850.windDirDeg, ULUDAG_SOUTH_NORMAL_DEG)
     : 0;
@@ -272,33 +399,24 @@ export function solveVerticalColumnPhysics(input: VerticalColumnInput): Vertical
   let virgaEvaporatedMmHr = 0;
   let activeMechanism: VerticalPhysicsAdjustment['activeMechanism'] = 'STANDARD_PROFILE';
 
-  // MECHANISM 1: Lodos SW Cross-Barrier Foehn over Uludağ
-  // Requires strong SSW-WSW cross-barrier component at 850/700 hPa & Froude number >= 0.42 (flow surmounts crest)
   if (uSouthCrossMs >= 7.5 && froudeNumber >= 0.42 && input.targetElevationM <= 550) {
     activeMechanism = 'LODOS_DRY_FOEHN';
     const windwardRh = input.windwardSouthRh850Pct ?? Math.min(95, (lvl850?.relHumidityPct ?? 65) + 18);
     const leeRh = lvl925?.relHumidityPct ?? 50;
     const crossCrestDrying = Math.max(0, (windwardRh - leeRh) / 100);
 
-    // Thermodynamic Foehn gain scales with cross-barrier momentum & windward latent heat release
     const momentumFactor = Math.min(1.0, (uSouthCrossMs - 6.0) / 12.0);
     const foehnGainC = (0.85 + 2.35 * crossCrestDrying) * momentumFactor * Math.min(1.2, froudeNumber / 0.65);
     tempDeltaC = Math.min(3.4, Math.max(0.3, foehnGainC));
 
-    // Sub-cloud Virga Evaporation (Foehn clearance):
-    // Descending dry lee air creates high LCL (> 950 m); light NWP stratiform rain evaporates aloft!
     if (input.rawModelPrecipMmHr > 0 && lclHeightAglM >= 850) {
       const subCloudDryness = Math.max(0, (lclHeightAglM - 750) / 1400);
-      // Schlesinger sub-cloud evaporation capacity (mm/h)
       const evapCapacityMmHr = 0.55 * subCloudDryness * (1 + 0.4 * momentumFactor);
       virgaEvaporatedMmHr = Math.min(input.rawModelPrecipMmHr, evapCapacityMmHr);
-      // Heavy convective cores (> 2.5 mm/h) punch through; weak < 0.6 mm/h signals evaporate completely
       const surviving = Math.max(0, input.rawModelPrecipMmHr - virgaEvaporatedMmHr);
       precipMultiplier = input.rawModelPrecipMmHr > 0 ? surviving / input.rawModelPrecipMmHr : 0;
     }
-  }
-  // MECHANISM 2: Radiative Cold-Pool / Ova Inversion Trapping (Blocked Low-Froude Night/Winter)
-  else if (
+  } else if (
     lvl1000 &&
     lvl925 &&
     lvl925.tempC > lvl1000.tempC + 0.4 &&
@@ -308,31 +426,36 @@ export function solveVerticalColumnPhysics(input: VerticalColumnInput): Vertical
   ) {
     activeMechanism = 'RADIATIVE_COLD_POOL_INVERSION';
     const invJumpC = lvl925.tempC - lvl1000.tempC;
-    // Interpolate exact cold-pool profile instead of NWP coarse-grid slope-contaminated 2m value
     const elevAboveFloorM = Math.max(0, input.targetElevationM - 95);
     const coldPoolDepthM = 240;
     const poolFactor = Math.max(0, 1 - elevAboveFloorM / coldPoolDepthM);
     tempDeltaC = -Math.min(2.2, (0.45 + 0.35 * invJumpC) * poolFactor);
-  }
-  // MECHANISM 3: Poyraz / Karayel Marmara Sea-Effect (DEK) + Uludağ Upslope Orographic Lift
-  else if (uNorthCrossMs >= 4.5) {
-    const sstC = input.marmaraSstC ?? 13.0;
+  } else if (uNorthCrossMs >= 4.5) {
+    const sstC = input.marmaraSstC ?? 13.5;
     const deltaSst850C = lvl850 ? sstC - lvl850.tempC : 8;
     const lowRh = lvl925?.relHumidityPct ?? 75;
 
-    // Lake/Sea-Effect Snow/Rain (DEK) triggers when SST - T_850 >= 11.5°C over Marmara fetch
     if (deltaSst850C >= 11.5 && lowRh >= 72) {
       activeMechanism = 'MARMARA_SEA_EFFECT_DEK';
       const dekInstabilityBoost = 1.0 + Math.min(0.65, 0.08 * (deltaSst850C - 11.0));
+      const marineAndSlopeRef = Math.max(
+        input.uludagSlopePrecipMmHr ?? 0,
+        input.marineUpwindPrecipMmHr ?? 0,
+      );
       const slopeRatio =
-        input.uludagSlopePrecipMmHr !== undefined && input.rawModelPrecipMmHr > 0.05
-          ? Math.min(1.45, Math.max(1.0, (0.7 * input.rawModelPrecipMmHr + 0.3 * input.uludagSlopePrecipMmHr) / input.rawModelPrecipMmHr))
+        marineAndSlopeRef > 0 && input.rawModelPrecipMmHr > 0.05
+          ? Math.min(
+              1.48,
+              Math.max(
+                1.0,
+                (0.68 * input.rawModelPrecipMmHr + 0.32 * marineAndSlopeRef) / input.rawModelPrecipMmHr,
+              ),
+            )
           : 1.18;
       precipMultiplier = Math.min(1.85, dekInstabilityBoost * slopeRatio);
-      tempDeltaC = -0.35; // Evaporative & wet-bulb cooling in DEK bands
+      tempDeltaC = -0.35;
     } else if (lowRh >= 78 && (lvl700?.relHumidityPct ?? 60) >= 65) {
       activeMechanism = 'POYRAZ_UPSLOPE_ENHANCEMENT';
-      // Upslope vertical velocity w_oro proportional to normal northerly wind speed hitting Uludağ foothills
       const upslopeBoost = 1.0 + Math.min(0.45, 0.032 * (uNorthCrossMs - 3.5));
       precipMultiplier = upslopeBoost;
       tempDeltaC = -0.20;
@@ -342,10 +465,10 @@ export function solveVerticalColumnPhysics(input: VerticalColumnInput): Vertical
   const correctedTemp2mC = input.rawModelTemp2mC + tempDeltaC;
   const correctedPrecipMmHr = Math.max(
     0,
-    input.rawModelPrecipMmHr * precipMultiplier - (activeMechanism === 'LODOS_DRY_FOEHN' ? 0 : virgaEvaporatedMmHr),
+    input.rawModelPrecipMmHr * precipMultiplier -
+      (activeMechanism === 'LODOS_DRY_FOEHN' ? 0 : virgaEvaporatedMmHr),
   );
 
-  // Zero out sub-0.06 mm/h numerical trace noise
   const finalPrecipMmHr = correctedPrecipMmHr < 0.06 ? 0 : correctedPrecipMmHr;
 
   const diagnosedVisibilityM = diagnosePhysicalVisibilityM({

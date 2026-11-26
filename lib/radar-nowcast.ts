@@ -1,18 +1,32 @@
 /**
- * ATMOS v4.5 — Pixel-Level RainViewer Radar dBZ Decoder & Optical-Flow Nowcast (0-180 min)
+ * ATMOS v5.0 — High-Res Zoom-8 Stitched RainViewer Radar dBZ Decoder, Lagrangian Growth/Decay & Live MGM Gauge-Radar (G/R) Nowcast
  * File: lib/radar-nowcast.ts
  *
- * Upgrades radar from a passive map tile overlay to a quantitative sub-hourly precipitation engine:
- *  1. Pure TypeScript PNG IDAT zlib decoder (zero native C++/canvas dependencies; Edge/Vercel safe)
- *  2. RainViewer tile RGBA -> Reflectivity (dBZ) -> Marshall-Palmer / Convective rain rate (mm/h)
- *  3. Multi-frame Phase/Block-Matching Optical Flow + 700 hPa Steering Wind Semi-Lagrangian Advection
- *  4. Sub-cloud Virga Filter (prevents false radar rain echoes during dry Lodos low-level air)
- *  5. Cosine-tapered seamless blending between 0-180 min Radar Nowcast and Hourly NWP (T+0..T+3h)
+ * Upgrades radar nowcasting to operational hydrometeorological grade:
+ *  1. Pure TypeScript PNG IDAT zlib decoder (zero native C++/canvas dependencies)
+ *  2. Multi-tile Zoom-8 (~466 m/px) seamless stitching whenever target sits near a slippy tile seam
+ *  3. Sub-pixel parabolic SAD optical flow + 3-frame Lagrangian echo growth/decay (`dDbzPerMin`)
+ *  4. Real-time MGM 10-min Pluviometer Gauge-to-Radar (G/R Fulton-Brandes) intensity calibration
+ *  5. Physical LCL / Dew-point spread Virga evaporation filter & cosine-tapered NWP blending
  */
 
-import zlib from 'node:zlib';
-const RADAR_UA = "Mozilla/5.0 (compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)";
+type NodeZlibSubset = typeof import('node:zlib');
+function getNodeZlib(): NodeZlibSubset | null {
+  if (typeof process === 'undefined' || !process.versions?.node) return null;
+  const procAny = process as unknown as { getBuiltinModule?: (id: string) => NodeZlibSubset | undefined };
+  if (typeof procAny.getBuiltinModule === 'function') {
+    return procAny.getBuiltinModule('node:zlib') ?? null;
+  }
+  try {
+    const dynReq = Function('m', 'return require(m)') as (id: string) => NodeZlibSubset;
+    return dynReq('node:zlib');
+  } catch {
+    return null;
+  }
+}
 
+const RADAR_UA =
+  'Mozilla/5.0 (compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)';
 
 export interface RadarFrameMeta {
   timeUnixSec: number;
@@ -23,7 +37,6 @@ export interface RadarFrameMeta {
 export interface DecodedPngTile {
   width: number;
   height: number;
-  /** RGBA byte buffer of length width * height * 4 */
   rgba: Uint8Array;
 }
 
@@ -43,13 +56,13 @@ export interface RadarNowcastResult {
   currentRainRateMmHr: number;
   advectionSpeedKmH: number;
   advectionFromDeg: number;
+  gaugeRadarMultiplier?: number;
   nextRainOnsetMinutes: number | null;
   rainCessationMinutes: number | null;
   summaryCode: 'DRY_CLEAR' | 'RAIN_ACTIVE' | 'RAIN_APPROACHING' | 'RAIN_ENDING' | 'VIRGA_ALOFT';
   steps5Min: RadarMinuteStep[];
 }
 
-/** Converts (lat, lon, zoom) to Web Mercator slippy tile indices and intra-tile pixel (0..255) */
 export function latLonToSlippyTilePixel(
   lat: number,
   lon: number,
@@ -65,7 +78,7 @@ export function latLonToSlippyTilePixel(
   const tileY = Math.floor(yFloat);
   const pixelX = Math.min(tileSize - 1, Math.max(0, Math.floor((xFloat - tileX) * tileSize)));
   const pixelY = Math.min(tileSize - 1, Math.max(0, Math.floor((yFloat - tileY) * tileSize)));
-  const metersPerPixel = (156543.03392 * Math.cos(latRad)) / n;
+  const metersPerPixel = ((156543.03392 * (256 / tileSize)) * Math.cos(latRad)) / n;
 
   return { tileX, tileY, pixelX, pixelY, metersPerPixel };
 }
@@ -80,10 +93,6 @@ function paethPredictor(a: number, b: number, c: number): number {
   return c;
 }
 
-/**
- * Pure TypeScript 8-bit RGB / RGBA / Palette PNG decoder using Node built-in `zlib.inflateSync`.
- * Eliminates external `sharp`/`canvas` binary dependencies on serverless deployments.
- */
 export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | null {
   if (pngBytes.length < 33 || pngBytes[0] !== 0x89 || pngBytes[1] !== 0x50) return null;
 
@@ -123,7 +132,7 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
     } else if (type === 'IEND') {
       break;
     }
-    offset = dataEnd + 4; // skip 4-byte CRC
+    offset = dataEnd + 4;
   }
 
   if (width <= 0 || height <= 0 || bitDepth !== 8 || idatChunks.length === 0) return null;
@@ -138,7 +147,9 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
 
   let rawScanlines: Buffer;
   try {
-    rawScanlines = zlib.inflateSync(compressed);
+    const zlibMod = getNodeZlib();
+    if (!zlibMod) return null;
+    rawScanlines = zlibMod.inflateSync(compressed);
   } catch {
     return null;
   }
@@ -201,30 +212,21 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
   return { width, height, rgba };
 }
 
-/**
- * Maps RainViewer color-scheme=2 (Universal Blue) / WMO radar RGBA pixel to reflectivity dBZ.
- * Transparent pixels (alpha < 20) return 0 dBZ (clear air).
- */
 export function rgbaPixelToDbz(r: number, g: number, b: number, a: number): number {
   if (a < 20) return 0;
 
-  // Magenta / purple hail & severe core (>= 55 dBZ)
   if (r >= 180 && b >= 160 && g <= 90) {
     return 56 + ((r - 180) / 75) * 8;
   }
-  // Red / deep orange heavy convective rain (44 - 55 dBZ)
   if (r >= 195 && g <= 110 && b <= 75) {
     return 45 + ((110 - g) / 110) * 9;
   }
-  // Yellow / amber moderate-heavy rain (34 - 44 dBZ)
   if (r >= 190 && g >= 140 && b <= 90) {
     return 35 + ((255 - g) / 120) * 8;
   }
-  // Green / teal moderate stratiform rain (24 - 34 dBZ)
   if (g >= 140 && r <= 140 && b <= 150) {
     return 25 + ((255 - b) / 255) * 8;
   }
-  // Blue / cyan light rain & drizzle (10 - 24 dBZ)
   if (b >= 130) {
     const intensity = (255 - Math.min(255, (r + g) / 2)) / 255;
     return 10 + intensity * 14;
@@ -232,12 +234,6 @@ export function rgbaPixelToDbz(r: number, g: number, b: number, a: number): numb
   return a >= 60 ? 14 : 0;
 }
 
-/**
- * Converts radar reflectivity (dBZ) to surface rainfall intensity R (mm/h):
- *  - Below 13 dBZ: non-precipitating cloud / clutter (0 mm/h)
- *  - 13..38 dBZ: Marshall-Palmer stratiform Z = 200 * R^1.6
- *  - > 38 dBZ: Deep convective Z-R relation Z = 300 * R^1.4
- */
 export function dbzToRainRateMmHr(dbz: number): number {
   if (dbz < 13.0) return 0;
   const zLinear = 10 ** (dbz / 10);
@@ -247,7 +243,6 @@ export function dbzToRainRateMmHr(dbz: number): number {
   return (zLinear / 200) ** (1 / 1.6);
 }
 
-/** Extracts a 2D dBZ grid of sizewidth x height from a decoded RGBA tile */
 export function tileToDbzGrid(tile: DecodedPngTile): Float32Array {
   const grid = new Float32Array(tile.width * tile.height);
   for (let i = 0; i < grid.length; i++) {
@@ -264,7 +259,7 @@ export function tileToDbzGrid(tile: DecodedPngTile): Float32Array {
 
 /**
  * Estimates optical-flow displacement (dx, dy in pixels per frame interval) around (cx, cy)
- * via windowed Sum-of-Absolute-Differences (SAD) block matching with sub-pixel parabolic refinement.
+ * via windowed Sum-of-Absolute-Differences (SAD) block matching with 1D parabolic sub-pixel refinement!
  */
 export function estimateLocalRadarOpticalFlow(
   prevGrid: Float32Array,
@@ -273,8 +268,8 @@ export function estimateLocalRadarOpticalFlow(
   height: number,
   cx: number,
   cy: number,
-  patchHalfSize = 20,
-  maxShiftPx = 14,
+  patchHalfSize = 24,
+  maxShiftPx = 16,
 ): { dxPx: number; dyPx: number; correlationConfidence: number } {
   let activeEchoCount = 0;
   for (let y = Math.max(0, cy - patchHalfSize); y <= Math.min(height - 1, cy + patchHalfSize); y++) {
@@ -285,11 +280,12 @@ export function estimateLocalRadarOpticalFlow(
     }
   }
 
-  // If sky is completely clear around target, no echo motion can be tracked from pixels alone
   if (activeEchoCount < 6) {
     return { dxPx: 0, dyPx: 0, correlationConfidence: 0 };
   }
 
+  const span = 2 * maxShiftPx + 1;
+  const sadSurface = new Float64Array(span * span).fill(Infinity);
   let bestSad = Infinity;
   let zeroShiftSad = 0;
   let bestDx = 0;
@@ -313,6 +309,7 @@ export function estimateLocalRadarOpticalFlow(
       }
       if (count < 25) continue;
       const normSad = sad / count;
+      sadSurface[(dy + maxShiftPx) * span + (dx + maxShiftPx)] = normSad;
       if (dx === 0 && dy === 0) zeroShiftSad = normSad;
       if (normSad < bestSad) {
         bestSad = normSad;
@@ -322,16 +319,40 @@ export function estimateLocalRadarOpticalFlow(
     }
   }
 
+  // Sub-pixel parabolic refinement along X and Y around integer minimum
+  let subDx = bestDx;
+  let subDy = bestDy;
+  if (Math.abs(bestDx) < maxShiftPx) {
+    const sLeft = sadSurface[(bestDy + maxShiftPx) * span + (bestDx - 1 + maxShiftPx)];
+    const sRight = sadSurface[(bestDy + maxShiftPx) * span + (bestDx + 1 + maxShiftPx)];
+    const denom = 2 * (sLeft - 2 * bestSad + sRight);
+    if (Number.isFinite(denom) && denom > 1e-4) {
+      subDx += Math.max(-0.45, Math.min(0.45, (sLeft - sRight) / denom));
+    }
+  }
+  if (Math.abs(bestDy) < maxShiftPx) {
+    const sUp = sadSurface[(bestDy - 1 + maxShiftPx) * span + (bestDx + maxShiftPx)];
+    const sDown = sadSurface[(bestDy + 1 + maxShiftPx) * span + (bestDx + maxShiftPx)];
+    const denom = 2 * (sUp - 2 * bestSad + sDown);
+    if (Number.isFinite(denom) && denom > 1e-4) {
+      subDy += Math.max(-0.45, Math.min(0.45, (sUp - sDown) / denom));
+    }
+  }
+
   const improvement = zeroShiftSad > 0.2 ? Math.max(0, (zeroShiftSad - bestSad) / zeroShiftSad) : 0;
-  const confidence = Math.min(0.95, 0.35 + 0.85 * improvement);
-  return { dxPx: bestDx, dyPx: bestDy, correlationConfidence: Number(confidence.toFixed(2)) };
+  const confidence = Math.min(0.96, 0.35 + 0.85 * improvement);
+  return {
+    dxPx: Number(subDx.toFixed(2)),
+    dyPx: Number(subDy.toFixed(2)),
+    correlationConfidence: Number(confidence.toFixed(2)),
+  };
 }
 
-/** Bilinear spatial sampling with 3x3 Gaussian smoothing kernel on a dBZ grid */
+/** Bilinear + 3x3 Gaussian spatial sampling on a dBZ grid */
 function sampleSmoothedDbz(grid: Float32Array, width: number, height: number, fx: number, fy: number): number {
+  if (fx < 0 || fx >= width || fy < 0 || fy >= height) return 0;
   const x0 = Math.round(fx);
   const y0 = Math.round(fy);
-  if (x0 < 0 || x0 >= width || y0 < 0 || y0 >= height) return 0;
 
   let sum = 0;
   let wSum = 0;
@@ -348,22 +369,27 @@ function sampleSmoothedDbz(grid: Float32Array, width: number, height: number, fx
 }
 
 export interface NowcastSteeringContext {
-  /** 700 hPa steering wind direction (meteorological FROM degrees, e.g. 220 = SW) */
+  /** 700/850 hPa steering wind direction (meteorological FROM degrees, e.g. 30 = Poyraz, 215 = Lodos) */
   steeringWindFromDeg: number;
   steeringWindSpeedKt: number;
   surfaceTempC: number;
   surfaceDewPointC: number;
-  /** True when northerly Marmara flow ascends Uludağ foothills */
+  /** True ONLY when moist northerly Marmara flow ascends Uludağ foothills (NEVER true during dry Lodos!) */
   orographicUpslopeActive?: boolean;
+  /** Live 10-min / 1-hr MGM rain-gauge intensity (mm/h) for real-time Gauge-to-Radar (G/R) bias calibration */
+  liveGaugeRainMmHr?: number | null;
+  /** Number of nearby live MGM rain gauges contributing to `liveGaugeRainMmHr` */
+  liveGaugeCount?: number;
 }
 
 /**
  * Generates a 0-180 minute (5-minute step) Semi-Lagrangian Optical-Flow Radar Nowcast
- * from two sequential dBZ grids (or live RainViewer API via `fetchBursaRadarNowcast`).
+ * with Lagrangian cell growth/decay tendency and live MGM gauge-radar (G/R) bias calibration!
  */
 export function runSemiLagrangianRadarNowcast(params: {
   prevGrid: Float32Array;
   currGrid: Float32Array;
+  olderGrid?: Float32Array | null;
   width: number;
   height: number;
   targetPx: number;
@@ -376,6 +402,7 @@ export function runSemiLagrangianRadarNowcast(params: {
   const {
     prevGrid,
     currGrid,
+    olderGrid,
     width,
     height,
     targetPx,
@@ -386,51 +413,108 @@ export function runSemiLagrangianRadarNowcast(params: {
     steering,
   } = params;
 
-  const optical = estimateLocalRadarOpticalFlow(prevGrid, currGrid, width, height, targetPx, targetPy);
+  const optical1 = estimateLocalRadarOpticalFlow(prevGrid, currGrid, width, height, targetPx, targetPy);
+  const optical2 = olderGrid
+    ? estimateLocalRadarOpticalFlow(olderGrid, prevGrid, width, height, targetPx, targetPy)
+    : null;
 
-  // Convert 700 hPa steering wind (FROM degrees) into pixel motion vector per minute (+x East, +y South)
+  const effDx =
+    optical2 && optical2.correlationConfidence > 0.35
+      ? 0.65 * optical1.dxPx + 0.35 * optical2.dxPx
+      : optical1.dxPx;
+  const effDy =
+    optical2 && optical2.correlationConfidence > 0.35
+      ? 0.65 * optical1.dyPx + 0.35 * optical2.dyPx
+      : optical1.dyPx;
+
   const steerMs = steering.steeringWindSpeedKt * 0.514444;
   const fromRad = (steering.steeringWindFromDeg * Math.PI) / 180;
-  // Wind FROM theta moves air toward (theta + 180): East component = -sin(theta), North = -cos(theta) => South (+y) = +cos(theta)
   const steerVxPxPerMin = ((-steerMs * Math.sin(fromRad)) * 60) / metersPerPixel;
   const steerVyPxPerMin = ((steerMs * Math.cos(fromRad)) * 60) / metersPerPixel;
 
-  const optVxPxPerMin = optical.dxPx / Math.max(1, frameIntervalMin);
-  const optVyPxPerMin = optical.dyPx / Math.max(1, frameIntervalMin);
+  const dtMin = Math.max(1, frameIntervalMin);
+  const optVxPxPerMin = effDx / dtMin;
+  const optVyPxPerMin = effDy / dtMin;
 
-  // Blend tracked radar optical flow with 700 hPa synoptic steering wind
-  const wOpt = optical.correlationConfidence;
+  const wOpt = optical1.correlationConfidence;
   const vxPxPerMin = wOpt * optVxPxPerMin + (1 - wOpt) * steerVxPxPerMin;
   const vyPxPerMin = wOpt * optVyPxPerMin + (1 - wOpt) * steerVyPxPerMin;
 
+  // Estimate Lagrangian echo growth/decay rate d(dBZ)/dt along the motion trajectory over the last interval
+  let dDbzPerMin = 0;
+  if (wOpt >= 0.45) {
+    const currLocal = sampleSmoothedDbz(currGrid, width, height, targetPx, targetPy);
+    const prevUpwind = sampleSmoothedDbz(
+      prevGrid,
+      width,
+      height,
+      targetPx - vxPxPerMin * dtMin,
+      targetPy - vyPxPerMin * dtMin,
+    );
+    if (currLocal >= 14 || prevUpwind >= 14) {
+      const rawRate = (currLocal - prevUpwind) / dtMin;
+      dDbzPerMin = Math.max(-0.18, Math.min(0.14, rawRate * 0.45));
+    }
+  }
+
   const speedMetersPerMin = Math.hypot(vxPxPerMin, vyPxPerMin) * metersPerPixel;
   const advectionSpeedKmH = (speedMetersPerMin * 60) / 1000;
-  // Convert motion vector (+vx East, -vy North) back to meteorological FROM direction
   const advectionFromDeg = ((Math.atan2(-vxPxPerMin, vyPxPerMin) * 180) / Math.PI + 360) % 360;
 
   const dewPointSpreadC = Math.max(0, steering.surfaceTempC - steering.surfaceDewPointC);
-  const orographicFactor = steering.orographicUpslopeActive ? 1.18 : 1.0;
+  const orographicFactor = steering.orographicUpslopeActive ? 1.16 : 1.0;
+
+  // Live MGM Gauge-to-Radar (G/R) Fulton-Brandes multiplicative bias calibration
+  const rawDbz0 = sampleSmoothedDbz(currGrid, width, height, targetPx, targetPy);
+  const rawRadarRate0 = dbzToRainRateMmHr(rawDbz0) * orographicFactor;
+  let gaugeRadarMultiplier = 1.0;
+  const gaugeRain = steering.liveGaugeRainMmHr;
+  if (gaugeRain !== null && gaugeRain !== undefined && Number.isFinite(gaugeRain) && rawRadarRate0 >= 0.25) {
+    const rawRatio = Math.max(0.35, Math.min(2.6, (gaugeRain + 0.15) / (rawRadarRate0 + 0.15)));
+    const nGauges = Math.max(1, steering.liveGaugeCount ?? 2);
+    const shrinkW = nGauges / (nGauges + 1.5);
+    gaugeRadarMultiplier = Math.max(0.45, Math.min(2.25, 1 + shrinkW * (rawRatio - 1)));
+  }
 
   const steps5Min: RadarMinuteStep[] = [];
   let virgaDetected = false;
 
   for (let min = 0; min <= 180; min += 5) {
-    // Semi-Lagrangian backward trajectory: parcel arriving at (targetPx, targetPy) at +min
-    // originated at (targetPx - vx * min, targetPy - vy * min) at t = 0!
     const srcX = targetPx - vxPxPerMin * min;
     const srcY = targetPy - vyPxPerMin * min;
     const rawDbz = sampleSmoothedDbz(currGrid, width, height, srcX, srcY);
 
-    // Lagrangian persistence decays gently beyond 75 minutes for convective scale
-    const persistenceDecay = min <= 45 ? 1.0 : Math.exp(-(min - 45) / 165);
-    const effectiveDbz = rawDbz * persistenceDecay;
+    // Apply short-term Lagrangian growth/decay (tapers out smoothly over 35 minutes)
+    const growthHorizonMin = 35 * (1 - Math.exp(-min / 35));
+    const evolvedDbz = rawDbz >= 10 ? Math.max(0, rawDbz + dDbzPerMin * growthHorizonMin) : rawDbz;
 
-    // Sub-cloud Virga Filter: if boundary layer is very dry (T - Td >= 9.5°C) and echo is weak (< 24 dBZ),
-    // hydrometeors evaporate aloft before reaching Bursa street level!
-    const isVirga = dewPointSpreadC >= 9.5 && effectiveDbz >= 13 && effectiveDbz < 24.5;
+    const persistenceDecay = min <= 45 ? 1.0 : Math.exp(-(min - 45) / 165);
+    const effectiveDbz = evolvedDbz * persistenceDecay;
+
+    // Physical LCL / sub-cloud Virga filter: dry boundary layer (T - Td >= 9.0°C) evaporates weak echoes (< 25 dBZ)
+    const isVirga =
+      dewPointSpreadC >= 9.0 &&
+      effectiveDbz >= 13 &&
+      effectiveDbz < 25.0 &&
+      (gaugeRain === null || gaugeRain === undefined || gaugeRain < 0.08);
     if (isVirga) virgaDetected = true;
 
-    const rainRate = isVirga ? 0 : dbzToRainRateMmHr(effectiveDbz) * orographicFactor;
+    const grDecay = Math.exp(-min / 90);
+    const stepGrMult = 1 + grDecay * (gaugeRadarMultiplier - 1);
+    let rainRate = isVirga ? 0 : dbzToRainRateMmHr(effectiveDbz) * orographicFactor * stepGrMult;
+
+    // Shallow warm-rain / drizzle overshoot rescue: if MGM gauges measure active rain (>= 0.25 mm/h) below radar beam!
+    if (
+      !isVirga &&
+      min <= 45 &&
+      rainRate < 0.12 &&
+      gaugeRain !== null &&
+      gaugeRain !== undefined &&
+      gaugeRain >= 0.25
+    ) {
+      rainRate = gaugeRain * Math.exp(-min / 35);
+    }
+
     const stepConfidence = Math.max(0.20, (0.55 + 0.40 * wOpt) * Math.exp(-min / 150));
 
     steps5Min.push({
@@ -473,6 +557,7 @@ export function runSemiLagrangianRadarNowcast(params: {
     currentRainRateMmHr: nowStep.rainRateMmHr,
     advectionSpeedKmH: Number(advectionSpeedKmH.toFixed(1)),
     advectionFromDeg: Math.round(advectionFromDeg),
+    gaugeRadarMultiplier: Number(gaugeRadarMultiplier.toFixed(2)),
     nextRainOnsetMinutes,
     rainCessationMinutes,
     summaryCode,
@@ -480,8 +565,68 @@ export function runSemiLagrangianRadarNowcast(params: {
   };
 }
 
+async function fetchDecodedFrameGrid(
+  host: string,
+  framePath: string,
+  zoom: number,
+  tileX: number,
+  tileY: number,
+  neighborDx: number,
+  neighborDy: number,
+  timeoutMs: number,
+): Promise<{ grid: Float32Array; width: number; height: number; offsetX: number; offsetY: number } | null> {
+  const fetchSingle = async (tx: number, ty: number): Promise<DecodedPngTile | null> => {
+    try {
+      const url = `${host}${framePath}/256/${zoom}/${tx}/${ty}/2/1_1.png`;
+      const res = await fetch(url, { headers: { 'User-Agent': RADAR_UA }, signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) return null;
+      return decodePngBufferToRgba(new Uint8Array(await res.arrayBuffer()));
+    } catch {
+      return null;
+    }
+  };
+
+  if (neighborDx === 0 && neighborDy === 0) {
+    const t = await fetchSingle(tileX, tileY);
+    if (!t) return null;
+    return { grid: tileToDbzGrid(t), width: 256, height: 256, offsetX: 0, offsetY: 0 };
+  }
+
+  // Seamless 2x2 tile stitch when target is close to a tile border so upwind trajectories never clip!
+  const tx0 = neighborDx < 0 ? tileX - 1 : tileX;
+  const ty0 = neighborDy < 0 ? tileY - 1 : tileY;
+  const [t00, t10, t01, t11] = await Promise.all([
+    fetchSingle(tx0, ty0),
+    fetchSingle(tx0 + 1, ty0),
+    fetchSingle(tx0, ty0 + 1),
+    fetchSingle(tx0 + 1, ty0 + 1),
+  ]);
+  if (!t00 && !t10 && !t01 && !t11) return null;
+
+  const stitched = new Float32Array(512 * 512);
+  const blit = (tile: DecodedPngTile | null, ox: number, oy: number) => {
+    if (!tile) return;
+    const g = tileToDbzGrid(tile);
+    for (let y = 0; y < 256; y++) {
+      stitched.set(g.subarray(y * 256, (y + 1) * 256), (oy + y) * 512 + ox);
+    }
+  };
+  blit(t00, 0, 0);
+  blit(t10, 256, 0);
+  blit(t01, 0, 256);
+  blit(t11, 256, 256);
+
+  return {
+    grid: stitched,
+    width: 512,
+    height: 512,
+    offsetX: (tileX - tx0) * 256,
+    offsetY: (tileY - ty0) * 256,
+  };
+}
+
 /**
- * Live RainViewer Weather Maps fetcher & decoder for Bursa / arbitrary coordinates.
+ * Live RainViewer Weather Maps Zoom-8 fetcher & decoder with 3-frame trajectory & G/R gauge calibration.
  */
 export async function fetchBursaRadarNowcast(
   lat: number,
@@ -504,34 +649,36 @@ export async function fetchBursaRadarNowcast(
     const pastFrames = meta.radar?.past ?? [];
     if (pastFrames.length < 2) throw new Error('Insufficient radar frames');
 
+    const fOlder = pastFrames.length >= 3 ? pastFrames[pastFrames.length - 3] : null;
     const fPrev = pastFrames[pastFrames.length - 2];
     const fCurr = pastFrames[pastFrames.length - 1];
-    const zoom = 7; // 1 tile covers ~310 km x 310 km (entire Marmara + Bursa + Aegean upwind corridor!)
+
+    // Zoom 8 gives ~466 m/pixel precision over Bursa while 2x2 seam-stitching covers ~240 km upwind fetch!
+    const zoom = 8;
     const { tileX, tileY, pixelX, pixelY, metersPerPixel } = latLonToSlippyTilePixel(lat, lon, zoom, 256);
+    const neighborDx = pixelX < 56 ? -1 : pixelX > 200 ? 1 : 0;
+    const neighborDy = pixelY < 56 ? -1 : pixelY > 200 ? 1 : 0;
 
-    const buildTileUrl = (framePath: string) => `${host}${framePath}/256/${zoom}/${tileX}/${tileY}/2/1_1.png`;
-
-    const [prevBufRes, currBufRes] = await Promise.all([
-      fetch(buildTileUrl(fPrev.path), { headers: { 'User-Agent': RADAR_UA }, signal: AbortSignal.timeout(timeoutMs) }),
-      fetch(buildTileUrl(fCurr.path), { headers: { 'User-Agent': RADAR_UA }, signal: AbortSignal.timeout(timeoutMs) }),
+    const [olderDecoded, prevDecoded, currDecoded] = await Promise.all([
+      fOlder
+        ? fetchDecodedFrameGrid(host, fOlder.path, zoom, tileX, tileY, neighborDx, neighborDy, timeoutMs)
+        : Promise.resolve(null),
+      fetchDecodedFrameGrid(host, fPrev.path, zoom, tileX, tileY, neighborDx, neighborDy, timeoutMs),
+      fetchDecodedFrameGrid(host, fCurr.path, zoom, tileX, tileY, neighborDx, neighborDy, timeoutMs),
     ]);
 
-    if (!prevBufRes.ok || !currBufRes.ok) throw new Error('Tile download failed');
-
-    const [prevAb, currAb] = await Promise.all([prevBufRes.arrayBuffer(), currBufRes.arrayBuffer()]);
-    const prevDecoded = decodePngBufferToRgba(new Uint8Array(prevAb));
-    const currDecoded = decodePngBufferToRgba(new Uint8Array(currAb));
-    if (!prevDecoded || !currDecoded) throw new Error('PNG decode failed');
+    if (!prevDecoded || !currDecoded) throw new Error('Tile decode failed');
 
     const intervalMin = Math.max(5, Math.round((fCurr.time - fPrev.time) / 60));
 
     return runSemiLagrangianRadarNowcast({
-      prevGrid: tileToDbzGrid(prevDecoded),
-      currGrid: tileToDbzGrid(currDecoded),
+      prevGrid: prevDecoded.grid,
+      currGrid: currDecoded.grid,
+      olderGrid: olderDecoded?.grid ?? null,
       width: currDecoded.width,
       height: currDecoded.height,
-      targetPx: pixelX,
-      targetPy: pixelY,
+      targetPx: pixelX + currDecoded.offsetX,
+      targetPy: pixelY + currDecoded.offsetY,
       metersPerPixel,
       frameIntervalMin: intervalMin,
       baseTimeMs: fCurr.time * 1000,
@@ -553,14 +700,6 @@ export async function fetchBursaRadarNowcast(
   }
 }
 
-/**
- * Seamlessly blends 0-180 min Optical-Flow Radar Nowcast with Hourly NWP precipitation
- * using a raised-cosine taper window:
- *   - Hour 0 (0-60 min): ~88% Radar + 12% NWP
- *   - Hour 1 (60-120 min): ~55% Radar + 45% NWP
- *   - Hour 2 (120-180 min): ~20% Radar + 80% NWP
- *   - Hour 3+: 100% Calibrated NWP
- */
 export function blendNowcastWithHourlyNwp(
   nowcast: RadarNowcastResult,
   hourlyNwpMm: number[],
@@ -580,7 +719,6 @@ export function blendNowcastWithHourlyNwp(
 
     const radarHourMeanMm = slice.reduce((acc, s) => acc + s.rainRateMmHr, 0) / slice.length;
     const midMin = startMin + 30;
-    // Raised cosine weight from 0.90 at t=0 to 0.0 at t=180 min
     const radarWeight = 0.45 * (1 + Math.cos((Math.PI * Math.min(180, midMin)) / 180));
 
     const blended = radarWeight * radarHourMeanMm + (1 - radarWeight) * out[h];

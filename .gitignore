@@ -9,6 +9,5 @@ out/
 .DS_Store
 coverage/
 exports/
-
 .cache/
-reports/
+.data/

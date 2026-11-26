@@ -1,6 +1,15 @@
 /**
- * ATMOS v4.5 — dProg/dt Lagged-Run Consistency & Anti-Flip-Flop Hysteresis Engine
+ * ATMOS v5.0 — Calibrated-vs-Calibrated dProg/dt Lagged-Run Consistency & Anti-Flip-Flop Hysteresis Engine
  * File: lib/run-consistency.ts
+ *
+ * Fixes the v4.5 raw-vs-calibrated mismatch:
+ *  - Compares today's calibrated forecast (`candidateTempC`) against prior CALIBRATED runs (`R-1`, `R-2`)
+ *    from `state-ledger.ts` when available.
+ *  - On cold start (before `R-1` is persisted), aligns raw `previous-runs-api` consensus (`R-1`, `R-2`)
+ *    into the exact calibrated target frame via `calibrationOffsetC = candidateTempC - rawRun0ConsensusC`,
+ *    so `dProgDtTrendC = rawRun0ConsensusC - rawRun1ConsensusC` reflects pure synoptic run shift and NEVER
+ *    destroys EMOS UHI/topographic bias corrections!
+ *  - Expands lagged consensus to 8 operational models across 7 global centers (including JMA GSM).
  */
 
 import { ATMOS_HTTP_USER_AGENT } from "./bursa-mesh";
@@ -38,7 +47,10 @@ export interface HourlyConsistencyInput {
   candidateIsWet: boolean;
   candidatePrecipMmHr: number;
   candidatePopPct: number;
+  /** Calibrated R-1 temperature from persistent state ledger (preferred over raw NWP lag) */
   previousLockedTempC?: number | null;
+  /** Calibrated R-2 temperature from persistent state ledger */
+  previousLockedRunMinus2TempC?: number | null;
   previousLockedIsWet?: boolean | null;
   previousLockedPrecipMmHr?: number | null;
   ensembleTempIqrC?: number | null;
@@ -70,14 +82,15 @@ export interface ForecastStabilitySummary {
   badgeLabelTr: string;
 }
 
-const MODEL_FAMILY_MAP: Record<SevenModelKey, string> = {
+const MODEL_FAMILY_MAP: Record<string, string> = {
   ecmwfIfs: "ECMWF",
   ecmwfAifs: "ECMWF_AI",
   icon: "DWD",
   ukmo: "UKMO",
   meteofrance: "METEOFRANCE",
   gfs: "NOAA",
-  gem: "CMC"
+  gem: "CMC",
+  jma: "JMA"
 };
 
 export function getSynopticCycleReliabilityWeight(initCycleUtcHour?: number): number {
@@ -88,7 +101,7 @@ export function getSynopticCycleReliabilityWeight(initCycleUtcHour?: number): nu
 
 /**
  * Fetches 4-generation lagged forecast trajectories (`temperature_2m` + `previous_day1..3`
- * and `precipitation` + `previous_day1..2`) for all 7 operational models in ONE single HTTP call
+ * and `precipitation` + `previous_day1..2`) for all 8 operational models (7 core + JMA) in ONE HTTP call
  * from `https://previous-runs-api.open-meteo.com/v1/forecast`.
  */
 export async function fetchOpenMeteoLaggedRuns(params: {
@@ -99,7 +112,11 @@ export async function fetchOpenMeteoLaggedRuns(params: {
   timeoutMs?: number;
 }): Promise<Map<string, LaggedModelSeries>> {
   const result = new Map<string, LaggedModelSeries>();
-  const apiModels = SEVEN_MODEL_KEYS.map((k) => SEVEN_MODEL_META[k].apiModel).join(",");
+  const modelEntries: Array<{ key: string; apiId: string }> = [
+    ...SEVEN_MODEL_KEYS.map((k) => ({ key: k, apiId: SEVEN_MODEL_META[k].apiModel })),
+    { key: "jma", apiId: "jma_seamless" }
+  ];
+  const apiModels = modelEntries.map((m) => m.apiId).join(",");
   const vars = [
     "temperature_2m",
     "temperature_2m_previous_day1",
@@ -138,14 +155,13 @@ export async function fetchOpenMeteoLaggedRuns(params: {
     const utcTimeIndex = new Map<string, number>();
     (h.time as string[]).forEach((t, idx) => utcTimeIndex.set(String(t), idx));
 
-    for (const k of SEVEN_MODEL_KEYS) {
-      const apiId = SEVEN_MODEL_META[k].apiModel;
+    for (const { key, apiId } of modelEntries) {
       const r0 = h[`temperature_2m_${apiId}`] as Array<number | null> | undefined;
       if (!Array.isArray(r0)) continue;
 
-      result.set(k, {
-        modelKey: k,
-        family: MODEL_FAMILY_MAP[k],
+      result.set(key, {
+        modelKey: key,
+        family: MODEL_FAMILY_MAP[key] ?? key.toUpperCase(),
         utcTimeIndex,
         run0TempC: r0,
         runMinus1TempC: h[`temperature_2m_previous_day1_${apiId}`] as Array<number | null> | undefined,
@@ -175,11 +191,14 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
   if (input.leadHours <= 2 && input.liveAnchor) {
     const liveT = input.liveAnchor.liveObsTempC;
     if (liveT !== null && liveT !== undefined && Number.isFinite(liveT)) {
-      const obsBlendWeight = input.leadHours === 0 ? 0.9 : input.leadHours === 1 ? 0.62 : 0.34;
+      const obsBlendWeight = input.leadHours === 0 ? 0.92 : input.leadHours === 1 ? 0.58 : 0.28;
       if (Math.abs(finalTempC - liveT) >= 0.8) {
         spinUpVetoApplied = true;
       }
-      finalTempC = obsBlendWeight * liveT + (1 - obsBlendWeight) * finalTempC;
+      // At T+0 we lock directly toward live observation; at T+1..2h only intervene if spin-up gap exceeds diurnal rate
+      if (input.leadHours === 0 || Math.abs(finalTempC - liveT) >= 1.6) {
+        finalTempC = obsBlendWeight * liveT + (1 - obsBlendWeight) * finalTempC;
+      }
     }
 
     const liveRain =
@@ -190,18 +209,21 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
         spinUpVetoApplied = true;
         finalIsWet = obsIsWet;
         finalPrecipMmHr = obsIsWet
-          ? Math.max(0.15, 0.75 * liveRain + 0.25 * finalPrecipMmHr)
+          ? Math.max(0.15, 0.78 * liveRain + 0.22 * finalPrecipMmHr)
           : 0;
-        finalPopPct = obsIsWet ? Math.max(75, finalPopPct) : Math.min(20, finalPopPct);
+        finalPopPct = obsIsWet ? Math.max(78, finalPopPct) : Math.min(20, finalPopPct);
       }
     }
   }
 
-  // 2. LAGGED CONSENSUS BASELINE & dProg/dt MONOTONICITY
-  let sumPrev1 = 0;
-  let wPrev1 = 0;
-  let sumPrev2 = 0;
-  let wPrev2 = 0;
+  // 2. CALIBRATED-VS-CALIBRATED LAGGED CONSENSUS BASELINE & dProg/dt MONOTONICITY
+  let sumPairR0 = 0;
+  let sumPairR1 = 0;
+  let wPair01 = 0;
+  let sumPairR0For2 = 0;
+  let sumPairR2 = 0;
+  let wPair02 = 0;
+
   const monotonicFamilies = new Set<string>();
   const agreeingShiftFamilies = new Set<string>();
   let runLockCounter = 1;
@@ -217,16 +239,11 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
     const r2 = m.runMinus2TempC?.[idx] ?? null;
     const r3 = m.runMinus3TempC?.[idx] ?? null;
 
-    if (r1 !== null && Number.isFinite(r1)) {
-      sumPrev1 += relW * r1;
-      wPrev1 += relW;
-    }
-    if (r2 !== null && Number.isFinite(r2)) {
-      sumPrev2 += relW * r2;
-      wPrev2 += relW;
-    }
-
     if (r0 !== null && r1 !== null && Number.isFinite(r0) && Number.isFinite(r1)) {
+      sumPairR0 += relW * r0;
+      sumPairR1 += relW * r1;
+      wPair01 += relW;
+
       const step01 = r0 - r1;
       if (r2 !== null && Number.isFinite(r2)) {
         const step12 = r1 - r2;
@@ -236,20 +253,44 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
       }
       if (Math.abs(r0 - r1) <= 0.9) {
         let localLock = 2;
-        if (r2 !== null && Math.abs(r1 - r2) <= 1.0) {
+        if (r2 !== null && Number.isFinite(r2) && Math.abs(r1 - r2) <= 1.0) {
           localLock = 3;
-          if (r3 !== null && Math.abs(r2 - r3) <= 1.1) {
+          if (r3 !== null && Number.isFinite(r3) && Math.abs(r2 - r3) <= 1.1) {
             localLock = 4;
           }
         }
         runLockCounter = Math.max(runLockCounter, localLock);
       }
     }
+
+    if (r0 !== null && r2 !== null && Number.isFinite(r0) && Number.isFinite(r2)) {
+      sumPairR0For2 += relW * r0;
+      sumPairR2 += relW * r2;
+      wPair02 += relW;
+    }
   }
 
+  // Bias-invariant cold-start alignment:
+  // calibratedPrev1 = rawR1 + (finalTempC - rawR0) = finalTempC - (rawR0 - rawR1)
+  // Preserves 100% of EMOS UHI/elevation calibration while measuring exact synoptic run shift!
+  const alignedColdStartPrev1 =
+    wPair01 > 0
+      ? finalTempC - Math.max(-6.5, Math.min(6.5, sumPairR0 / wPair01 - sumPairR1 / wPair01))
+      : null;
+  const alignedColdStartPrev2 =
+    wPair02 > 0
+      ? finalTempC - Math.max(-7.5, Math.min(7.5, sumPairR0For2 / wPair02 - sumPairR2 / wPair02))
+      : null;
+
   const laggedPrev1Temp =
-    input.previousLockedTempC ?? (wPrev1 > 0 ? sumPrev1 / wPrev1 : null);
-  const laggedPrev2Temp = wPrev2 > 0 ? sumPrev2 / wPrev2 : null;
+    input.previousLockedTempC !== null && input.previousLockedTempC !== undefined
+      ? input.previousLockedTempC
+      : alignedColdStartPrev1;
+  const laggedPrev2Temp =
+    input.previousLockedRunMinus2TempC !== null && input.previousLockedRunMinus2TempC !== undefined
+      ? input.previousLockedRunMinus2TempC
+      : alignedColdStartPrev2;
+
   const dProgDtTrendC = laggedPrev1Temp !== null ? finalTempC - laggedPrev1Temp : 0;
 
   if (laggedPrev1Temp !== null) {
@@ -263,8 +304,10 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
       if (
         r0 !== null &&
         r1 !== null &&
+        Number.isFinite(r0) &&
+        Number.isFinite(r1) &&
         Math.sign(r0 - r1) === Math.sign(dProgDtTrendC) &&
-        Math.abs(r0 - r1) >= 0.55
+        Math.abs(r0 - r1) >= 0.50
       ) {
         agreeingShiftFamilies.add(m.family);
       }
@@ -282,7 +325,7 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
       Math.abs(laggedPrev1Temp - laggedPrev2Temp) >= 0.3);
   if (isMonotonicMacro) evidenceScore++;
 
-  const iqrBounded = (input.ensembleTempIqrC ?? 1.8) <= 2.6;
+  const iqrBounded = (input.ensembleTempIqrC ?? 1.8) <= 2.75;
   if (agreeingShiftFamilies.size >= 3 && iqrBounded) evidenceScore++;
 
   if (input.leadHours <= 18 && input.liveAnchor) {
@@ -307,31 +350,48 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
   if (
     !spinUpVetoApplied &&
     laggedPrev1Temp !== null &&
-    Math.abs(dProgDtTrendC) >= 0.85 &&
+    Math.abs(dProgDtTrendC) >= 0.90 &&
     evidenceScore < 2
   ) {
     hysteresisDamped = true;
     finalTempC = 0.72 * laggedPrev1Temp + 0.28 * finalTempC;
   }
 
+  // Precipitation flip-flop gatekeeper: uses persisted calibrated wet state when available,
+  // or compares R0 vs R-1 wet model fraction shift so calibrated drizzle suppression is preserved.
   const prevWet =
-    input.previousLockedIsWet ??
-    (() => {
-      let wetVotes = 0;
-      let total = 0;
-      for (const m of input.laggedModels) {
-        const idx =
-          input.utcHourKey && m.utcTimeIndex
-            ? (m.utcTimeIndex.get(input.utcHourKey) ?? input.hourIndex)
-            : input.hourIndex;
-        const p1 = m.runMinus1PrecipMm?.[idx];
-        if (p1 !== null && p1 !== undefined && Number.isFinite(p1)) {
-          total++;
-          if (p1 >= 0.22) wetVotes++;
-        }
-      }
-      return total > 0 ? wetVotes / total >= 0.45 : null;
-    })();
+    input.previousLockedIsWet !== null && input.previousLockedIsWet !== undefined
+      ? input.previousLockedIsWet
+      : (() => {
+          let wetVotesR0 = 0;
+          let wetVotesR1 = 0;
+          let total = 0;
+          for (const m of input.laggedModels) {
+            const idx =
+              input.utcHourKey && m.utcTimeIndex
+                ? (m.utcTimeIndex.get(input.utcHourKey) ?? input.hourIndex)
+                : input.hourIndex;
+            const p0 = m.run0PrecipMm?.[idx];
+            const p1 = m.runMinus1PrecipMm?.[idx];
+            if (
+              p0 !== null &&
+              p0 !== undefined &&
+              Number.isFinite(p0) &&
+              p1 !== null &&
+              p1 !== undefined &&
+              Number.isFinite(p1)
+            ) {
+              total++;
+              if (p0 >= 0.22) wetVotesR0++;
+              if (p1 >= 0.22) wetVotesR1++;
+            }
+          }
+          if (total < 3) return null;
+          const shiftFrac = (wetVotesR0 - wetVotesR1) / total;
+          // Only trigger cold-start wet flip protection if R0 suddenly flipped >=35% of models vs R-1
+          if (Math.abs(shiftFrac) < 0.35) return finalIsWet;
+          return wetVotesR1 / total >= 0.45;
+        })();
 
   if (
     !spinUpVetoApplied &&
@@ -352,7 +412,7 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
   }
 
   const stabilityGrade: StabilityGrade =
-    runLockCounter >= 3 && Math.abs(dProgDtTrendC) <= 0.9
+    runLockCounter >= 3 && Math.abs(dProgDtTrendC) <= 0.95
       ? "LOCKED"
       : runLockCounter >= 2 || evidenceScore >= 2
         ? "CONVERGING"

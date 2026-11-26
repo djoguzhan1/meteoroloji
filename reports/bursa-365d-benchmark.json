@@ -1,23 +1,23 @@
 {
-  "generatedAt": "2026-11-26T16:26:33.913Z",
-  "mode": "live-8712h-wmo17116-5fold-purged-cv",
+  "generatedAt": "2026-11-26T18:02:38.910Z",
+  "mode": "live-17472h-2yr-wmo17116-5fold-purged-cv",
   "liveSnapshot": {
-    "capturedAtIso": "2026-11-26T16:26:11.817Z",
+    "capturedAtIso": "2026-11-26T18:01:31.192Z",
     "onlineDistrictCount": 19,
-    "osmangazi17116TempC": 10.2,
-    "ltbrMetarTempC": 6,
-    "ltfjMetarTempC": 10,
-    "ltbrMinusBursaErrorC": -4.2,
+    "osmangazi17116TempC": 8.9,
+    "ltbrMetarTempC": 3,
+    "ltfjMetarTempC": 11,
+    "ltbrMinusBursaErrorC": -5.9,
     "keyDistricts": [
       {
         "district": "Gemlik",
         "merkezId": 91605,
         "wmo": 91605,
         "elevM": 85,
-        "tempC": 10.3,
-        "rhPct": 50,
+        "tempC": 10.4,
+        "rhPct": 48,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       },
       {
         "district": "Kestel",
@@ -25,70 +25,71 @@
         "wmo": 91604,
         "elevM": 230,
         "tempC": 7.6,
-        "rhPct": 63,
+        "rhPct": 62,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       },
       {
         "district": "Mudanya",
         "merkezId": 91610,
         "wmo": 91610,
         "elevM": 4,
-        "tempC": 9.5,
-        "rhPct": 68,
+        "tempC": 10.4,
+        "rhPct": 55,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       },
       {
         "district": "Nilüfer",
         "merkezId": 91617,
         "wmo": 91617,
         "elevM": 105,
-        "tempC": 8.7,
-        "rhPct": 69,
+        "tempC": 8.1,
+        "rhPct": 66,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       },
       {
         "district": "Osmangazi",
         "merkezId": 91601,
         "wmo": 91601,
         "elevM": 100,
-        "tempC": 10.2,
-        "rhPct": 52,
+        "tempC": 8.9,
+        "rhPct": 55,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       },
       {
         "district": "Uludağ Kayak Merkezi",
         "merkezId": 91618,
         "wmo": 17676,
         "elevM": 1877,
-        "tempC": 3.2,
+        "tempC": 3,
         "rhPct": 36,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       },
       {
         "district": "Yıldırım",
         "merkezId": 91602,
         "wmo": 91618,
         "elevM": 147,
-        "tempC": 8.9,
-        "rhPct": 65,
+        "tempC": 7.9,
+        "rhPct": 67,
         "precipMm": 0,
-        "obsTimeUtc": "2026-11-26T16:24:00.000Z"
+        "obsTimeUtc": "2026-11-26T17:59:00.000Z"
       }
     ]
   },
+  "trainingArchiveHours": 17472,
   "totalHours": 8712,
   "stationTrapAudit": {
     "evaluatedHours": 8316,
-    "overallMaeC": 2.46,
-    "overallRmseC": 3.13,
-    "clearCalmNightBiasC": -3.58,
-    "clearNightOver2CPct": 77.3,
-    "clearNightOver4CPct": 40.9
+    "overallMaeC": 1.95,
+    "overallRmseC": 2.6,
+    "clearCalmNightBiasC": -2.68,
+    "clearNightOver2CPct": 62.5,
+    "clearNightOver4CPct": 26.2
   },
   "rawModelMaeByLead": {
     "ecmwf_ifs": {
@@ -98,29 +99,39 @@
         "n": 8712
       },
       "day_1": {
-        "maeC": 1.373,
-        "biasC": -0.67,
-        "n": 8712
+        "maeC": 1.674,
+        "biasC": -0.92,
+        "n": 4224
       },
       "day_2": {
-        "maeC": 1.453,
-        "biasC": -0.67,
-        "n": 8712
+        "maeC": 1.748,
+        "biasC": -0.92,
+        "n": 4200
       },
       "day_3": {
-        "maeC": 1.535,
-        "biasC": -0.7,
-        "n": 8712
+        "maeC": 1.835,
+        "biasC": -0.95,
+        "n": 4176
+      },
+      "day_4": {
+        "maeC": 1.932,
+        "biasC": -1.05,
+        "n": 4248
       },
       "day_5": {
-        "maeC": 1.843,
-        "biasC": -0.67,
-        "n": 8712
+        "maeC": 2.133,
+        "biasC": -0.85,
+        "n": 4128
+      },
+      "day_6": {
+        "maeC": 2.421,
+        "biasC": -1,
+        "n": 4104
       },
       "day_7": {
-        "maeC": 2.442,
-        "biasC": -0.69,
-        "n": 8712
+        "maeC": 2.757,
+        "biasC": -0.98,
+        "n": 4176
       }
     },
     "ecmwf_aifs025_single": {
@@ -144,9 +155,19 @@
         "biasC": -0.68,
         "n": 8712
       },
+      "day_4": {
+        "maeC": 1.614,
+        "biasC": -0.63,
+        "n": 8712
+      },
       "day_5": {
         "maeC": 1.715,
         "biasC": -0.6,
+        "n": 8712
+      },
+      "day_6": {
+        "maeC": 1.897,
+        "biasC": -0.56,
         "n": 8712
       },
       "day_7": {
@@ -176,9 +197,19 @@
         "biasC": -0.68,
         "n": 8712
       },
+      "day_4": {
+        "maeC": 1.693,
+        "biasC": -0.65,
+        "n": 8712
+      },
       "day_5": {
         "maeC": 1.971,
         "biasC": -0.02,
+        "n": 8712
+      },
+      "day_6": {
+        "maeC": 2.272,
+        "biasC": -0.04,
         "n": 8712
       },
       "day_7": null
@@ -204,10 +235,20 @@
         "biasC": 0.16,
         "n": 7602
       },
+      "day_4": {
+        "maeC": 1.844,
+        "biasC": 0.18,
+        "n": 6700
+      },
       "day_5": {
         "maeC": 2.058,
         "biasC": 0.22,
         "n": 7038
+      },
+      "day_6": {
+        "maeC": 2.335,
+        "biasC": 0.14,
+        "n": 7479
       },
       "day_7": null
     },
@@ -232,7 +273,9 @@
         "biasC": 0.6,
         "n": 8712
       },
+      "day_4": null,
       "day_5": null,
+      "day_6": null,
       "day_7": null
     },
     "gfs_seamless": {
@@ -256,9 +299,19 @@
         "biasC": 0.74,
         "n": 8712
       },
+      "day_4": {
+        "maeC": 2.086,
+        "biasC": 0.69,
+        "n": 8712
+      },
       "day_5": {
         "maeC": 2.24,
         "biasC": 0.58,
+        "n": 8712
+      },
+      "day_6": {
+        "maeC": 2.436,
+        "biasC": 0.43,
         "n": 8712
       },
       "day_7": {
@@ -288,9 +341,19 @@
         "biasC": -0.25,
         "n": 8712
       },
+      "day_4": {
+        "maeC": 1.892,
+        "biasC": -0.33,
+        "n": 8712
+      },
       "day_5": {
         "maeC": 2.088,
         "biasC": -0.33,
+        "n": 8712
+      },
+      "day_6": {
+        "maeC": 2.294,
+        "biasC": -0.4,
         "n": 8712
       },
       "day_7": {
@@ -298,50 +361,92 @@
         "biasC": -0.45,
         "n": 8712
       }
+    },
+    "jma_seamless": {
+      "day_0": {
+        "maeC": 2.014,
+        "biasC": 1.07,
+        "n": 8712
+      },
+      "day_1": {
+        "maeC": 2.032,
+        "biasC": 0.98,
+        "n": 8712
+      },
+      "day_2": {
+        "maeC": 2.067,
+        "biasC": 0.98,
+        "n": 8712
+      },
+      "day_3": {
+        "maeC": 2.13,
+        "biasC": 1.01,
+        "n": 8712
+      },
+      "day_4": {
+        "maeC": 2.212,
+        "biasC": 1.02,
+        "n": 8712
+      },
+      "day_5": {
+        "maeC": 2.363,
+        "biasC": 1.02,
+        "n": 8712
+      },
+      "day_6": {
+        "maeC": 2.513,
+        "biasC": 1,
+        "n": 8712
+      },
+      "day_7": {
+        "maeC": 2.835,
+        "biasC": 1.16,
+        "n": 8712
+      }
     }
   },
   "intradaySummary": {
     "plus_1h": {
       "samples": 8687,
-      "maeC": 0.526,
-      "rmseC": 0.737,
-      "sub1HitPct": 86.8,
-      "sub2HitPct": 98.1
+      "maeC": 0.512,
+      "rmseC": 0.719,
+      "sub1HitPct": 86.9,
+      "sub2HitPct": 98.3
     },
     "plus_2h": {
       "samples": 8686,
-      "maeC": 0.675,
-      "rmseC": 0.922,
-      "sub1HitPct": 78,
-      "sub2HitPct": 96.2
+      "maeC": 0.654,
+      "rmseC": 0.895,
+      "sub1HitPct": 79.7,
+      "sub2HitPct": 96.6
     },
     "plus_3h": {
       "samples": 8685,
-      "maeC": 0.752,
-      "rmseC": 1.024,
-      "sub1HitPct": 74.1,
-      "sub2HitPct": 94.4
+      "maeC": 0.725,
+      "rmseC": 0.987,
+      "sub1HitPct": 75.3,
+      "sub2HitPct": 95
     },
     "plus_6h": {
       "samples": 8682,
-      "maeC": 0.844,
-      "rmseC": 1.144,
-      "sub1HitPct": 68.6,
-      "sub2HitPct": 92.4
+      "maeC": 0.798,
+      "rmseC": 1.086,
+      "sub1HitPct": 71.2,
+      "sub2HitPct": 93.4
     },
     "plus_12h": {
       "samples": 8676,
-      "maeC": 0.867,
-      "rmseC": 1.181,
-      "sub1HitPct": 68.4,
-      "sub2HitPct": 91.9
+      "maeC": 0.825,
+      "rmseC": 1.132,
+      "sub1HitPct": 70.3,
+      "sub2HitPct": 92.5
     },
     "plus_18h": {
       "samples": 8670,
-      "maeC": 0.865,
-      "rmseC": 1.181,
-      "sub1HitPct": 68.5,
-      "sub2HitPct": 92
+      "maeC": 0.828,
+      "rmseC": 1.137,
+      "sub1HitPct": 70.6,
+      "sub2HitPct": 92.6
     }
   },
   "summaryByLead": {
@@ -356,25 +461,15 @@
         "precipPOD": 0.539,
         "precipFAR": 0.346
       },
-      "ATMOS_V3_LTBR_24H": {
+      "ATMOS_V5_0_ZERO_DRIFT": {
         "samples": 8664,
-        "maeC": 1.994,
-        "rmseC": 2.412,
-        "sub1HitPct": 26.1,
-        "sub2HitPct": 54.9,
-        "precipCSI": 0.419,
-        "precipPOD": 0.539,
-        "precipFAR": 0.346
-      },
-      "ATMOS_V4_5_BURSA_EMOS": {
-        "samples": 8664,
-        "maeC": 0.895,
-        "rmseC": 1.213,
-        "sub1HitPct": 66.2,
-        "sub2HitPct": 91.6,
-        "precipCSI": 0.523,
-        "precipPOD": 0.73,
-        "precipFAR": 0.351
+        "maeC": 0.845,
+        "rmseC": 1.155,
+        "sub1HitPct": 69.3,
+        "sub2HitPct": 92.2,
+        "precipCSI": 0.516,
+        "precipPOD": 0.709,
+        "precipFAR": 0.345
       }
     },
     "day_1": {
@@ -388,25 +483,15 @@
         "precipPOD": 0.541,
         "precipFAR": 0.345
       },
-      "ATMOS_V3_LTBR_24H": {
+      "ATMOS_V5_0_ZERO_DRIFT": {
         "samples": 8664,
-        "maeC": 1.97,
-        "rmseC": 2.442,
-        "sub1HitPct": 27.6,
-        "sub2HitPct": 57.5,
-        "precipCSI": 0.421,
-        "precipPOD": 0.541,
+        "maeC": 0.998,
+        "rmseC": 1.344,
+        "sub1HitPct": 61,
+        "sub2HitPct": 88.6,
+        "precipCSI": 0.522,
+        "precipPOD": 0.72,
         "precipFAR": 0.345
-      },
-      "ATMOS_V4_5_BURSA_EMOS": {
-        "samples": 8664,
-        "maeC": 1.035,
-        "rmseC": 1.39,
-        "sub1HitPct": 59.8,
-        "sub2HitPct": 87.3,
-        "precipCSI": 0.51,
-        "precipPOD": 0.723,
-        "precipFAR": 0.366
       }
     },
     "day_2": {
@@ -420,25 +505,15 @@
         "precipPOD": 0.494,
         "precipFAR": 0.387
       },
-      "ATMOS_V3_LTBR_24H": {
+      "ATMOS_V5_0_ZERO_DRIFT": {
         "samples": 8640,
-        "maeC": 1.877,
-        "rmseC": 2.345,
-        "sub1HitPct": 30.5,
-        "sub2HitPct": 60.3,
-        "precipCSI": 0.376,
-        "precipPOD": 0.494,
-        "precipFAR": 0.387
-      },
-      "ATMOS_V4_5_BURSA_EMOS": {
-        "samples": 8640,
-        "maeC": 1.119,
-        "rmseC": 1.474,
-        "sub1HitPct": 55.4,
-        "sub2HitPct": 84.5,
+        "maeC": 1.075,
+        "rmseC": 1.426,
+        "sub1HitPct": 57.7,
+        "sub2HitPct": 85.7,
         "precipCSI": 0.455,
-        "precipPOD": 0.661,
-        "precipFAR": 0.406
+        "precipPOD": 0.67,
+        "precipFAR": 0.413
       }
     },
     "day_3": {
@@ -452,25 +527,37 @@
         "precipPOD": 0.437,
         "precipFAR": 0.419
       },
-      "ATMOS_V3_LTBR_24H": {
+      "ATMOS_V5_0_ZERO_DRIFT": {
         "samples": 8616,
-        "maeC": 1.859,
-        "rmseC": 2.346,
-        "sub1HitPct": 31.8,
-        "sub2HitPct": 61.7,
-        "precipCSI": 0.332,
-        "precipPOD": 0.437,
-        "precipFAR": 0.419
+        "maeC": 1.179,
+        "rmseC": 1.573,
+        "sub1HitPct": 54.1,
+        "sub2HitPct": 82,
+        "precipCSI": 0.41,
+        "precipPOD": 0.604,
+        "precipFAR": 0.439
+      }
+    },
+    "day_4": {
+      "RAW_IFS": {
+        "samples": 8592,
+        "maeC": 1.646,
+        "rmseC": 2.209,
+        "sub1HitPct": 39.7,
+        "sub2HitPct": 68.2,
+        "precipCSI": 0.291,
+        "precipPOD": 0.41,
+        "precipFAR": 0.501
       },
-      "ATMOS_V4_5_BURSA_EMOS": {
-        "samples": 8616,
-        "maeC": 1.208,
-        "rmseC": 1.602,
-        "sub1HitPct": 53.3,
-        "sub2HitPct": 80.9,
-        "precipCSI": 0.422,
-        "precipPOD": 0.591,
-        "precipFAR": 0.405
+      "ATMOS_V5_0_ZERO_DRIFT": {
+        "samples": 8592,
+        "maeC": 1.311,
+        "rmseC": 1.729,
+        "sub1HitPct": 48.9,
+        "sub2HitPct": 78.7,
+        "precipCSI": 0.365,
+        "precipPOD": 0.6,
+        "precipFAR": 0.517
       }
     },
     "day_5": {
@@ -484,25 +571,37 @@
         "precipPOD": 0.274,
         "precipFAR": 0.658
       },
-      "ATMOS_V3_LTBR_24H": {
+      "ATMOS_V5_0_ZERO_DRIFT": {
         "samples": 8568,
-        "maeC": 2.005,
-        "rmseC": 2.612,
-        "sub1HitPct": 31.5,
-        "sub2HitPct": 60.1,
-        "precipCSI": 0.179,
-        "precipPOD": 0.274,
-        "precipFAR": 0.658
+        "maeC": 1.489,
+        "rmseC": 1.945,
+        "sub1HitPct": 44.2,
+        "sub2HitPct": 73.1,
+        "precipCSI": 0.337,
+        "precipPOD": 0.55,
+        "precipFAR": 0.535
+      }
+    },
+    "day_6": {
+      "RAW_IFS": {
+        "samples": 8544,
+        "maeC": 2.122,
+        "rmseC": 2.835,
+        "sub1HitPct": 31.4,
+        "sub2HitPct": 57.8,
+        "precipCSI": 0.191,
+        "precipPOD": 0.301,
+        "precipFAR": 0.656
       },
-      "ATMOS_V4_5_BURSA_EMOS": {
-        "samples": 8568,
-        "maeC": 1.562,
-        "rmseC": 2.033,
-        "sub1HitPct": 41.8,
-        "sub2HitPct": 71,
-        "precipCSI": 0.275,
-        "precipPOD": 0.36,
-        "precipFAR": 0.463
+      "ATMOS_V5_0_ZERO_DRIFT": {
+        "samples": 8544,
+        "maeC": 1.658,
+        "rmseC": 2.194,
+        "sub1HitPct": 40.3,
+        "sub2HitPct": 69.3,
+        "precipCSI": 0.31,
+        "precipPOD": 0.545,
+        "precipFAR": 0.582
       }
     },
     "day_7": {
@@ -516,25 +615,15 @@
         "precipPOD": 0.269,
         "precipFAR": 0.649
       },
-      "ATMOS_V3_LTBR_24H": {
+      "ATMOS_V5_0_ZERO_DRIFT": {
         "samples": 8520,
-        "maeC": 2.515,
-        "rmseC": 3.274,
-        "sub1HitPct": 26.1,
-        "sub2HitPct": 49.5,
-        "precipCSI": 0.18,
-        "precipPOD": 0.269,
-        "precipFAR": 0.649
-      },
-      "ATMOS_V4_5_BURSA_EMOS": {
-        "samples": 8520,
-        "maeC": 2.026,
-        "rmseC": 2.662,
-        "sub1HitPct": 34.1,
-        "sub2HitPct": 59.6,
-        "precipCSI": 0.18,
-        "precipPOD": 0.225,
-        "precipFAR": 0.525
+        "maeC": 1.935,
+        "rmseC": 2.54,
+        "sub1HitPct": 34.7,
+        "sub2HitPct": 61.9,
+        "precipCSI": 0.236,
+        "precipPOD": 0.438,
+        "precipFAR": 0.661
       }
     }
   },
@@ -543,9 +632,9 @@
       "meanRunJumpC": 0.59,
       "badLastMinuteFlipPct": 6.11
     },
-    "ATMOS_V4_5_BURSA_EMOS": {
-      "meanRunJumpC": 0.313,
-      "badLastMinuteFlipPct": 1.39
+    "ATMOS_V5_0_ZERO_DRIFT": {
+      "meanRunJumpC": 0.314,
+      "badLastMinuteFlipPct": 1.31
     }
   }
 }
