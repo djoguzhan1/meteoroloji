@@ -1,10 +1,10 @@
 /**
- * ATMOS v5.0 — High-Res Zoom-8 Stitched RainViewer Radar dBZ Decoder, Lagrangian Growth/Decay & Live MGM Gauge-Radar (G/R) Nowcast
+ * ATMOS v5.0 — High-Res 512px Zoom-7 Stitched RainViewer Radar dBZ Decoder, Lagrangian Growth/Decay & Live MGM Gauge-Radar (G/R) Nowcast
  * File: lib/radar-nowcast.ts
  *
  * Upgrades radar nowcasting to operational hydrometeorological grade:
- *  1. Pure TypeScript PNG IDAT zlib decoder (zero native C++/canvas dependencies)
- *  2. Multi-tile Zoom-8 (~466 m/px) seamless stitching whenever target sits near a slippy tile seam
+ *  1. Pure TypeScript PNG IDAT zlib decoder (zero native C++/canvas dependencies) + grayscale error-banner filter
+ *  2. Multi-tile 512px Zoom-7 (~466 m/px) seamless stitching whenever target sits near a slippy tile seam (avoids RainViewer Z8+ unsupported banner)
  *  3. Sub-pixel parabolic SAD optical flow + 3-frame Lagrangian echo growth/decay (`dDbzPerMin`)
  *  4. Real-time MGM 10-min Pluviometer Gauge-to-Radar (G/R Fulton-Brandes) intensity calibration
  *  5. Physical LCL / Dew-point spread Virga evaporation filter & cosine-tapered NWP blending
@@ -27,6 +27,9 @@ function getNodeZlib(): NodeZlibSubset | null {
 
 const RADAR_UA =
   'Mozilla/5.0 (compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)';
+
+export const RAINVIEWER_NATIVE_MAX_ZOOM = 7;
+export const RAINVIEWER_HD_TILE_SIZE = 512;
 
 export interface DecodedPngTile {
   width: number;
@@ -60,7 +63,7 @@ export interface RadarNowcastResult {
 export function latLonToSlippyTilePixel(
   lat: number,
   lon: number,
-  zoom = 7,
+  zoom = RAINVIEWER_NATIVE_MAX_ZOOM,
   tileSize = 256,
 ): { tileX: number; tileY: number; pixelX: number; pixelY: number; metersPerPixel: number } {
   const n = 2 ** zoom;
@@ -209,6 +212,11 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
 export function rgbaPixelToDbz(r: number, g: number, b: number, a: number): number {
   if (a < 20) return 0;
 
+  // Reject achromatic / grayscale pixels (e.g. RainViewer "Zoom Level Not Supported" text banners)
+  // Real RainViewer meteorological palettes (schemes 2 & 6) always maintain chroma >= 40.
+  const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+  if (chroma <= 8) return 0;
+
   if (r >= 180 && b >= 160 && g <= 90) {
     return 56 + ((r - 180) / 75) * 8;
   }
@@ -249,6 +257,26 @@ export function tileToDbzGrid(tile: DecodedPngTile): Float32Array {
     );
   }
   return grid;
+}
+
+/**
+ * Check if a decoded tile consists purely of grayscale pixels (indicating an upstream
+ * "Zoom Level Not Supported" / placeholder error tile rather than valid radar imagery).
+ */
+export function isGrayscaleErrorTile(tile: DecodedPngTile): boolean {
+  let opaqueCount = 0;
+  for (let i = 0; i < tile.rgba.length; i += 4) {
+    const a = tile.rgba[i + 3];
+    if (a < 20) continue;
+    opaqueCount++;
+    const r = tile.rgba[i];
+    const g = tile.rgba[i + 1];
+    const b = tile.rgba[i + 2];
+    if (Math.max(r, g, b) - Math.min(r, g, b) > 8) {
+      return false;
+    }
+  }
+  return opaqueCount >= 100;
 }
 
 /**
@@ -563,18 +591,24 @@ async function fetchDecodedFrameGrid(
   host: string,
   framePath: string,
   zoom: number,
+  tileSize: number,
   tileX: number,
   tileY: number,
   neighborDx: number,
   neighborDy: number,
   timeoutMs: number,
 ): Promise<{ grid: Float32Array; width: number; height: number; offsetX: number; offsetY: number } | null> {
+  const numTiles = 2 ** zoom;
   const fetchSingle = async (tx: number, ty: number): Promise<DecodedPngTile | null> => {
+    if (ty < 0 || ty >= numTiles) return null;
+    const wrappedTx = ((tx % numTiles) + numTiles) % numTiles;
     try {
-      const url = `${host}${framePath}/256/${zoom}/${tx}/${ty}/2/1_1.png`;
+      const url = `${host}${framePath}/${tileSize}/${zoom}/${wrappedTx}/${ty}/2/1_1.png`;
       const res = await fetch(url, { headers: { 'User-Agent': RADAR_UA }, signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) return null;
-      return decodePngBufferToRgba(new Uint8Array(await res.arrayBuffer()));
+      const decoded = decodePngBufferToRgba(new Uint8Array(await res.arrayBuffer()));
+      if (!decoded || isGrayscaleErrorTile(decoded)) return null;
+      return decoded;
     } catch {
       return null;
     }
@@ -583,7 +617,7 @@ async function fetchDecodedFrameGrid(
   if (neighborDx === 0 && neighborDy === 0) {
     const t = await fetchSingle(tileX, tileY);
     if (!t) return null;
-    return { grid: tileToDbzGrid(t), width: 256, height: 256, offsetX: 0, offsetY: 0 };
+    return { grid: tileToDbzGrid(t), width: t.width, height: t.height, offsetX: 0, offsetY: 0 };
   }
 
   // Seamless 2x2 tile stitch when target is close to a tile border so upwind trajectories never clip!
@@ -595,32 +629,38 @@ async function fetchDecodedFrameGrid(
     fetchSingle(tx0, ty0 + 1),
     fetchSingle(tx0 + 1, ty0 + 1),
   ]);
-  if (!t00 && !t10 && !t01 && !t11) return null;
+  const sample = t00 ?? t10 ?? t01 ?? t11;
+  if (!sample) return null;
 
-  const stitched = new Float32Array(512 * 512);
+  const tw = sample.width;
+  const th = sample.height;
+  const stitchedW = tw * 2;
+  const stitchedH = th * 2;
+  const stitched = new Float32Array(stitchedW * stitchedH);
   const blit = (tile: DecodedPngTile | null, ox: number, oy: number) => {
-    if (!tile) return;
+    if (!tile || tile.width !== tw || tile.height !== th) return;
     const g = tileToDbzGrid(tile);
-    for (let y = 0; y < 256; y++) {
-      stitched.set(g.subarray(y * 256, (y + 1) * 256), (oy + y) * 512 + ox);
+    for (let y = 0; y < th; y++) {
+      stitched.set(g.subarray(y * tw, (y + 1) * tw), (oy + y) * stitchedW + ox);
     }
   };
   blit(t00, 0, 0);
-  blit(t10, 256, 0);
-  blit(t01, 0, 256);
-  blit(t11, 256, 256);
+  blit(t10, tw, 0);
+  blit(t01, 0, th);
+  blit(t11, tw, th);
 
   return {
     grid: stitched,
-    width: 512,
-    height: 512,
-    offsetX: (tileX - tx0) * 256,
-    offsetY: (tileY - ty0) * 256,
+    width: stitchedW,
+    height: stitchedH,
+    offsetX: (tileX - tx0) * tw,
+    offsetY: (tileY - ty0) * th,
   };
 }
 
 /**
- * Live RainViewer Weather Maps Zoom-8 fetcher & decoder with 3-frame trajectory & G/R gauge calibration.
+ * Live RainViewer Weather Maps 512px Zoom-7 fetcher & decoder with 3-frame trajectory & G/R gauge calibration.
+ * Uses Zoom 7 + 512px HD tiles (~466 m/px) to preserve sub-kilometer accuracy while avoiding RainViewer's Z8+ cap.
  */
 export async function fetchBursaRadarNowcast(
   lat: number,
@@ -647,18 +687,55 @@ export async function fetchBursaRadarNowcast(
     const fPrev = pastFrames[pastFrames.length - 2];
     const fCurr = pastFrames[pastFrames.length - 1];
 
-    // Zoom 8 gives ~466 m/pixel precision over Bursa while 2x2 seam-stitching covers ~240 km upwind fetch!
-    const zoom = 8;
-    const { tileX, tileY, pixelX, pixelY, metersPerPixel } = latLonToSlippyTilePixel(lat, lon, zoom, 256);
-    const neighborDx = pixelX < 56 ? -1 : pixelX > 200 ? 1 : 0;
-    const neighborDy = pixelY < 56 ? -1 : pixelY > 200 ? 1 : 0;
+    // Zoom 7 @ 512px gives ~466 m/pixel precision over Bursa while staying within RainViewer's native zoom cap!
+    const zoom = RAINVIEWER_NATIVE_MAX_ZOOM;
+    const tileSize = RAINVIEWER_HD_TILE_SIZE;
+    const { tileX, tileY, pixelX, pixelY, metersPerPixel } = latLonToSlippyTilePixel(
+      lat,
+      lon,
+      zoom,
+      tileSize,
+    );
+    const borderMargin = Math.round(tileSize * 0.22); // ~112 px (~52 km upwind margin)
+    const neighborDx = pixelX < borderMargin ? -1 : pixelX > tileSize - borderMargin ? 1 : 0;
+    const neighborDy = pixelY < borderMargin ? -1 : pixelY > tileSize - borderMargin ? 1 : 0;
 
     const [olderDecoded, prevDecoded, currDecoded] = await Promise.all([
       fOlder
-        ? fetchDecodedFrameGrid(host, fOlder.path, zoom, tileX, tileY, neighborDx, neighborDy, timeoutMs)
+        ? fetchDecodedFrameGrid(
+            host,
+            fOlder.path,
+            zoom,
+            tileSize,
+            tileX,
+            tileY,
+            neighborDx,
+            neighborDy,
+            timeoutMs,
+          )
         : Promise.resolve(null),
-      fetchDecodedFrameGrid(host, fPrev.path, zoom, tileX, tileY, neighborDx, neighborDy, timeoutMs),
-      fetchDecodedFrameGrid(host, fCurr.path, zoom, tileX, tileY, neighborDx, neighborDy, timeoutMs),
+      fetchDecodedFrameGrid(
+        host,
+        fPrev.path,
+        zoom,
+        tileSize,
+        tileX,
+        tileY,
+        neighborDx,
+        neighborDy,
+        timeoutMs,
+      ),
+      fetchDecodedFrameGrid(
+        host,
+        fCurr.path,
+        zoom,
+        tileSize,
+        tileX,
+        tileY,
+        neighborDx,
+        neighborDy,
+        timeoutMs,
+      ),
     ]);
 
     if (!prevDecoded || !currDecoded) throw new Error('Tile decode failed');

@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 
 /**
- * Rota değişimlerinde üst kenardan akan atmosferik tarama ışını (scan beam)
- * ve 340ms irtifa-derinliği (scale + blur + y) sayfa girişi.
+ * Rota değişimlerinde üst barın tam alt sınırından (mobilde 98px, masaüstünde 53px)
+ * akan atmosferik tarama ışını ve yumuşak irtifa-derinliği sayfa girişi.
  */
 export default function RouteTransitionStage({
   children
@@ -26,11 +26,11 @@ export default function RouteTransitionStage({
 
   return (
     <>
-      {/* Rota Değişim Tarama Işını */}
+      {/* Rota Değişim Tarama Işını (Mobil arama kutusuna binmemesi için duyarlı üst konum) */}
       <div
         key={`beam-${pathname}`}
         aria-hidden="true"
-        className="pointer-events-none fixed inset-x-0 top-[53px] z-50 h-[2px] overflow-hidden"
+        className="pointer-events-none fixed inset-x-0 top-[98px] sm:top-[53px] z-[55] h-[2px] overflow-hidden"
       >
         <div
           className="atmos-scan-beam h-full w-1/2"

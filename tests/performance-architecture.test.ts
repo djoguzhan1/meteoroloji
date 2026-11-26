@@ -276,6 +276,8 @@ describe("Kategori 5 — Performans Mimarisi, Pencereleme, Toplu Çizim ve GPU/C
       grid,
       width: 760,
       height: 520,
+      dtSec: 1 / 60,
+      zoom: 6,
       bounds: {
         northLat: 41,
         southLat: 39,

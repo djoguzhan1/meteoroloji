@@ -50,10 +50,10 @@ const LENS_OPTIONS: ReadonlyArray<{ key: MeteogramLens; label: string }> = [
 ];
 
 const COL_W = 68;
-const STAGE_H = 296;
-const CURVE_TOP = 104;
-const CURVE_BOT = 186;
-const HYETO_BASE_Y = 244;
+const STAGE_H = 330;
+const CURVE_TOP = 114;
+const CURVE_BOT = 192;
+const HYETO_BASE_Y = 274;
 const HYETO_MAX_H = 38;
 
 function toUnitTemp(c: number, unit: UnitSystem): number {
@@ -874,13 +874,20 @@ function HourlyForecastStripBase({
                 );
               })}
 
-              {/* Yatay Kılavuz Çizgileri (İkon/Eğri/Yağış/Rüzgar katman ayrımları) */}
+              {/* Yatay Kılavuz Çizgileri (Saat-Güneş / İkon / Eğri / Yağış / Rüzgar katman ayrımları) */}
               <line
                 x1={0}
-                y1={42}
+                y1={48}
                 x2={totalW}
-                y2={42}
-                stroke="rgba(255, 255, 255, 0.05)"
+                y2={48}
+                stroke="rgba(255, 255, 255, 0.055)"
+              />
+              <line
+                x1={0}
+                y1={200}
+                x2={totalW}
+                y2={200}
+                stroke="rgba(255, 255, 255, 0.045)"
               />
               <line
                 x1={0}
@@ -891,9 +898,9 @@ function HourlyForecastStripBase({
               />
               <line
                 x1={0}
-                y1={250}
+                y1={280}
                 x2={totalW}
-                y2={250}
+                y2={280}
                 stroke="rgba(255, 255, 255, 0.055)"
               />
 
@@ -1067,7 +1074,7 @@ function HourlyForecastStripBase({
                 <div
                   key={`lbl-${mk.id}`}
                   style={{ left: `${leftPx}px` }}
-                  className="pointer-events-none absolute top-[25px] z-10 -translate-x-1/2 flex items-center gap-0.5 rounded-full border border-amber-400/30 bg-[#0b101d]/92 px-1.5 py-[1px] font-mono text-[9px] text-amber-200 shadow-sm tabular"
+                  className="pointer-events-none absolute top-[28px] z-20 -translate-x-1/2 flex items-center gap-0.5 whitespace-nowrap rounded-full border border-amber-400/35 bg-[#090e1a]/95 px-1.5 py-[1px] font-mono text-[9px] text-amber-200 shadow-md tabular"
                 >
                   {isRise ? (
                     <Sunrise className="h-2.5 w-2.5 text-amber-300" />
@@ -1142,8 +1149,8 @@ function HourlyForecastStripBase({
                       )}
                     </div>
 
-                    {/* 2. 17-Durumlu Faz Kaymalı Animasyonlu Meteoroloji İkonu */}
-                    <div className="mt-2.5 flex justify-center">
+                    {/* 2. 17-Durumlu Faz Kaymalı Animasyonlu Meteoroloji İkonu (Güneş şeridinden izole y=54..82px bandı) */}
+                    <div className="pointer-events-none absolute inset-x-0 top-[54px] flex justify-center">
                       <AnimatedWeatherIcon
                         code={h.weatherCode}
                         isNight={h.solarElevationDeg < -3}
@@ -1159,10 +1166,10 @@ function HourlyForecastStripBase({
                       />
                     </div>
 
-                    {/* 3. Eğri Düğümü Üstü Dinamik Değer Etiketi (Derece / Hız + Yerel Tepe/Çukur İşareti) */}
+                    {/* 3. Eğri Düğümü Üstü Dinamik Değer Etiketi (İkon ve yağış bandıyla sıfır çakışmalı y=90..172px bandı) */}
                     <span
                       style={{
-                        top: `${Math.max(82, Math.min(168, nodeY - 22))}px`
+                        top: `${Math.max(90, Math.min(172, nodeY - 22))}px`
                       }}
                       className={`pointer-events-none absolute inset-x-0 flex items-center justify-center gap-0.5 font-mono text-xs transition-colors ${
                         isSelected
@@ -1183,8 +1190,8 @@ function HourlyForecastStripBase({
                       <span>{primaryReadout}</span>
                     </span>
 
-                    {/* 4. Hyetograf / Mercek Alt Telemetri Satırı */}
-                    <div className="pointer-events-none absolute inset-x-0 top-[198px] flex flex-col items-center leading-tight font-mono">
+                    {/* 4. Hyetograf Üstü Ayrılmış Telemetri Satırı (y=203..229px; barlar y=236..274px aralığında kalır) */}
+                    <div className="pointer-events-none absolute inset-x-0 top-[203px] flex flex-col items-center leading-tight font-mono">
                       {lens === "thermo" ? (
                         <>
                           <span className="text-[10px] text-ink-secondary">
@@ -1228,7 +1235,7 @@ function HourlyForecastStripBase({
                     {/* 5. Aerodinamik Rüzgar Vektör Rayı (Gerçek Akış Yönü Oku + Hız) */}
                     <div
                       title={`Rüzgar: ${windDirectionToCompass(h.windDirection)} (${h.windDirection}°) · Hamle ${formatWindSpeed(h.windGusts, unit)}`}
-                      className="pointer-events-none absolute inset-x-0 bottom-2 flex flex-col items-center gap-0.5 font-mono"
+                      className="pointer-events-none absolute inset-x-0 bottom-2.5 flex flex-col items-center gap-0.5 font-mono"
                     >
                       <svg
                         viewBox="0 0 16 16"

@@ -185,7 +185,7 @@ export default function CitySearch({
       </div>
 
       {open && (
-        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-xl border border-white/15 bg-obsidian-900/95 shadow-instrument backdrop-blur-2xl">
+        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-[65] overflow-hidden rounded-xl border border-white/18 bg-[#070c18]/98 shadow-[0_24px_64px_rgba(0,0,0,0.78)] backdrop-blur-2xl">
           <div className="flex items-center justify-between border-b border-white/[0.08] px-3.5 py-2 text-xs text-ink-muted">
             <span>{query.trim().length < 2 ? "Hızlı Seçim" : "Konumlar"}</span>
             {loading && <span className="text-signal-sky">Aranıyor...</span>}

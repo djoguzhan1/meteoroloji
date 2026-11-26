@@ -279,7 +279,7 @@ function ExtendedDailyForecastPanelBase({
                     setExpandedDate((prev) => (prev === d.date ? null : d.date));
                   }}
                   aria-expanded={isExpanded}
-                  className="-mx-2 grid w-[calc(100%+1rem)] grid-cols-[84px_28px_42px_1fr_auto] items-center gap-2.5 rounded-xl px-2 py-2.5 text-left text-sm transition-colors hover:bg-white/[0.045]"
+                  className="-mx-2 grid w-[calc(100%+1rem)] grid-cols-[72px_22px_36px_minmax(68px,1fr)_auto] sm:grid-cols-[88px_28px_44px_1fr_auto] items-center gap-2 sm:gap-2.5 rounded-xl px-2 py-2.5 text-left text-sm transition-colors hover:bg-white/[0.045]"
                 >
                   <div className="leading-tight">
                     <div className="flex items-center gap-1">
@@ -585,7 +585,7 @@ function ExtendedDailyForecastPanelBase({
                 return (
                   <div
                     key={sd.date}
-                    className="-mx-2 grid grid-cols-[92px_26px_42px_1fr_auto] items-center gap-2.5 rounded-lg px-2 py-2 text-xs hover:bg-white/[0.035]"
+                    className="-mx-2 grid grid-cols-[78px_22px_36px_minmax(64px,1fr)_auto] sm:grid-cols-[94px_26px_42px_1fr_auto] items-center gap-2 sm:gap-2.5 rounded-lg px-2 py-2 text-xs hover:bg-white/[0.035]"
                   >
                     <div className="leading-tight">
                       <span className="font-medium text-ink-primary">{sd.dayLabel}</span>

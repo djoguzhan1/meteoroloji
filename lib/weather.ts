@@ -126,6 +126,7 @@ import type {
   ModelSeriesPoint,
   MultiModelBundle,
   PrecipPhase,
+  RadarFrame,
   RadarMetadata,
   SoundingLevel,
   WeatherBundle,
@@ -2858,6 +2859,11 @@ export async function fetchWeatherBundle(
       radarSummaryCode: radarNowcast.summaryCode,
       nextRainOnsetMin: radarNowcast.nextRainOnsetMinutes,
       rainCessationMin: radarNowcast.rainCessationMinutes,
+      radarAvailable: radarNowcast.radarAvailable,
+      currentRadarDbz: radarNowcast.currentDbzOverTarget,
+      currentRadarRainMmHr: radarNowcast.currentRainRateMmHr,
+      radarAdvectionSpeedKmh: radarNowcast.advectionSpeedKmH,
+      radarAdvectionFromDeg: radarNowcast.advectionFromDeg,
       bursaTier1Online: bursaMesh?.tier1OnlineCount ?? 0,
       ltbrIsolated: Boolean(isBursaDomain && (bursaMesh?.tier1OnlineCount ?? 0) > 0),
       marmaraSstC: marmaraSstBundle?.currentSstC ?? null,
@@ -3278,10 +3284,19 @@ export async function fetchRadarMetadata(): Promise<RadarMetadata> {
   const json = await res.json().catch(() => null);
   const past = Array.isArray(json?.radar?.past) ? json.radar.past : [];
   const nowcast = Array.isArray(json?.radar?.nowcast) ? json.radar.nowcast : [];
-  const frames = [...past, ...nowcast].map((f: { time: number; path: string }) => ({
+  const pastFrames: RadarFrame[] = past.map((f: { time: number; path: string }) => ({
     time: Number(f.time),
-    path: String(f.path)
+    path: String(f.path),
+    isForecast: false
   }));
+  const nowcastFrames: RadarFrame[] = nowcast.map((f: { time: number; path: string }) => ({
+    time: Number(f.time),
+    path: String(f.path),
+    isForecast: true
+  }));
+  const frames: RadarFrame[] = [...pastFrames, ...nowcastFrames];
+  const lastPastIndex =
+    pastFrames.length > 0 ? pastFrames.length - 1 : Math.max(0, frames.length - 1);
 
   if (frames.length === 0 && radarCache && radarCache.staleUntil > Date.now()) {
     const genIso = new Date(radarCache.value.generated * 1000).toISOString();
@@ -3303,6 +3318,7 @@ export async function fetchRadarMetadata(): Promise<RadarMetadata> {
   const meta: RadarMetadata = {
     host: String(json?.host ?? "https://tilecache.rainviewer.com"),
     generated: generatedSec,
+    lastPastIndex,
     frames,
     freshness: buildFreshnessMeta(genIso, savedMs, {
       status: "live",
@@ -3320,6 +3336,34 @@ export async function fetchRadarMetadata(): Promise<RadarMetadata> {
   return meta;
 }
 
+export function snapWindGridBounds(bounds: {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}): { south: number; west: number; north: number; east: number; cacheKey: string } {
+  const rawSouth = Math.max(-80, Math.min(80, bounds.south));
+  const rawNorth = Math.max(-80, Math.min(80, bounds.north));
+  const rawWest = Math.max(-180, Math.min(180, bounds.west));
+  const rawEast = Math.max(-180, Math.min(180, bounds.east));
+
+  const step = 0.25;
+  const south = Math.max(-80, Math.floor(Math.min(rawSouth, rawNorth) / step) * step);
+  let north = Math.min(80, Math.ceil(Math.max(rawSouth, rawNorth) / step) * step);
+  if (north - south < step) {
+    north = Math.min(80, south + step);
+  }
+
+  const west = Math.max(-180, Math.floor(Math.min(rawWest, rawEast) / step) * step);
+  let east = Math.min(180, Math.ceil(Math.max(rawWest, rawEast) / step) * step);
+  if (east - west < step) {
+    east = Math.min(180, west + step);
+  }
+
+  const cacheKey = `${south.toFixed(2)},${west.toFixed(2)},${north.toFixed(2)},${east.toFixed(2)}`;
+  return { south, west, north, east, cacheKey };
+}
+
 export async function fetchWindGrid(bounds: {
   south: number;
   west: number;
@@ -3328,13 +3372,7 @@ export async function fetchWindGrid(bounds: {
 }): Promise<WindGridBundle> {
   const rows = 5;
   const cols = 5;
-  const south = Math.max(-80, Math.min(80, bounds.south));
-  const north = Math.max(-80, Math.min(80, bounds.north));
-  const west = Math.max(-180, Math.min(180, bounds.west));
-  const east = Math.max(-180, Math.min(180, bounds.east));
-
-  const snap = (n: number) => (Math.round(n * 2) / 2).toFixed(1);
-  const cacheKey = `${snap(south)},${snap(west)},${snap(north)},${snap(east)}`;
+  const { south, west, north, east, cacheKey } = snapWindGridBounds(bounds);
   const nowMs = Date.now();
   const cached = windGridCache.get(cacheKey);
   if (cached && cached.expiresAt > nowMs) {

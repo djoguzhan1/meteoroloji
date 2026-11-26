@@ -608,6 +608,20 @@ function EarthMesh({
   onPickCity: (city: GeoLocation) => void;
 }) {
   const [land, setLand] = useState<GeoJsonLand | null>(null);
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+
+  const recordPointerDown = (e: ThreeEvent<PointerEvent>) => {
+    pointerDownRef.current = {
+      x: e.nativeEvent.clientX,
+      y: e.nativeEvent.clientY
+    };
+  };
+
+  const wasDraggedBeyondThreshold = (e: ThreeEvent<MouseEvent>) => {
+    const down = pointerDownRef.current;
+    if (!down) return false;
+    return Math.hypot(e.nativeEvent.clientX - down.x, e.nativeEvent.clientY - down.y) > 5;
+  };
 
   useEffect(() => {
     let active = true;
@@ -639,6 +653,7 @@ function EarthMesh({
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
+    if (wasDraggedBeyondThreshold(e)) return;
     const { lat, lon } = vector3ToLatLon(e.point);
     onPickCoords(lat, lon);
   };
@@ -651,7 +666,7 @@ function EarthMesh({
   return (
     <group>
       {/* Gerçek Natural Earth Kıyıları + Gerçek Zamanlı Gece-Gündüz Terminatörü */}
-      <mesh onClick={handleClick}>
+      <mesh onPointerDown={recordPointerDown} onClick={handleClick}>
         <sphereGeometry args={[GLOBE_RADIUS, 72, 72]} />
         <shaderMaterial
           key={land ? "earth-ne110m" : "earth-base"}
@@ -780,8 +795,10 @@ function EarthMesh({
           <mesh
             key={city.id}
             position={pos}
+            onPointerDown={recordPointerDown}
             onClick={(e) => {
               e.stopPropagation();
+              if (wasDraggedBeyondThreshold(e)) return;
               onPickCity(city);
             }}
           >
@@ -879,7 +896,7 @@ function GlobeSceneBase({
       </Canvas>
 
       {/* Üst Sol: Gerçek Güneş Altı Noktası */}
-      <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary tabular">
+      <div className="atmos-hud-glass pointer-events-none absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)] rounded-xl px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary tabular">
         <span className="font-semibold text-ink-primary">GERÇEK GECE-GÜNDÜZ SINIRI</span>
         <span className="mx-1.5 text-ink-muted">·</span>
         <span>
@@ -888,7 +905,7 @@ function GlobeSceneBase({
       </div>
 
       {/* Alt İpucu */}
-      <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 text-[11px] text-ink-muted">
+      <div className="atmos-hud-glass pointer-events-none absolute bottom-3 left-3 z-20 max-w-[calc(100%-1.5rem)] rounded-xl px-2.5 py-1.5 text-[11px] text-ink-muted">
         Sürükle: Döndür · Tekerlek: Yakınlaştır · Tıkla: Koordinat Ölç · Natural Earth 110m
       </div>
     </div>

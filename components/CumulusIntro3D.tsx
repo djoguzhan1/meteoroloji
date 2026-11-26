@@ -1726,7 +1726,7 @@ export default function CumulusIntro3D({
 
       {/* Sinematik Film Açılış Arayüzü (Sıfır AI Klişesi — Saf Tipografi + Füme Obsidyen Cam) */}
       <div
-        className={`pointer-events-none absolute inset-0 flex flex-col justify-between p-5 sm:p-8 transition-all duration-500 ${
+        className={`pointer-events-none absolute inset-0 flex flex-col justify-between gap-3 p-4 sm:p-7 transition-all duration-500 ${
           diving ? "scale-105 opacity-0" : "scale-100 opacity-100"
         }`}
       >
@@ -1792,7 +1792,7 @@ export default function CumulusIntro3D({
             {activeLook.tagline}
           </p>
 
-          <h2 className="mt-2 font-display text-5xl font-bold tracking-[0.30em] text-white drop-shadow-[0_14px_42px_rgba(0,0,0,0.95)] sm:text-6xl">
+          <h2 className="mt-1.5 sm:mt-2 font-display text-4xl font-bold tracking-[0.26em] sm:tracking-[0.30em] text-white drop-shadow-[0_14px_42px_rgba(0,0,0,0.95)] sm:text-6xl">
             CUMULUS
           </h2>
 
@@ -1800,7 +1800,7 @@ export default function CumulusIntro3D({
             BULUT SAVAŞI
           </p>
 
-          <div className="pointer-events-auto mt-7 flex flex-wrap items-center justify-center gap-3">
+          <div className="pointer-events-auto mt-4 sm:mt-7 flex flex-wrap items-center justify-center gap-2.5 sm:gap-3">
             <button
               type="button"
               onClick={triggerDive}

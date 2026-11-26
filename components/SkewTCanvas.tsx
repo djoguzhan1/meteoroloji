@@ -29,6 +29,54 @@ function yToP(y: number): number {
   return Math.exp(LN_P_MAX - frac * (LN_P_MAX - LN_P_MIN));
 }
 
+export interface SkewTMarkerInput {
+  label: string;
+  color: string;
+  rawY: number;
+}
+
+export interface ResolvedSkewTMarker extends SkewTMarkerInput {
+  labelY: number;
+}
+
+/**
+ * Prevents right-axis thermodynamic level labels (EL, LFC, LCL) from overlapping
+ * when LCL and LFC sit within a few hPa of each other.
+ */
+export function resolveSkewTMarkerCollisions(
+  markers: SkewTMarkerInput[],
+  minGapPx = 14,
+  minY = PAD_TOP + 6,
+  maxY = PAD_TOP + PLOT_H - 4
+): ResolvedSkewTMarker[] {
+  if (markers.length === 0) return [];
+  const sorted = [...markers]
+    .sort((a, b) => a.rawY - b.rawY)
+    .map((m) => ({
+      ...m,
+      labelY: Math.max(minY, Math.min(maxY, m.rawY))
+    }));
+
+  // Forward pass: push overlapping lower labels downward
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].labelY - sorted[i - 1].labelY < minGapPx) {
+      sorted[i].labelY = sorted[i - 1].labelY + minGapPx;
+    }
+  }
+
+  // Backward pass: clamp bottom label to maxY and pull upward if needed
+  if (sorted[sorted.length - 1].labelY > maxY) {
+    sorted[sorted.length - 1].labelY = maxY;
+    for (let i = sorted.length - 2; i >= 0; i--) {
+      if (sorted[i + 1].labelY - sorted[i].labelY < minGapPx) {
+        sorted[i].labelY = Math.max(minY, sorted[i + 1].labelY - minGapPx);
+      }
+    }
+  }
+
+  return sorted;
+}
+
 export default function SkewTCanvas({
   analysis
 }: {
@@ -243,28 +291,41 @@ export default function SkewTCanvas({
       }
     }
 
-    // Sağ eksen: LCL, LFC, EL seviyeleri
-    const drawMarker = (pressure: number | null, label: string, color: string) => {
-      if (pressure === null) return;
-      const y = pToY(pressure);
-      ctx.strokeStyle = color;
+    // Sağ eksen: LCL, LFC, EL seviyeleri (Çakışma çözücülü lider çizgili yerleşim)
+    const rawMarkers: SkewTMarkerInput[] = [];
+    if (analysis.lclPressureHpa !== null) {
+      rawMarkers.push({ label: "LCL", color: "#f59e0b", rawY: pToY(analysis.lclPressureHpa) });
+    }
+    if (analysis.lfcPressureHpa !== null) {
+      rawMarkers.push({ label: "LFC", color: "#ef4444", rawY: pToY(analysis.lfcPressureHpa) });
+    }
+    if (analysis.elPressureHpa !== null) {
+      rawMarkers.push({ label: "EL", color: "#94a3b8", rawY: pToY(analysis.elPressureHpa) });
+    }
+
+    const resolvedMarkers = resolveSkewTMarkerCollisions(rawMarkers);
+    for (const mk of resolvedMarkers) {
+      ctx.strokeStyle = mk.color;
       ctx.lineWidth = 1.1;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
-      ctx.moveTo(PAD_LEFT, y);
-      ctx.lineTo(PAD_LEFT + PLOT_W, y);
+      ctx.moveTo(PAD_LEFT, mk.rawY);
+      ctx.lineTo(PAD_LEFT + PLOT_W, mk.rawY);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.strokeStyle = mk.color;
+      ctx.lineWidth = 1;
+      ctx.moveTo(PAD_LEFT + PLOT_W, mk.rawY);
+      ctx.lineTo(PAD_LEFT + PLOT_W + 6, mk.labelY);
+      ctx.stroke();
+
+      ctx.fillStyle = mk.color;
       ctx.font = "bold 11px monospace";
       ctx.textAlign = "left";
-      ctx.fillText(label, PAD_LEFT + PLOT_W + 6, y + 4);
-    };
-
-    drawMarker(analysis.lclPressureHpa, "LCL", "#f59e0b");
-    drawMarker(analysis.lfcPressureHpa, "LFC", "#ef4444");
-    drawMarker(analysis.elPressureHpa, "EL", "#94a3b8");
+      ctx.fillText(mk.label, PAD_LEFT + PLOT_W + 8, mk.labelY + 3.5);
+    }
   }, [analysis, hoveredLevel]);
 
   const handlePointer = (e: React.PointerEvent<HTMLCanvasElement>) => {

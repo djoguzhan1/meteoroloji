@@ -223,7 +223,7 @@ export default function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-[#03060d]/72 px-4 pt-[12vh] backdrop-blur-md"
+      className="fixed inset-0 z-[80] flex items-start justify-center bg-[#03060d]/76 px-4 pt-[10vh] sm:pt-[13vh] backdrop-blur-md"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
           setQuery("");

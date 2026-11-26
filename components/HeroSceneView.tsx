@@ -563,7 +563,7 @@ export default function HeroSceneView() {
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-8">
       {/* BÖLÜM 1: SADE, FERAH ANLIK GÖZLEM & ÖLÇÜMLER */}
-      <section className="flex min-h-[calc(100vh-7.5rem)] flex-col justify-between gap-7 py-3">
+      <section className="flex min-h-[calc(100svh-8.5rem)] flex-col justify-between gap-6 py-2">
         <div className="grid gap-7 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-end">
           {/* Sol: Konum, Odometre Sıcaklık ve Temel Özet */}
           <div className="atmos-enter-1 space-y-4">
@@ -668,7 +668,7 @@ export default function HeroSceneView() {
 
               <div className="mt-2.5 flex flex-wrap items-baseline gap-5">
                 <span
-                  className="font-display text-7xl font-bold tracking-tight text-ink-primary tabular sm:text-8xl lg:text-[7.25rem] leading-none"
+                  className="font-display text-6xl font-bold tracking-tight text-ink-primary tabular sm:text-7xl lg:text-[6.5rem] xl:text-[7.25rem] leading-none"
                   style={{
                     textShadow: "0 10px 42px rgba(var(--atmos-accent-rgb), 0.22)"
                   }}
@@ -1024,7 +1024,7 @@ export default function HeroSceneView() {
       )}
 
       {/* BÖLÜM 2: BİRLEŞİK SİNOPTİK SAATLİK METEOGRAM & İKON ŞERİDİ */}
-      <section id="saatlik" className="scroll-mt-20 atmos-cv-auto">
+      <section id="saatlik" className="scroll-mt-28 sm:scroll-mt-20 atmos-cv-auto">
         <HourlyForecastStrip
           hourly={bundle.hourly}
           daily={bundle.daily}
@@ -1038,7 +1038,7 @@ export default function HeroSceneView() {
       {/* BÖLÜM 3: 7 GÜNLÜK KALİBRE TAHMİN + GÜNEŞ/UV & HAVA KALİTESİ */}
       <section
         id="haftalik"
-        className="scroll-mt-20 atmos-cv-auto grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]"
+        className="scroll-mt-28 sm:scroll-mt-20 atmos-cv-auto grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]"
       >
         <ExtendedDailyForecastPanel
           daily={bundle.daily}
@@ -1099,7 +1099,7 @@ export default function HeroSceneView() {
 
       {/* BÖLÜM 4: ATMOS-CORE v5.0 — CANLI İSTASYON DOĞRULAMASI & 8-MODEL SKOR KARTI */}
       {bundle.hybrid && (
-        <section id="hibrit" className="scroll-mt-20 atmos-cv-auto surface-panel p-5 sm:p-6 space-y-4">
+        <section id="hibrit" className="scroll-mt-28 sm:scroll-mt-20 atmos-cv-auto surface-panel p-5 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3.5">
             <div>
               <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-signal-sky">

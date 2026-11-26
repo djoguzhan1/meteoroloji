@@ -634,7 +634,13 @@ function ModelComparisonChartBase({
                     <text
                       x={x}
                       y={chart.H - 10}
-                      textAnchor="middle"
+                      textAnchor={
+                        idx === 0
+                          ? "start"
+                          : x > chart.W - chart.padR - 38
+                            ? "end"
+                            : "middle"
+                      }
                       fill="rgba(167, 180, 200, 0.7)"
                       fontSize="10"
                       fontFamily="monospace"

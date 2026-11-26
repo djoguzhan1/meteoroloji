@@ -8,6 +8,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Clock,
+  CloudRain,
   Droplets,
   Gauge,
   Globe,
@@ -56,6 +57,44 @@ const GlobeScene = dynamic(() => import("./GlobeScene"), {
     </div>
   )
 });
+
+function formatRadarNowcastSummary(meta?: {
+  radarSummaryCode?: string;
+  nextRainOnsetMin?: number | null;
+  rainCessationMin?: number | null;
+}): { badge: string; toneClass: string } {
+  const code = meta?.radarSummaryCode ?? "DRY_CLEAR";
+  if (code === "RAIN_ACTIVE") {
+    return {
+      badge: "Aktif Yağış Ekosu",
+      toneClass: "border-sky-400/35 bg-sky-400/12 text-sky-200"
+    };
+  }
+  if (code === "RAIN_ENDING") {
+    const min = meta?.rainCessationMin;
+    return {
+      badge: min ? `Yağış Çekiliyor (~${min} dk)` : "Yağış Zayıflıyor",
+      toneClass: "border-emerald-400/35 bg-emerald-400/12 text-emerald-200"
+    };
+  }
+  if (code === "RAIN_APPROACHING") {
+    const min = meta?.nextRainOnsetMin;
+    return {
+      badge: min ? `Yağış Yaklaşıyor (~${min} dk)` : "Yağış Yaklaşıyor",
+      toneClass: "border-amber-400/35 bg-amber-400/12 text-amber-200"
+    };
+  }
+  if (code === "VIRGA_ALOFT") {
+    return {
+      badge: "Virga (Alt Katmanda Buharlaşma)",
+      toneClass: "border-white/15 bg-white/[0.05] text-ink-secondary"
+    };
+  }
+  return {
+    badge: "Aktif Yağış Ekosu Yok",
+    toneClass: "border-white/10 bg-white/[0.04] text-ink-secondary"
+  };
+}
 
 export default function WorldView() {
   const router = useRouter();
@@ -241,6 +280,14 @@ export default function WorldView() {
     pointBundle &&
       (isOffline || (pointBundle.freshness?.status ?? "live") === "stale")
   );
+  const engineMeta = pointBundle?.hybrid.engineMeta;
+  const nowcastUi = formatRadarNowcastSummary(engineMeta);
+  const liveRainMmHr =
+    typeof engineMeta?.currentRadarRainMmHr === "number" && engineMeta.radarAvailable
+      ? engineMeta.currentRadarRainMmHr
+      : (pointBundle?.current.precipitation ?? 0);
+  const liveRadarDbz =
+    typeof engineMeta?.currentRadarDbz === "number" ? engineMeta.currentRadarDbz : 0;
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
@@ -421,6 +468,39 @@ export default function WorldView() {
                       </span>
                     </div>
                   )}
+                </div>
+
+                {/* Canlı Doppler Radar & 180 dk Nowcast Telemetri Özeti */}
+                <div className="surface-tile p-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="flex items-center gap-1.5 font-medium text-ink-secondary">
+                      <CloudRain className="h-3.5 w-3.5 text-signal-sky" />
+                      <span>Doppler Eko & Nowcast</span>
+                    </span>
+                    <span
+                      className={`rounded-md border px-2 py-0.5 font-mono text-[10px] ${nowcastUi.toneClass}`}
+                    >
+                      {nowcastUi.badge}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-xs tabular">
+                    <span className="text-ink-primary">
+                      {liveRainMmHr > 0 ? `${liveRainMmHr.toFixed(1)} mm/sa` : "0.0 mm/sa"}
+                      <span className="text-ink-muted">
+                        {" "}
+                        · {liveRadarDbz > 0 ? `${liveRadarDbz.toFixed(0)} dBZ` : "0 dBZ"}
+                      </span>
+                    </span>
+                    <span className="text-ink-muted">
+                      {typeof engineMeta?.radarAdvectionSpeedKmh === "number" &&
+                      engineMeta.radarAdvectionSpeedKmh > 0 &&
+                      typeof engineMeta.radarAdvectionFromDeg === "number"
+                        ? `Sürüklenme ${windDirectionToCompass(
+                            engineMeta.radarAdvectionFromDeg
+                          )} ${formatWindSpeed(engineMeta.radarAdvectionSpeedKmh, unit)}`
+                        : `Olasılık %${pointBundle.current.precipProbability}`}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5 text-xs">

@@ -668,18 +668,26 @@ export default function CumulusGameView() {
     [clientToArena, dispatchGameEvents]
   );
 
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const steps = [0.5, 0.75, 0.95];
-    setLaunchRatio((curr) => {
-      const idx = steps.indexOf(curr);
-      const safeIdx = idx === -1 ? 0 : idx;
-      const next =
-        e.deltaY < 0
-          ? Math.min(steps.length - 1, safeIdx + 1)
-          : Math.max(0, safeIdx - 1);
-      return steps[next];
-    });
+  // Non-passive wheel listener on arena canvas so adjusting launch ratio never scrolls the page!
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (Math.abs(e.deltaY) < 4) return;
+      const steps = [0.5, 0.75, 0.95];
+      setLaunchRatio((curr) => {
+        const idx = steps.indexOf(curr);
+        const safeIdx = idx === -1 ? 0 : idx;
+        const next =
+          e.deltaY < 0
+            ? Math.min(steps.length - 1, safeIdx + 1)
+            : Math.max(0, safeIdx - 1);
+        return steps[next];
+      });
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
   }, []);
 
   const currentStage = useMemo(
@@ -804,8 +812,8 @@ export default function CumulusGameView() {
           <div
             className={`relative w-full transition-all duration-300 ${
               showIntro
-                ? "h-[calc(100vh-118px)] min-h-[540px] max-h-[760px]"
-                : "h-[calc(100vh-212px)] min-h-[450px] max-h-[680px]"
+                ? "h-[calc(100svh-196px)] sm:h-[calc(100svh-124px)] min-h-[460px] sm:min-h-[540px] max-h-[760px]"
+                : "h-[calc(100svh-276px)] sm:h-[calc(100svh-214px)] min-h-[400px] sm:min-h-[450px] max-h-[680px]"
             }`}
           >
             <canvas
@@ -814,7 +822,6 @@ export default function CumulusGameView() {
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
-              onWheel={handleWheel}
               onContextMenu={(e) => e.preventDefault()}
               className={`block h-full w-full cursor-crosshair select-none touch-none transition-all duration-700 ease-out ${
                 showIntro && !arenaLockIn

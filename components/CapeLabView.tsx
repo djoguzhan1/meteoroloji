@@ -182,7 +182,7 @@ export default function CapeLabView() {
 
                 {/* MUCAPE / SBCAPE / MLCAPE Göstergesi */}
                 <div className="surface-tile p-4 space-y-2.5">
-                  <div className="flex items-baseline justify-between gap-2">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                     <span className="font-mono text-xs uppercase tracking-wider text-ink-muted">
                       MUCAPE
                     </span>

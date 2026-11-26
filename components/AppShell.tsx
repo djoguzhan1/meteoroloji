@@ -183,7 +183,16 @@ export default function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onResize = () => measureActivePill();
     window.addEventListener("resize", onResize, { passive: true });
-    return () => window.removeEventListener("resize", onResize);
+    const navEl = navContainerRef.current;
+    const ro = navEl ? new ResizeObserver(() => measureActivePill()) : null;
+    if (navEl && ro) ro.observe(navEl);
+    if (typeof document !== "undefined" && document.fonts?.ready) {
+      void document.fonts.ready.then(() => measureActivePill());
+    }
+    return () => {
+      window.removeEventListener("resize", onResize);
+      ro?.disconnect();
+    };
   }, [measureActivePill]);
 
   useEffect(() => {
@@ -247,10 +256,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       {/* Yüzen Optik Cam Üst Bar */}
       <header
-        className={`fixed inset-x-0 top-0 z-40 transition-colors duration-300 ${
+        className={`fixed inset-x-0 top-0 z-50 transition-all duration-300 ${
           scrolled
-            ? "border-b border-white/[0.12] bg-[#050912]/92 shadow-[0_12px_40px_rgba(0,0,0,0.52)] backdrop-blur-xl"
-            : "border-b border-white/[0.09] bg-[#060a14]/82 backdrop-blur-xl"
+            ? "border-b border-white/[0.14] bg-[#050912]/94 shadow-[0_14px_44px_rgba(0,0,0,0.62)] backdrop-blur-2xl"
+            : "border-b border-white/[0.09] bg-[#060a14]/86 backdrop-blur-xl"
         }`}
       >
         <div
@@ -400,8 +409,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {/* İrtifa-Kayması Sayfa Geçiş Sahnesi */}
-      <main className="relative z-10 pb-24 pt-28 sm:pt-20 lg:pb-14">
+      {/* İrtifa-Kayması Sayfa Geçiş Sahnesi (Mobil çift satırlı üst bar ve alt bar için çakışmasız boşluk) */}
+      <main className="relative z-10 pb-28 pt-[110px] sm:pt-[74px] lg:pb-16">
         <ForecastFreshnessBanner />
         <RouteTransitionStage>{children}</RouteTransitionStage>
       </main>
@@ -409,9 +418,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
       {/* Mobil & Tablet Yaylı Alt Navigasyon (< 1024px) */}
       <nav
         aria-label="Mobil sekmeler"
-        className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.1] bg-[#050912]/94 backdrop-blur-xl lg:hidden"
+        className="fixed inset-x-0 bottom-0 z-50 border-t border-white/[0.12] bg-[#050912]/95 shadow-[0_-10px_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl lg:hidden"
       >
-        <div className="relative grid grid-cols-5 gap-1 px-2 py-1.5">
+        <div className="pb-safe-nav relative grid grid-cols-5 gap-1 px-1.5 pt-1.5">
           <span
             aria-hidden="true"
             className="pointer-events-none absolute top-0 h-[2px] w-1/5 px-4 transition-transform duration-300 ease-out"
@@ -434,18 +443,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
               <Link
                 key={href}
                 href={href}
-                className={`flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl text-xs font-medium transition-colors ${
+                className={`flex min-h-[46px] flex-col items-center justify-center gap-1 rounded-xl px-1 text-[10px] sm:text-xs font-medium leading-none transition-all ${
                   active
-                    ? "bg-white/[0.09] text-white"
+                    ? "bg-white/[0.09] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]"
                     : "text-ink-muted hover:text-ink-secondary"
                 }`}
               >
                 <Icon
-                  className={`h-4 w-4 transition-transform ${
+                  className={`h-4 w-4 shrink-0 transition-transform ${
                     active ? "text-[var(--atmos-accent)] scale-110" : ""
                   }`}
                 />
-                <span className="truncate">{label}</span>
+                <span className="max-w-full truncate tracking-tight">{label}</span>
               </Link>
             );
           })}

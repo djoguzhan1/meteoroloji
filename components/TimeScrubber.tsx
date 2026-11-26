@@ -270,7 +270,27 @@ function TimeScrubberBase({
         </div>
       </div>
 
-      <div className="relative">
+      <div className="relative pt-6">
+        {hovered && hoverPctX !== null && (
+          <div
+            className="atmos-hud-glass pointer-events-none absolute top-0 z-20 -translate-x-1/2 flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-0.5 font-mono text-[11px] text-ink-primary tabular"
+            style={{ left: `${Math.max(10, Math.min(90, hoverPctX))}%` }}
+          >
+            <AnimatedWeatherIcon
+              code={hovered.weatherCode}
+              isNight={hovered.solarElevationDeg < -3}
+              precipPhase={hovered.precipPhase}
+              intensityMm={hovered.precipitation}
+              phaseSeed={hoverIdx ?? 0}
+              animated={false}
+              className="h-3.5 w-3.5"
+            />
+            <span>
+              {hovered.dayLabel} {hovered.hourLabel} ·{" "}
+              {formatTemperature(hovered.temperature, unit)} · %{hovered.precipProbability}
+            </span>
+          </div>
+        )}
         <div
           className="relative h-12 w-full cursor-pointer select-none"
           onPointerMove={(e) => {
@@ -285,26 +305,7 @@ function TimeScrubberBase({
             onChange(idx);
           }}
         >
-          {hovered && hoverPctX !== null && (
-            <div
-              className="pointer-events-none absolute -top-8 z-20 -translate-x-1/2 flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-white/15 bg-[#070c17]/96 px-2.5 py-1 font-mono text-[11px] text-ink-primary shadow-lg tabular"
-              style={{ left: `${Math.max(8, Math.min(92, hoverPctX))}%` }}
-            >
-              <AnimatedWeatherIcon
-                code={hovered.weatherCode}
-                isNight={hovered.solarElevationDeg < -3}
-                precipPhase={hovered.precipPhase}
-                intensityMm={hovered.precipitation}
-                phaseSeed={hoverIdx ?? 0}
-                animated={false}
-                className="h-3.5 w-3.5"
-              />
-              <span>
-                {hovered.dayLabel} {hovered.hourLabel} ·{" "}
-                {formatTemperature(hovered.temperature, unit)} · %{hovered.precipProbability}
-              </span>
-            </div>
-          )}
+
 
           <svg
             viewBox={`0 0 ${width} ${height}`}

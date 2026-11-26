@@ -463,6 +463,11 @@ export type AtmosEngineMeta = {
   radarSummaryCode: string;
   nextRainOnsetMin: number | null;
   rainCessationMin: number | null;
+  radarAvailable?: boolean;
+  currentRadarDbz?: number;
+  currentRadarRainMmHr?: number;
+  radarAdvectionSpeedKmh?: number;
+  radarAdvectionFromDeg?: number;
   bursaTier1Online: number;
   ltbrIsolated: boolean;
   marmaraSstC?: number | null;
@@ -546,11 +551,13 @@ export type MultiModelBundle = {
 export type RadarFrame = {
   time: number;
   path: string;
+  isForecast?: boolean;
 };
 
 export type RadarMetadata = {
   host: string;
   generated: number;
+  lastPastIndex?: number;
   frames: RadarFrame[];
   freshness?: DataFreshnessMeta;
 };

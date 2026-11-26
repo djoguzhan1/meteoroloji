@@ -6,7 +6,7 @@
  *  1. Zero-GSAP passive scroll camera rig (`computeSkyScrollRig`)
  *  2. Adaptive WebGL DPR hysteresis governor (`computeAdaptiveDpr`)
  *  3. Hourly meteogram viewport windowing (`computeVirtualHourWindow`)
- *  4. 5-bucket wind particle stroke batching & screen-space bilinear projection (`batchWindSegmentsByBucket`)
+ *  4. Frame-rate-independent, Web-Mercator-accurate 5-bucket wind particle physics (`stepAndBatchWindParticles`)
  */
 
 import type { WindGridBundle } from "./weather-types";
@@ -123,6 +123,30 @@ export interface ViewportGeoBounds {
   eastLon: number;
 }
 
+const DEG_TO_RAD = Math.PI / 180;
+const RAD_TO_DEG = 180 / Math.PI;
+
+export function latToMercatorY(latDeg: number): number {
+  const clamped = Math.max(-85, Math.min(85, latDeg));
+  const rad = clamped * DEG_TO_RAD;
+  return Math.log(Math.tan(Math.PI / 4 + rad / 2));
+}
+
+export function mercatorYToLat(mercY: number): number {
+  return (2 * Math.atan(Math.exp(mercY)) - Math.PI / 2) * RAD_TO_DEG;
+}
+
+/**
+ * Perceptually damped wind streamline velocity in CSS pixels/second.
+ * Calibrated so 25 km/h moves at ~26.5 px/s at zoom 6 regardless of 60Hz/120Hz/144Hz monitor refresh rate.
+ */
+export function computeWindParticleSpeedPxPerSec(speedKmh: number, zoom = 6): number {
+  if (speedKmh <= 0.4) return 0;
+  const clampedZoom = Math.max(3, Math.min(10, zoom));
+  const zoomFactor = 1 + (clampedZoom - 6) * 0.05;
+  return Math.min(72, 2.15 * Math.pow(speedKmh, 0.78) * zoomFactor);
+}
+
 function sampleWindFast(
   grid: WindGridBundle,
   lat: number,
@@ -132,8 +156,13 @@ function sampleWindFast(
   const latSpan = Math.max(0.0001, north - south);
   const lonSpan = Math.max(0.0001, east - west);
 
+  let normLon = lon;
+  if (normLon > 180 && west >= -180 && east <= 180) {
+    normLon -= 360;
+  }
+
   const fy = Math.max(0, Math.min(rows - 1.0001, ((lat - south) / latSpan) * (rows - 1)));
-  const fx = Math.max(0, Math.min(cols - 1.0001, ((lon - west) / lonSpan) * (cols - 1)));
+  const fx = Math.max(0, Math.min(cols - 1.0001, ((normLon - west) / lonSpan) * (cols - 1)));
 
   const r0 = fy | 0;
   const c0 = fx | 0;
@@ -159,9 +188,10 @@ function sampleWindFast(
 }
 
 /**
- * Steps all wind particles in O(N) without per-particle inverse-Mercator `atan(exp())`
- * and groups visible line segments `[x0, y0, x1, y1, ...]` into 5 color buckets so
- * Canvas2D executes at most 5 `ctx.stroke()` calls per frame instead of 1,150.
+ * Steps all wind particles in O(N) with:
+ *  - Exact `dtSec` frame-rate independence (identical speed & lifetime on 60Hz, 120Hz, 144Hz, 240Hz)
+ *  - True Web Mercator Y-axis latitude projection (zero continental latitude skew at zoom 3-5)
+ *  - 5-bucket Canvas2D path batching (at most 5 `ctx.stroke()` calls per frame)
  */
 export function stepAndBatchWindParticles(params: {
   particles: WindParticleState[];
@@ -169,6 +199,8 @@ export function stepAndBatchWindParticles(params: {
   width: number;
   height: number;
   bounds: ViewportGeoBounds;
+  dtSec?: number;
+  zoom?: number;
   rng?: () => number;
 }): [number[], number[], number[], number[], number[]] {
   const { particles, grid, width, height, bounds } = params;
@@ -182,11 +214,16 @@ export function stepAndBatchWindParticles(params: {
   ];
   if (width <= 0 || height <= 0) return buckets;
 
+  const safeDtSec = Math.max(0.001, Math.min(0.05, params.dtSec ?? 1 / 60));
+  const ageStep = safeDtSec * 60;
+  const zoom = params.zoom ?? 6;
+
   const invW = 1 / width;
   const invH = 1 / height;
-  const latSpan = bounds.southLat - bounds.northLat; // y=0 -> northLat, y=height -> southLat
+  const northMercY = latToMercatorY(bounds.northLat);
+  const southMercY = latToMercatorY(bounds.southLat);
+  const mercSpan = southMercY - northMercY;
   const lonSpan = bounds.eastLon - bounds.westLon;
-  const scale = 0.055;
 
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
@@ -194,18 +231,25 @@ export function stepAndBatchWindParticles(params: {
       p.x = rand() * width;
       p.y = rand() * height;
       p.age = 0;
-      p.maxAge = 55 + ((rand() * 55) | 0);
+      p.maxAge = 90 + ((rand() * 75) | 0);
       continue;
     }
 
     const lon = bounds.westLon + p.x * invW * lonSpan;
-    const lat = bounds.northLat + p.y * invH * latSpan;
+    const mercY = northMercY + p.y * invH * mercSpan;
+    const lat = mercatorYToLat(mercY);
     const { u, v, speed } = sampleWindFast(grid, lat, lon);
 
-    const nx = p.x + u * scale;
-    const ny = p.y - v * scale;
+    let nx = p.x;
+    let ny = p.y;
 
     if (speed > 0.4) {
+      const pxPerSec = computeWindParticleSpeedPxPerSec(speed, zoom);
+      const stepPx = pxPerSec * safeDtSec;
+      const invSpd = 1 / speed;
+      nx = p.x + u * invSpd * stepPx;
+      ny = p.y - v * invSpd * stepPx;
+
       const bIdx = classifyWindBucketIndex(speed);
       const arr = buckets[bIdx];
       arr.push(p.x, p.y, nx, ny);
@@ -213,7 +257,7 @@ export function stepAndBatchWindParticles(params: {
 
     p.x = nx;
     p.y = ny;
-    p.age += 1;
+    p.age += ageStep;
   }
 
   return buckets;

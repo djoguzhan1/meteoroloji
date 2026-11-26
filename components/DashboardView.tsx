@@ -105,7 +105,7 @@ function MiniSpark({ temps, id }: { temps: number[]; id: string }) {
   const gradId = `spark-${id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-9 w-32 shrink-0 overflow-visible" aria-hidden="true">
+    <svg viewBox={`0 0 ${w} ${h}`} className="h-9 w-24 sm:w-32 shrink-0 overflow-visible" aria-hidden="true">
       <defs>
         <linearGradient id={gradId} x1="0%" y1="0%" x2="0%" y2="100%">
           <stop offset="0%" stopColor="var(--atmos-accent)" stopOpacity="0.28" />
@@ -473,8 +473,8 @@ export default function DashboardView() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
-      {/* Kompakt Üst Başlık & İstasyon Ekle */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Kompakt Üst Başlık & İstasyon Ekle (z-30 ile CitySearch menüsü tüm cam kartların üstünde açılır) */}
+      <div className="relative z-30 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl">
           İstasyonlar
         </h1>
@@ -685,8 +685,8 @@ export default function DashboardView() {
               </div>
 
               <div className="flex items-center justify-between gap-3">
-                <div>
-                  <span className="font-display text-5xl font-semibold tracking-tight text-ink-primary tabular">
+                <div className="min-w-0 flex-1">
+                  <span className="font-display text-4xl sm:text-5xl font-semibold tracking-tight text-ink-primary tabular">
                     <AnimatedNumber value={formatTemperature(b.current.temperature, unit)} />
                   </span>
                   <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium text-ink-secondary">
@@ -723,7 +723,7 @@ export default function DashboardView() {
                 />
               </div>
 
-              <div className="grid grid-cols-4 gap-1.5 text-[11px]">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
                 <div className="surface-tile px-2 py-2">
                   <span className="flex items-center gap-1 text-ink-muted">
                     <Wind className="h-3 w-3 text-signal-sky" /> Rüzgar
