@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import "./globals.css";
-import { DEFAULT_LOCATION, fetchWeatherBundle } from "@/lib/weather";
+import { fetchWeatherBundle } from "@/lib/weather";
+import { DEFAULT_LOCATION } from "@/lib/weather-client";
 import { WeatherProvider } from "@/context/WeatherContext";
 import AppShell from "@/components/AppShell";
 

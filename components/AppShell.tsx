@@ -1,6 +1,14 @@
 "use client";
 
-import { ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  memo,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -13,17 +21,21 @@ import {
   Radar,
   VolumeX
 } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
+import { useWeatherData, useWeatherScrub } from "@/context/WeatherContext";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import CitySearch from "./CitySearch";
 import AtmosphereAudio from "./AtmosphereAudio";
 import WeatherThemeSync from "./WeatherThemeSync";
 import RouteTransitionStage from "./RouteTransitionStage";
-import CommandPalette from "./CommandPalette";
+import ForecastFreshnessBanner from "./ForecastFreshnessBanner";
 
 const StormScene = dynamic(() => import("./StormScene"), {
   ssr: false,
   loading: () => <div className="fixed inset-0 z-0 bg-obsidian-950" />
+});
+
+const CommandPalette = dynamic(() => import("./CommandPalette"), {
+  ssr: false
 });
 
 const NAV_TABS = [
@@ -34,9 +46,10 @@ const NAV_TABS = [
   { href: "/play", label: "Bulut Savaşı", icon: CloudLightning }
 ] as const;
 
-/** Rüzgar hızıyla orantılı dönen canlı vektör izobar/siklon marka amblemi */
-function AtmosBrandMark({ windSpeed }: { windSpeed: number }) {
-  const durSec = Math.max(5.5, Math.min(20, 22 - windSpeed * 0.25));
+/** İzole marka amblemi: yalnızca kendisi rüzgar hızını dinler; AppShell yeniden çizilmez! */
+const AtmosBrandMark = memo(function AtmosBrandMark() {
+  const { atmosphere } = useWeatherScrub();
+  const durSec = Math.max(5.5, Math.min(20, 22 - atmosphere.windSpeed * 0.25));
   return (
     <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
       <svg
@@ -78,9 +91,36 @@ function AtmosBrandMark({ windSpeed }: { windSpeed: number }) {
       />
     </span>
   );
-}
+});
 
-/** Ses açıkken 4 çubuklu canlı akustik dalga ekolayzırı */
+/** İzole arka plan sahne & ses köprüsü: zaman kaydırıcısı hareket ettiğinde üst menü ve sayfa kabuğu 0 kez render olur! */
+const AtmosSkyAndAudioStage = memo(function AtmosSkyAndAudioStage({
+  skipSkyBackdrop,
+  audioEnabled,
+  muffled
+}: {
+  skipSkyBackdrop: boolean;
+  audioEnabled: boolean;
+  muffled: boolean;
+}) {
+  const { atmosphere } = useWeatherScrub();
+  return (
+    <>
+      {!skipSkyBackdrop ? (
+        <StormScene atmosphere={atmosphere} />
+      ) : (
+        <div className="fixed inset-0 z-0 bg-[#05080f]" />
+      )}
+      <AtmosphereAudio
+        atmosphere={atmosphere}
+        enabled={audioEnabled}
+        volume={0.45}
+        muffled={muffled}
+      />
+    </>
+  );
+});
+
 function LiveAudioEq() {
   return (
     <span className="flex h-4 items-end gap-[2.5px]" aria-hidden="true">
@@ -102,14 +142,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
     audioEnabled,
     setAudioEnabled,
     searchOpen,
-    setSearchOpen,
-    atmosphere
-  } = useWeather();
+    setSearchOpen
+  } = useWeatherData();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMounted, setPaletteMounted] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
-  // Masaüstü yaylı kayan sekme kapsülü ölçümü
+  const openPalette = useCallback(() => {
+    setPaletteMounted(true);
+    setPaletteOpen(true);
+  }, []);
+
   const navContainerRef = useRef<HTMLElement | null>(null);
   const tabRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
   const [pill, setPill] = useState<{ left: number; width: number; ready: boolean }>({
@@ -138,22 +182,25 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onResize = () => measureActivePill();
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", onResize, { passive: true });
     return () => window.removeEventListener("resize", onResize);
   }, [measureActivePill]);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 18);
+    const onScroll = () => {
+      const next = window.scrollY > 18;
+      setScrolled((prev) => (prev === next ? prev : next));
+    };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Global Cmd+K / Ctrl+K kısayolu
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        setPaletteMounted(true);
         setPaletteOpen((v) => !v);
       }
     };
@@ -169,45 +216,46 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative min-h-screen">
-      {/* Canlı Hava Durumu Renk DNA'sı + 60 FPS İmleç Kırılma Takipçisi */}
+      {/* Canlı Hava Durumu Renk DNA'sı + Sıfır-Reflow İmleç Takipçisi */}
       <WeatherThemeSync />
 
-      {/* Gerçek fiziksel 3D gökyüzü sahnesi */}
-      {!skipSkyBackdrop ? (
-        <StormScene atmosphere={atmosphere} />
-      ) : (
-        <div className="fixed inset-0 z-0 bg-[#05080f]" />
-      )}
-
-      {/* Ultra-hafif sinematik film dokusu */}
-      <div
-        aria-hidden="true"
-        className="atmos-grain pointer-events-none fixed inset-0 z-[2] opacity-[0.028] mix-blend-overlay"
-      />
-
-      {/* Opsiyonel ortam sesi (varsayılan kapalı) */}
-      <AtmosphereAudio
-        atmosphere={atmosphere}
-        enabled={audioEnabled}
-        volume={0.45}
+      {/* İzole 3D Gökyüzü + Ortam Sesi Katmanı */}
+      <AtmosSkyAndAudioStage
+        skipSkyBackdrop={skipSkyBackdrop}
+        audioEnabled={audioEnabled}
         muffled={searchOpen || paletteOpen}
       />
 
-      {/* Uzaysal Komut Merkezi (Cmd+K) */}
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      {/* İzole GPU Şimşek Yansıma Katmanı (0 DOM Recalculate Style!) */}
+      <div
+        id="atmos-lightning-flash"
+        aria-hidden="true"
+        style={{ opacity: 0 }}
+        className="pointer-events-none fixed inset-0 z-[1] bg-sky-200 will-change-[opacity]"
+      />
+
+      {/* Sıfır-Filtreli (mix-blend-overlay olmayan) Mikro Optik Doku */}
+      <div
+        aria-hidden="true"
+        className="atmos-grain pointer-events-none fixed inset-0 z-[2] opacity-40"
+      />
+
+      {/* Uzaysal Komut Merkezi (yalnızca ilk açılışta tembel yüklenir) */}
+      {paletteMounted && (
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      )}
 
       {/* Yüzen Optik Cam Üst Bar */}
       <header
-        className={`fixed inset-x-0 top-0 z-40 transition-all duration-300 ${
+        className={`fixed inset-x-0 top-0 z-40 transition-colors duration-300 ${
           scrolled
-            ? "border-b border-white/[0.12] bg-[#050912]/90 shadow-[0_12px_40px_rgba(0,0,0,0.56)] backdrop-blur-2xl"
-            : "border-b border-white/[0.09] bg-[#060a14]/78 backdrop-blur-2xl"
+            ? "border-b border-white/[0.12] bg-[#050912]/92 shadow-[0_12px_40px_rgba(0,0,0,0.52)] backdrop-blur-xl"
+            : "border-b border-white/[0.09] bg-[#060a14]/82 backdrop-blur-xl"
         }`}
       >
-        {/* Canlı Atmosferik Ufuk Işık Çizgisi */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-px opacity-70 transition-opacity duration-500"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-px opacity-70"
           style={{
             background:
               "linear-gradient(90deg, transparent 5%, rgba(var(--atmos-accent-rgb), 0.45) 50%, transparent 95%)"
@@ -220,12 +268,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
               href="/"
               className="group flex shrink-0 items-center gap-2 font-display text-base font-bold tracking-[0.14em] text-ink-primary"
             >
-              <AtmosBrandMark windSpeed={atmosphere.windSpeed} />
+              <AtmosBrandMark />
               <span className="transition-colors group-hover:text-white">ATMOS</span>
-              <span className="rounded bg-white/[0.08] px-1.5 py-0.5 font-mono text-[10px] font-semibold tracking-normal text-[var(--atmos-accent)]">v4.5</span>
             </Link>
 
-            {/* Yay Fiziksel Kayan Kapsüllü Masaüstü Sekmeler */}
             <nav
               ref={navContainerRef}
               aria-label="Ana sekmeler"
@@ -239,7 +285,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                     transform: `translate3d(${pill.left}px, 0, 0)`,
                     width: `${pill.width}px`,
                     transition:
-                      "transform 380ms cubic-bezier(0.34, 1.38, 0.64, 1), width 380ms cubic-bezier(0.34, 1.38, 0.64, 1)"
+                      "transform 340ms cubic-bezier(0.34, 1.38, 0.64, 1), width 340ms cubic-bezier(0.34, 1.38, 0.64, 1)"
                   }}
                 >
                   <span
@@ -289,10 +335,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
             </div>
             <button
               type="button"
-              onClick={() => setPaletteOpen(true)}
+              onClick={openPalette}
               title="Komut Merkezini Aç (Ctrl+K)"
               aria-label="Komut Merkezini Aç"
-              className="atmos-btn hidden md:flex h-9 items-center gap-1 rounded-xl border border-white/12 bg-[#070d19]/65 px-2.5 font-mono text-[11px] text-slate-300 hover:text-white"
+              className="atmos-btn hidden md:flex h-9 items-center gap-1 rounded-xl border border-white/12 bg-[#070d19]/75 px-2.5 font-mono text-[11px] text-slate-300 hover:text-white"
             >
               <Command className="h-3 w-3" />
               <span>K</span>
@@ -312,7 +358,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               className={`atmos-btn flex h-9 w-9 items-center justify-center rounded-xl border ${
                 audioEnabled
                   ? "border-[rgba(var(--atmos-accent-rgb),0.5)] bg-[rgba(var(--atmos-accent-rgb),0.16)] text-[var(--atmos-accent)]"
-                  : "border-white/12 bg-[#070d19]/65 text-slate-300 hover:text-white"
+                  : "border-white/12 bg-[#070d19]/75 text-slate-300 hover:text-white"
               }`}
             >
               {audioEnabled ? <LiveAudioEq /> : <VolumeX className="h-4 w-4" />}
@@ -326,7 +372,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               }}
               aria-label="Sıcaklık birimini değiştir"
               title="Birim değiştir (°C / °F)"
-              className="atmos-btn relative flex h-9 w-10 items-center justify-center rounded-xl border border-white/12 bg-[#070d19]/65 font-mono text-xs font-semibold text-ink-primary"
+              className="atmos-btn relative flex h-9 w-10 items-center justify-center rounded-xl border border-white/12 bg-[#070d19]/75 font-mono text-xs font-semibold text-ink-primary"
             >
               <span className="block h-[18px] overflow-hidden">
                 <span
@@ -356,16 +402,16 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       {/* İrtifa-Kayması Sayfa Geçiş Sahnesi */}
       <main className="relative z-10 pb-24 pt-28 sm:pt-20 lg:pb-14">
+        <ForecastFreshnessBanner />
         <RouteTransitionStage>{children}</RouteTransitionStage>
       </main>
 
       {/* Mobil & Tablet Yaylı Alt Navigasyon (< 1024px) */}
       <nav
         aria-label="Mobil sekmeler"
-        className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.1] bg-[#050912]/92 backdrop-blur-2xl lg:hidden"
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.1] bg-[#050912]/94 backdrop-blur-xl lg:hidden"
       >
         <div className="relative grid grid-cols-5 gap-1 px-2 py-1.5">
-          {/* Kayan alt gösterge */}
           <span
             aria-hidden="true"
             className="pointer-events-none absolute top-0 h-[2px] w-1/5 px-4 transition-transform duration-300 ease-out"
@@ -388,7 +434,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               <Link
                 key={href}
                 href={href}
-                className={`flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl text-xs font-medium transition-all ${
+                className={`flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl text-xs font-medium transition-colors ${
                   active
                     ? "bg-white/[0.09] text-white"
                     : "text-ink-muted hover:text-ink-secondary"
@@ -399,7 +445,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                     active ? "text-[var(--atmos-accent)] scale-110" : ""
                   }`}
                 />
-                <span className="truncate">{label.split(" ")[0]}</span>
+                <span className="truncate">{label}</span>
               </Link>
             );
           })}

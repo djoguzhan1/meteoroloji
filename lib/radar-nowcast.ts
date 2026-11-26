@@ -28,12 +28,6 @@ function getNodeZlib(): NodeZlibSubset | null {
 const RADAR_UA =
   'Mozilla/5.0 (compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)';
 
-export interface RadarFrameMeta {
-  timeUnixSec: number;
-  path: string;
-  isNowcastFrame: boolean;
-}
-
 export interface DecodedPngTile {
   width: number;
   height: number;

@@ -1,16 +1,31 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { ChevronDown, ChevronUp, Clock, Layers, RefreshCw } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
+import { useWeatherData, useWeatherStatus } from "@/context/WeatherContext";
 import { analyzeConvectiveProfile } from "@/lib/thermo-cape";
-import { windDirectionToCompass } from "@/lib/weather";
-import ModelComparisonChart from "./ModelComparisonChart";
-import SkewTCanvas from "./SkewTCanvas";
+import { windDirectionToCompass } from "@/lib/weather-client";
+const ModelComparisonChart = dynamic(() => import("./ModelComparisonChart"), {
+  loading: () => (
+    <div className="surface-panel p-8 text-center font-mono text-xs text-ink-muted">
+      8-Model sinoptik karşılaştırma grafiği hazırlanıyor...
+    </div>
+  )
+});
+const SkewTCanvas = dynamic(() => import("./SkewTCanvas"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[340px] items-center justify-center rounded-xl border border-white/[0.06] bg-obsidian-950/60 font-mono text-xs text-ink-muted">
+      Skew-T Log-P diyagramı çiziliyor...
+    </div>
+  )
+});
 import AnimatedNumber from "./AnimatedNumber";
 
 export default function CapeLabView() {
-  const { bundle, activeLocation, unit, error, refreshWeather } = useWeather();
+  const { bundle, activeLocation, unit } = useWeatherData();
+  const { error, isStale, isOffline, loading, refreshWeather } = useWeatherStatus();
   const [soundingPick, setSoundingPick] = useState<{ locId: string; idx: number }>({
     locId: activeLocation.id,
     idx: 0
@@ -62,7 +77,7 @@ export default function CapeLabView() {
     });
   }, [bundle, safeIdx, selectedHour, selectedLevels]);
 
-  const quickJumps = [0, 3, 6, 12, 24, 36, 47].filter((h) => h <= maxSoundingIdx);
+  const quickJumps = [0, 3, 6, 12, 24, 36, 48, 60, 71].filter((h) => h <= maxSoundingIdx);
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
@@ -72,18 +87,20 @@ export default function CapeLabView() {
           Modeller &amp; Sondaj
         </h1>
         <p className="mt-1 text-xs sm:text-sm text-ink-secondary">
-          {activeLocation.name} · 7 Tier-1 model karşılaştırması ve 48 saatlik Skew-T radyosonda
+          {activeLocation.name} · 8 küresel ve mezoskaleli model karşılaştırması ile 72 saatlik Skew-T radyosonda
         </p>
       </div>
 
       {/* 1. Bölüm: Gerçek 72 Saatlik ECMWF / GFS / ICON Çoklu Model Karşılaştırması */}
       <ModelComparisonChart location={activeLocation} unit={unit} />
 
-      {/* 2. Bölüm: Gerçek 48 Saatlik Radyosonda (1000 → 300 hPa) */}
+      {/* 2. Bölüm: Gerçek 72 Saatlik Radyosonda (1000 → 300 hPa) */}
       {!bundle || !analysis ? (
         <div className="surface-panel p-8 text-center space-y-3">
           <p className="text-sm text-ink-secondary">
-            {error ?? "Dikey atmosfer sondaj verileri şu an yüklenemedi."}
+            {loading && !error
+              ? `${activeLocation.name} için dikey sondaj profili hazırlanıyor...`
+              : (error ?? "Bu konum için kayıtlı sondaj önbelleği yok; bağlantı sağlandığında otomatik yüklenecek.")}
           </p>
           <button
             type="button"
@@ -95,14 +112,19 @@ export default function CapeLabView() {
         </div>
       ) : (
         <div className="space-y-5">
-          {/* 48 Saatlik Gerçek Sondaj Zaman Çubuğu */}
+          {/* 72 Saatlik Gerçek Sondaj Zaman Çubuğu */}
           <div className="surface-panel p-4 sm:p-5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Clock className="h-4 w-4 text-signal-sky" />
                 <span className="font-display text-sm font-semibold text-ink-primary">
-                  48 Saatlik Gerçek Radyosonda Profili (1000 → 300 hPa)
+                  {maxSoundingIdx + 1} Saatlik Gerçek Radyosonda Profili (1000 → 300 hPa)
                 </span>
+                {(isStale || isOffline) && (
+                  <span className="rounded-md border border-signal-amber/35 bg-signal-amber/12 px-2 py-0.5 font-mono text-[10px] text-amber-200">
+                    Arşiv Profili
+                  </span>
+                )}
               </div>
               <div className="font-mono text-xs text-ink-secondary tabular">
                 {safeIdx === 0

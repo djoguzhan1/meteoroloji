@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import CumulusGameView from "@/components/CumulusGameView";
+import PlayPageClient from "@/components/PlayPageClient";
 
 export const metadata: Metadata = {
   title: "CUMULUS · Bulut Savaşı | ATMOS",
@@ -8,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function PlayPage() {
-  return <CumulusGameView />;
+  return <PlayPageClient />;
 }

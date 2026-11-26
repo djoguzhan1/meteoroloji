@@ -10,14 +10,25 @@ import {
   ArrowUpRight,
   Bell,
   BellOff,
+  Clock,
   Droplets,
   Plus,
   RefreshCw,
   Trash2,
   Wind
 } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
-import { formatTemperature, formatWindSpeed } from "@/lib/weather";
+import { useWeatherData, useWeatherStatus } from "@/context/WeatherContext";
+import {
+  readCachedWeatherBundleAsync,
+  readCachedWeatherBundleSync,
+  writeCachedWeatherBundle
+} from "@/lib/client-forecast-cache";
+import {
+  areLocationsEquivalent,
+  formatFreshnessAgeTr,
+  reanchorWeatherBundleToNow
+} from "@/lib/forecast-resilience";
+import { formatTemperature, formatWindSpeed } from "@/lib/weather-client";
 import type {
   AlertMetric,
   GeoLocation,
@@ -42,7 +53,8 @@ function formatLocalClock(timezone: string): string {
   }
 }
 
-function stationAccentBorder(bundle: WeatherBundle): string {
+function stationAccentBorder(bundle: WeatherBundle, isStaleCard: boolean): string {
+  if (isStaleCard) return "border-t-signal-amber/55";
   if (bundle.current.isStorm) return "border-t-signal-amber/70";
   if (bundle.current.precipType !== "none") return "border-t-signal-sky/60";
   return "border-t-white/10";
@@ -182,6 +194,7 @@ function evaluateRule(
 export default function DashboardView() {
   const router = useRouter();
   const {
+    bundle: activeContextBundle,
     favorites,
     addFavorite,
     removeFavorite,
@@ -191,7 +204,8 @@ export default function DashboardView() {
     removeAlert,
     toggleAlert,
     unit
-  } = useWeather();
+  } = useWeatherData();
+  const { recoveryCount, isOffline } = useWeatherStatus();
 
   const [cityBundles, setCityBundles] = useState<Record<string, WeatherBundle>>({});
   const [failedCities, setFailedCities] = useState<Record<string, string>>({});
@@ -214,68 +228,152 @@ export default function DashboardView() {
     ? alertCityId
     : (favorites[0]?.id ?? "");
 
-  const fetchCityList = useCallback(async (list: GeoLocation[], forceAll = false) => {
-    const seq = ++fetchSeqRef.current;
-    const toFetch = forceAll
-      ? list
-      : list.filter((loc) => !bundlesRef.current[loc.id]);
+  const fetchCityList = useCallback(
+    async (list: GeoLocation[], forceAll = false) => {
+      const seq = ++fetchSeqRef.current;
 
-    // Silinen istasyonları temizle
-    const activeIds = new Set(list.map((l) => l.id));
-    setCityBundles((prev) => {
-      const pruned: Record<string, WeatherBundle> = {};
-      for (const [k, v] of Object.entries(prev)) {
-        if (activeIds.has(k)) pruned[k] = v;
-      }
-      return pruned;
-    });
-
-    if (toFetch.length === 0) return;
-
-    setLoadingMap(true);
-    const nextFailed: Record<string, string> = {};
-
-    const CONCURRENCY = 2;
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < toFetch.length) {
-        if (seq !== fetchSeqRef.current) return;
-        const loc = toFetch[cursor++];
-        try {
-          const qs = new URLSearchParams({
-            lat: String(loc.lat),
-            lon: String(loc.lon),
-            name: loc.name,
-            country: loc.country ?? ""
-          });
-          if (loc.elevation !== undefined && Number.isFinite(loc.elevation)) {
-            qs.set("elevation", String(Math.round(loc.elevation)));
-          }
-          const res = await fetch(`/api/weather?${qs.toString()}`);
-          if (seq !== fetchSeqRef.current) return;
-          if (!res.ok) {
-            nextFailed[loc.id] = `HTTP ${res.status}`;
-            continue;
-          }
-          const data: WeatherBundle = await res.json();
-          if (seq !== fetchSeqRef.current) return;
-          const merged = { ...data, location: { ...data.location, ...loc } };
-          setCityBundles((prev) => ({ ...prev, [loc.id]: merged }));
-        } catch {
-          if (seq === fetchSeqRef.current) nextFailed[loc.id] = "Bağlantı hatası";
+      // 1. Pre-hydrate missing cities synchronously from L4 browser vault or active context bundle
+      const nowMs = Date.now();
+      const hydratedSeed: Record<string, WeatherBundle> = {};
+      for (const loc of list) {
+        if (bundlesRef.current[loc.id]) continue;
+        if (
+          activeContextBundle &&
+          areLocationsEquivalent(activeContextBundle.location, loc)
+        ) {
+          hydratedSeed[loc.id] = {
+            ...activeContextBundle,
+            location: { ...activeContextBundle.location, ...loc }
+          };
+          continue;
+        }
+        const syncHit = readCachedWeatherBundleSync(loc, nowMs, {
+          forceStale: isOffline
+        });
+        if (syncHit) {
+          hydratedSeed[loc.id] = syncHit;
         }
       }
-    };
 
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, toFetch.length) }, () => worker())
-    );
+      const activeIds = new Set(list.map((l) => l.id));
+      setCityBundles((prev) => {
+        const mergedMap: Record<string, WeatherBundle> = { ...hydratedSeed };
+        for (const [k, v] of Object.entries(prev)) {
+          if (activeIds.has(k)) mergedMap[k] = v;
+        }
+        bundlesRef.current = mergedMap;
+        return mergedMap;
+      });
 
-    if (seq === fetchSeqRef.current) {
-      setFailedCities(nextFailed);
-      setLoadingMap(false);
-    }
-  }, []);
+      const toFetch = forceAll
+        ? list
+        : list.filter((loc) => {
+            const cur = bundlesRef.current[loc.id];
+            if (!cur) return true;
+            // Revalidate any cached/stale station in background if online
+            return (cur.freshness?.status ?? "live") !== "live";
+          });
+
+      if (toFetch.length === 0) return;
+
+      setLoadingMap(true);
+      const nextFailed: Record<string, string> = {};
+
+      const CONCURRENCY = 2;
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < toFetch.length) {
+          if (seq !== fetchSeqRef.current) return;
+          const loc = toFetch[cursor++];
+          try {
+            const qs = new URLSearchParams({
+              lat: String(loc.lat),
+              lon: String(loc.lon),
+              name: loc.name,
+              country: loc.country ?? ""
+            });
+            const res = await fetch(`/api/weather?${qs.toString()}`, {
+              cache: forceAll ? "no-store" : "default"
+            });
+            if (seq !== fetchSeqRef.current) return;
+            if (!res.ok) {
+              throw new Error(`HTTP ${res.status}`);
+            }
+            const data: WeatherBundle = await res.json();
+            if (seq !== fetchSeqRef.current) return;
+            const merged: WeatherBundle = {
+              ...data,
+              location: { ...data.location, ...loc }
+            };
+            if ((merged.freshness?.status ?? "live") === "live") {
+              writeCachedWeatherBundle(merged);
+            }
+            setCityBundles((prev) => {
+              const next = { ...prev, [loc.id]: merged };
+              bundlesRef.current = next;
+              return next;
+            });
+          } catch (err) {
+            if (seq !== fetchSeqRef.current) return;
+            const errText =
+              err instanceof Error ? err.message : "Bağlantı hatası";
+            const existing = bundlesRef.current[loc.id];
+            if (existing) {
+              const reanchored = reanchorWeatherBundleToNow(
+                existing,
+                Date.now(),
+                {
+                  status: "stale",
+                  sourceTier:
+                    existing.freshness?.sourceTier === "live"
+                      ? "client-cache"
+                      : (existing.freshness?.sourceTier ?? "client-cache"),
+                  cachedAtMs:
+                    existing.freshness?.cachedAtMs ??
+                    Date.parse(existing.fetchedAt),
+                  staleReason: errText,
+                  modelsRespondedCount: existing.hybrid.activeModels.length
+                }
+              );
+              setCityBundles((prev) => {
+                const next = { ...prev, [loc.id]: reanchored };
+                bundlesRef.current = next;
+                return next;
+              });
+            } else {
+              const idbFallback = await readCachedWeatherBundleAsync(
+                loc,
+                Date.now(),
+                { forceStale: true, staleReason: errText }
+              );
+              if (seq !== fetchSeqRef.current) return;
+              if (idbFallback) {
+                setCityBundles((prev) => {
+                  const next = { ...prev, [loc.id]: idbFallback };
+                  bundlesRef.current = next;
+                  return next;
+                });
+              } else {
+                nextFailed[loc.id] = errText;
+              }
+            }
+          }
+        }
+      };
+
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, toFetch.length) }, () =>
+          worker()
+        )
+      );
+
+      if (seq === fetchSeqRef.current) {
+        setFailedCities(nextFailed);
+        setLoadingMap(false);
+      }
+    },
+    [activeContextBundle, isOffline]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -286,6 +384,37 @@ export default function DashboardView() {
       cancelled = true;
     };
   }, [favorites, fetchCityList]);
+
+  // Auto-refresh stale or failed station cards when global live connectivity recovers
+  useEffect(() => {
+    if (recoveryCount <= 0) return;
+    queueMicrotask(() => {
+      void fetchCityList(favorites, true);
+    });
+  }, [recoveryCount, favorites, fetchCityList]);
+
+  const hasImpairedStation = useMemo(
+    () =>
+      Object.keys(failedCities).length > 0 ||
+      Object.values(cityBundles).some(
+        (b) => (b.freshness?.status ?? "live") !== "live"
+      ),
+    [cityBundles, failedCities]
+  );
+
+  useEffect(() => {
+    if (isOffline || !hasImpairedStation || loadingMap) return;
+    const timer = window.setTimeout(() => {
+      const targetCities = favorites.filter((c) => {
+        const b = bundlesRef.current[c.id];
+        return !b || (b.freshness?.status ?? "live") !== "live";
+      });
+      if (targetCities.length > 0) {
+        void fetchCityList(favorites, true);
+      }
+    }, 20_000);
+    return () => window.clearTimeout(timer);
+  }, [isOffline, hasImpairedStation, loadingMap, favorites, fetchCityList]);
 
   const loadedList = useMemo(
     () =>
@@ -479,7 +608,7 @@ export default function DashboardView() {
                   )}
                 </div>
                 <p className="text-xs text-ink-secondary">
-                  Veri alınamadı ({err}).
+                  Kayıtlı önbellek yok ({err}). Bağlantı sağlandığında otomatik yüklenecek.
                 </p>
                 <button
                   type="button"
@@ -505,17 +634,28 @@ export default function DashboardView() {
             );
           }
 
+          const isStaleCard =
+            isOffline || (b.freshness?.status ?? "live") === "stale";
+
           return (
             <article
               key={city.id}
               style={{ backgroundImage: stationAmbientGlow(b) }}
-              className={`surface-panel border-t-2 p-5 flex flex-col justify-between space-y-4 transition-all duration-300 hover:-translate-y-1 hover:border-white/25 ${stationAccentBorder(b)}`}
+              className={`surface-panel border-t-2 p-5 flex flex-col justify-between space-y-4 transition-all duration-300 hover:-translate-y-1 hover:border-white/25 ${stationAccentBorder(b, isStaleCard)}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <h2 className="font-display text-lg font-semibold text-ink-primary">
-                    {city.name}
-                  </h2>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-display text-lg font-semibold text-ink-primary">
+                      {city.name}
+                    </h2>
+                    {isStaleCard && (
+                      <span className="inline-flex items-center gap-1 rounded-md border border-signal-amber/35 bg-signal-amber/12 px-1.5 py-0.5 font-mono text-[10px] text-amber-200 tabular">
+                        <Clock className="h-2.5 w-2.5 text-signal-amber" />
+                        <span>Arşiv · {formatFreshnessAgeTr(b.fetchedAt)}</span>
+                      </span>
+                    )}
+                  </div>
                   <p className="font-mono text-[11px] text-ink-muted tabular">
                     {city.country} · Yerel {formatLocalClock(b.timezone)} ·{" "}
                     {b.current.pressure} hPa{" "}
@@ -553,12 +693,14 @@ export default function DashboardView() {
                     <AnimatedWeatherIcon
                       code={b.current.weatherCode}
                       isNight={b.current.solarElevationDeg < -3}
+                      precipPhase={b.current.precipPhase}
+                      intensityMm={b.current.precipitation}
                       className="h-4 w-4"
                     />
                     <span>{b.current.condition}</span>
-                    {b.hybrid?.atmosV4 && (
+                    {b.hybrid?.engineMeta && (
                       <span className="rounded border border-signal-emerald/30 bg-signal-emerald/10 px-1.5 py-0.5 font-mono text-[10px] text-signal-emerald">
-                        %{b.hybrid.atmosV4.stabilityPct} Kilitli
+                        %{b.hybrid.engineMeta.stabilityPct} Kilitli
                       </span>
                     )}
                     {b.storm && b.storm.score >= 35 && (

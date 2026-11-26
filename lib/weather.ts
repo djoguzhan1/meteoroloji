@@ -6,28 +6,47 @@ import {
   mapMeshToMetarObservations
 } from "./bursa-mesh";
 import {
-  classifyBursaSynopticRegime,
-  computeBursaDistrictMicroclimateOffsetC,
-  interpolateTopographicSurface
-} from "./topographic-cressman";
-import {
-  diagnosePhysicalVisibilityM,
-  fetchBursa9PointStencil,
-  fetchMarmaraLiveSst,
-  type PressureLevelSlice,
-  solveVerticalColumnPhysics
-} from "./vertical-physics";
-import {
-  blendNowcastWithHourlyNwp,
-  fetchBursaRadarNowcast
-} from "./radar-nowcast";
-import { fusePrecipitationPmqm } from "./emos-precip-fusion";
-import {
+  type BimodalEnsembleClusterResult,
   type BursaPhysicalStepDrivers,
   predictBursaTrainedPrecip,
   predictBursaTrainedTempC,
   resolveBimodalEnsembleCluster
 } from "./bursa-trained-emos";
+import {
+  buildCalibratedSubseasonalOutlook,
+  calibrateExtendedSynopticHour,
+  computeDailyClimatologyNormals,
+  fetchRawSubseasonalEnsemble,
+  resetSubseasonalCacheForTests,
+  summarizeDailyBimodalSplits
+} from "./extended-horizon";
+import {
+  areLocationsEquivalent,
+  buildFreshnessMeta,
+  reanchorMultiModelBundleToNow,
+  reanchorWeatherBundleToNow
+} from "./forecast-resilience";
+import {
+  blendKalmanCorrectedScalar,
+  getLeadTimeWeights,
+  trainKalmanMos
+} from "./kalman-mos";
+import { fetchMetarNetworkHistory } from "./metar-verify";
+import {
+  CORE_MODEL_KEYS,
+  CORE_MODEL_META,
+  WMO_PRIOR_WEIGHTS
+} from "./model-registry";
+import {
+  classifyPrecipPhase,
+  computeEnsembleDistStats,
+  fusePrecipitationHour,
+  fusePrecipitationPmqm
+} from "./precip-engine";
+import {
+  blendNowcastWithHourlyNwp,
+  fetchBursaRadarNowcast
+} from "./radar-nowcast";
 import {
   evaluateHourlyRunConsistency,
   fetchOpenMeteoLaggedRuns,
@@ -46,6 +65,17 @@ import {
   saveCalibratedRunToLedger
 } from "./state-ledger";
 import {
+  getModelsSnapshotFromDisk,
+  getWeatherSnapshotFromDisk,
+  saveModelsSnapshotToDisk,
+  saveWeatherSnapshotToDisk
+} from "./snapshot-store";
+import {
+  buildStormAssessment,
+  evaluateHourlyStormRisk,
+  type HourlyStormEvalResult
+} from "./storm-engine";
+import {
   analyzeConvectiveProfile,
   computeEnvironmentalLapseRateCPerM,
   dewPointMagnus,
@@ -53,30 +83,38 @@ import {
   wetBulbStullC
 } from "./thermo-cape";
 import {
-  clearMetarCache,
-  fetchMetarNetworkHistory,
-  SEVEN_MODEL_KEYS,
-  SEVEN_MODEL_META,
-  WMO_PRIOR_WEIGHTS
-} from "./metar-verify";
+  classifyBursaSynopticRegime,
+  computeBursaDistrictMicroclimateOffsetC,
+  interpolateTopographicSurface
+} from "./topographic-cressman";
 import {
-  blendKalmanCorrectedScalar,
-  getLeadTimeWeights,
-  trainKalmanMos
-} from "./kalman-mos";
+  diagnosePhysicalVisibilityM,
+  fetchBursa9PointStencil,
+  fetchMarmaraLiveSst,
+  type PressureLevelSlice,
+  solveVerticalColumnPhysics
+} from "./vertical-physics";
 import {
-  classifyPrecipPhase,
-  computeEnsembleDistStats,
-  fusePrecipitationHour
-} from "./precip-engine";
-import {
-  buildStormAssessment,
-  evaluateHourlyStormRisk,
-  type HourlyStormEvalResult
-} from "./storm-engine";
+  blendHybridParameter,
+  blendWindDirectionDeg,
+  classifyPressureTrend,
+  classifyUvIndex,
+  computeHybridConfidence,
+  computePrecipConsensus,
+  computeSolarElevationDeg,
+  DEFAULT_LOCATION,
+  describePressureTrendDetail,
+  detectDominantPollutant,
+  mapEuropeanAqi,
+  mapWmoCodeToLabel,
+  mapWmoToPrecipType,
+  solarElevationToDaylight,
+  windDirectionToCompass,
+  windKmhToBeaufort
+} from "./weather-client";
 import type {
   AirQualityDetail,
-  BeaufortInfo,
+  CoreModelKey,
   DailyPoint,
   EnsembleBand,
   GeoLocation,
@@ -87,494 +125,12 @@ import type {
   Minutely15Point,
   ModelSeriesPoint,
   MultiModelBundle,
-  PrecipitationConsensus,
   PrecipPhase,
-  PrecipType,
-  PressureTrend,
   RadarMetadata,
-  SevenModelKey,
   SoundingLevel,
-  SynopticSignal,
-  UnitSystem,
   WeatherBundle,
   WindGridBundle
 } from "./weather-types";
-
-export const DEFAULT_LOCATION: GeoLocation = {
-  id: "bursa-tr",
-  name: process.env.DEFAULT_CITY ?? "Bursa",
-  admin1: "Bursa",
-  country: "Türkiye",
-  countryCode: "TR",
-  lat: Number(process.env.DEFAULT_LAT ?? "40.1885"),
-  lon: Number(process.env.DEFAULT_LON ?? "29.0610"),
-  elevation: 155,
-  timezone: "Europe/Istanbul"
-};
-
-export const PRESET_CITIES: GeoLocation[] = [
-  DEFAULT_LOCATION,
-  {
-    id: "istanbul-tr",
-    name: "İstanbul",
-    admin1: "İstanbul",
-    country: "Türkiye",
-    countryCode: "TR",
-    lat: 41.0082,
-    lon: 28.9784,
-    elevation: 40,
-    timezone: "Europe/Istanbul"
-  },
-  {
-    id: "ankara-tr",
-    name: "Ankara",
-    admin1: "Ankara",
-    country: "Türkiye",
-    countryCode: "TR",
-    lat: 39.9334,
-    lon: 32.8597,
-    elevation: 890,
-    timezone: "Europe/Istanbul"
-  },
-  {
-    id: "izmir-tr",
-    name: "İzmir",
-    admin1: "İzmir",
-    country: "Türkiye",
-    countryCode: "TR",
-    lat: 38.4237,
-    lon: 27.1428,
-    elevation: 25,
-    timezone: "Europe/Istanbul"
-  },
-  {
-    id: "trabzon-tr",
-    name: "Trabzon",
-    admin1: "Trabzon",
-    country: "Türkiye",
-    countryCode: "TR",
-    lat: 41.0027,
-    lon: 39.7168,
-    elevation: 39,
-    timezone: "Europe/Istanbul"
-  }
-];
-
-export const GLOBE_CITIES: GeoLocation[] = [
-  ...PRESET_CITIES,
-  {
-    id: "london-gb",
-    name: "Londra",
-    country: "Birleşik Krallık",
-    countryCode: "GB",
-    lat: 51.5072,
-    lon: -0.1276,
-    timezone: "Europe/London"
-  },
-  {
-    id: "tokyo-jp",
-    name: "Tokyo",
-    country: "Japonya",
-    countryCode: "JP",
-    lat: 35.6762,
-    lon: 139.6503,
-    timezone: "Asia/Tokyo"
-  },
-  {
-    id: "newyork-us",
-    name: "New York",
-    country: "ABD",
-    countryCode: "US",
-    lat: 40.7128,
-    lon: -74.006,
-    timezone: "America/New_York"
-  },
-  {
-    id: "reykjavik-is",
-    name: "Reykjavik",
-    country: "İzlanda",
-    countryCode: "IS",
-    lat: 64.1466,
-    lon: -21.9426,
-    timezone: "Atlantic/Reykjavik"
-  },
-  {
-    id: "sydney-au",
-    name: "Sidney",
-    country: "Avustralya",
-    countryCode: "AU",
-    lat: -33.8688,
-    lon: 151.2093,
-    timezone: "Australia/Sydney"
-  }
-];
-
-function fractionalYearRad(dateUtc: Date): number {
-  const year = dateUtc.getUTCFullYear();
-  const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-  const daysInYear = isLeap ? 366 : 365;
-  const startOfYear = Date.UTC(year, 0, 1);
-  const dayOfYear = Math.floor((dateUtc.getTime() - startOfYear) / 86400000);
-  const utcHours =
-    dateUtc.getUTCHours() +
-    dateUtc.getUTCMinutes() / 60 +
-    dateUtc.getUTCSeconds() / 3600;
-  return ((2 * Math.PI) / daysInYear) * (dayOfYear + (utcHours - 12) / 24);
-}
-
-export function computeEquationOfTimeMin(dateUtc: Date): number {
-  const g = fractionalYearRad(dateUtc);
-  return (
-    229.18 *
-    (0.000075 +
-      0.001868 * Math.cos(g) -
-      0.032077 * Math.sin(g) -
-      0.014615 * Math.cos(2 * g) -
-      0.040849 * Math.sin(2 * g))
-  );
-}
-
-export function computeSolarDeclinationRad(dateUtc: Date): number {
-  const g = fractionalYearRad(dateUtc);
-  return (
-    0.006918 -
-    0.399912 * Math.cos(g) +
-    0.070257 * Math.sin(g) -
-    0.006758 * Math.cos(2 * g) +
-    0.000907 * Math.sin(2 * g) -
-    0.002697 * Math.cos(3 * g) +
-    0.00148 * Math.sin(3 * g)
-  );
-}
-
-export function computeSolarElevationDeg(
-  lat: number,
-  lon: number,
-  dateUtc: Date
-): number {
-  const eqtime = computeEquationOfTimeMin(dateUtc);
-  const decl = computeSolarDeclinationRad(dateUtc);
-  const latRad = (lat * Math.PI) / 180;
-
-  const utcMinutes =
-    dateUtc.getUTCHours() * 60 +
-    dateUtc.getUTCMinutes() +
-    dateUtc.getUTCSeconds() / 60;
-  const trueSolarTimeMin = (utcMinutes + eqtime + 4 * lon + 1440) % 1440;
-  const hourAngleDeg = trueSolarTimeMin / 4 - 180;
-  const hourAngleRad = (hourAngleDeg * Math.PI) / 180;
-
-  const sinElev =
-    Math.sin(latRad) * Math.sin(decl) +
-    Math.cos(latRad) * Math.cos(decl) * Math.cos(hourAngleRad);
-  const trueElevDeg =
-    (Math.asin(Math.max(-1, Math.min(1, sinElev))) * 180) / Math.PI;
-
-  let refractionDeg = 0;
-  if (trueElevDeg > -0.575 && trueElevDeg < 85) {
-    const tanVal = Math.tan(((trueElevDeg + 10.3 / (trueElevDeg + 5.11)) * Math.PI) / 180);
-    refractionDeg = 1.02 / (60 * tanVal);
-  }
-  return trueElevDeg + refractionDeg;
-}
-
-export function solarElevationToDaylight(elevDeg: number): number {
-  if (elevDeg <= -8) return 0;
-  if (elevDeg >= 35) return 1;
-  return Number(((elevDeg + 8) / 43).toFixed(3));
-}
-
-export function computeSubsolarPoint(dateUtc: Date): { lat: number; lon: number } {
-  const declRad = computeSolarDeclinationRad(dateUtc);
-  const eqtimeMin = computeEquationOfTimeMin(dateUtc);
-  const utcMinutes =
-    dateUtc.getUTCHours() * 60 +
-    dateUtc.getUTCMinutes() +
-    dateUtc.getUTCSeconds() / 60;
-  const lat = (declRad * 180) / Math.PI;
-  let lon = (720 - utcMinutes - eqtimeMin) / 4;
-  while (lon > 180) lon -= 360;
-  while (lon < -180) lon += 360;
-  return { lat, lon };
-}
-
-export function mapWmoCodeToLabel(code: number): string {
-  if (code === 0) return "Açık";
-  if (code === 1) return "Az Bulutlu";
-  if (code === 2) return "Parçalı Bulutlu";
-  if (code === 3) return "Çok Bulutlu";
-  if (code === 45 || code === 48) return "Sisli";
-  if (code >= 51 && code <= 57) return "Çiseleyen Yağmur";
-  if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return "Yağmurlu";
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "Kar Yağışlı";
-  if (code >= 95) return "Gök Gürültülü Sağanak";
-  return "Değişken";
-}
-
-export function mapWmoToPrecipType(
-  code: number,
-  rainMm = 0,
-  snowCm = 0
-): PrecipType {
-  if (snowCm > 0 || (code >= 71 && code <= 77) || code === 85 || code === 86) {
-    return "snow";
-  }
-  if (
-    rainMm > 0 ||
-    (code >= 51 && code <= 67) ||
-    (code >= 80 && code <= 82) ||
-    code >= 95
-  ) {
-    return "rain";
-  }
-  return "none";
-}
-
-export function mapEuropeanAqi(aqi: number): {
-  categoryIndex: 1 | 2 | 3 | 4 | 5 | 6;
-  label: string;
-} {
-  if (aqi <= 20) return { categoryIndex: 1, label: "İyi" };
-  if (aqi <= 40) return { categoryIndex: 2, label: "Makul" };
-  if (aqi <= 60) return { categoryIndex: 3, label: "Orta" };
-  if (aqi <= 80) return { categoryIndex: 4, label: "Kötü" };
-  if (aqi <= 100) return { categoryIndex: 5, label: "Çok Kötü" };
-  return { categoryIndex: 6, label: "Aşırı Kötü" };
-}
-
-export function detectDominantPollutant(aq: {
-  pm25: number;
-  pm10: number;
-  ozone: number;
-  no2: number;
-  so2: number;
-}): { dominantPollutant: string; dominantValueText: string } {
-  const scoreBands = (val: number, bands: [number, number, number, number, number]): number => {
-    if (val <= bands[0]) return (val / bands[0]) * 20;
-    if (val <= bands[1]) return 20 + ((val - bands[0]) / (bands[1] - bands[0])) * 20;
-    if (val <= bands[2]) return 40 + ((val - bands[1]) / (bands[2] - bands[1])) * 20;
-    if (val <= bands[3]) return 60 + ((val - bands[2]) / (bands[3] - bands[2])) * 20;
-    if (val <= bands[4]) return 80 + ((val - bands[3]) / (bands[4] - bands[3])) * 20;
-    return 100 + ((val - bands[4]) / bands[4]) * 20;
-  };
-
-  const candidates = [
-    { name: "PM2.5", score: scoreBands(aq.pm25, [5, 15, 50, 90, 140]), text: `${aq.pm25} µg/m³` },
-    { name: "PM10", score: scoreBands(aq.pm10, [15, 45, 90, 180, 270]), text: `${aq.pm10} µg/m³` },
-    { name: "O₃", score: scoreBands(aq.ozone, [50, 100, 130, 240, 380]), text: `${aq.ozone} µg/m³` },
-    { name: "NO₂", score: scoreBands(aq.no2, [10, 40, 90, 120, 230]), text: `${aq.no2} µg/m³` },
-    { name: "SO₂", score: scoreBands(aq.so2, [50, 100, 200, 350, 500]), text: `${aq.so2} µg/m³` }
-  ];
-
-  candidates.sort((a, b) => b.score - a.score);
-  return {
-    dominantPollutant: candidates[0].name,
-    dominantValueText: candidates[0].text
-  };
-}
-
-export function classifyPressureTrend(delta3h: number): PressureTrend {
-  if (delta3h >= 3.6) return "hızlı yükseliyor";
-  if (delta3h >= 0.5) return "yükseliyor";
-  if (delta3h <= -3.6) return "hızlı düşüyor";
-  if (delta3h <= -0.5) return "düşüyor";
-  return "sabit";
-}
-
-export function describePressureTrendDetail(delta3h: number): string {
-  const abs = Math.abs(delta3h);
-  if (abs < 0.5) return "Sabit barometre";
-  if (abs < 1.6) return delta3h > 0 ? "Yavaş yükseliyor" : "Yavaş düşüyor";
-  if (abs < 3.6) return delta3h > 0 ? "Belirgin yükseliş" : "Belirgin düşüş";
-  if (abs < 6.0) return delta3h > 0 ? "Hızlı yükseliş" : "Hızlı düşüş (cephe)";
-  return delta3h > 0 ? "Çok hızlı yükseliş" : "Şiddetli düşüş (siklon)";
-}
-
-export function windKmhToBeaufort(kmh: number): BeaufortInfo {
-  if (kmh < 1) return { scale: 0, label: "Sakin" };
-  if (kmh < 6) return { scale: 1, label: "Çok hafif" };
-  if (kmh < 12) return { scale: 2, label: "Hafif esinti" };
-  if (kmh < 20) return { scale: 3, label: "Hafif rüzgar" };
-  if (kmh < 29) return { scale: 4, label: "Orta rüzgar" };
-  if (kmh < 39) return { scale: 5, label: "Sertçe rüzgar" };
-  if (kmh < 50) return { scale: 6, label: "Kuvvetli rüzgar" };
-  if (kmh < 62) return { scale: 7, label: "Fırtınamsı" };
-  if (kmh < 75) return { scale: 8, label: "Fırtına" };
-  if (kmh < 89) return { scale: 9, label: "Kuvvetli fırtına" };
-  if (kmh < 103) return { scale: 10, label: "Tam fırtına" };
-  if (kmh < 118) return { scale: 11, label: "Şiddetli fırtına" };
-  return { scale: 12, label: "Kasırga" };
-}
-
-export function classifyUvIndex(uv: number): string {
-  if (uv < 3) return "Düşük";
-  if (uv < 6) return "Orta";
-  if (uv < 8) return "Yüksek";
-  if (uv < 11) return "Çok Yüksek";
-  return "Aşırı";
-}
-
-export function windDirectionToCompass(deg: number): string {
-  const dirs = ["K", "KD", "D", "GD", "G", "GB", "B", "KB"];
-  const normalized = ((deg % 360) + 360) % 360;
-  return dirs[Math.round(normalized / 45) % 8];
-}
-
-export function blendWindDirectionDeg(
-  dirs: HybridModelSnapshot,
-  weights: Partial<Record<SevenModelKey, number>>,
-  fallbackDeg: number
-): number {
-  let sumSin = 0;
-  let sumCos = 0;
-  let wSum = 0;
-
-  for (const key of SEVEN_MODEL_KEYS) {
-    const d = dirs[key];
-    const w = weights[key] ?? 0;
-    if (d !== null && d !== undefined && Number.isFinite(d) && w > 0) {
-      const rad = (d * Math.PI) / 180;
-      sumSin += Math.sin(rad) * w;
-      sumCos += Math.cos(rad) * w;
-      wSum += w;
-    }
-  }
-
-  if (wSum <= 0 || (Math.abs(sumSin) < 1e-6 && Math.abs(sumCos) < 1e-6)) {
-    return ((Math.round(fallbackDeg) % 360) + 360) % 360;
-  }
-
-  const avgDeg = (Math.atan2(sumSin, sumCos) * 180) / Math.PI;
-  return Math.round(((avgDeg % 360) + 360) % 360);
-}
-
-export function formatTemperature(celsius: number, unit: UnitSystem): string {
-  if (unit === "imperial") {
-    return `${Math.round((celsius * 9) / 5 + 32)}°F`;
-  }
-  return `${Math.round(celsius)}°`;
-}
-
-export function formatWindSpeed(kmh: number, unit: UnitSystem): string {
-  if (unit === "imperial") {
-    return `${Math.round(kmh * 0.621371)} mph`;
-  }
-  return `${Math.round(kmh)} km/s`;
-}
-
-export function formatLatLon(lat: number, lon: number, decimals = 2): string {
-  const latHem = lat >= 0 ? "K" : "G";
-  const lonHem = lon >= 0 ? "D" : "B";
-  return `${Math.abs(lat).toFixed(decimals)}°${latHem} · ${Math.abs(lon).toFixed(decimals)}°${lonHem}`;
-}
-
-export function computeSynopticSignals(params: {
-  pressureDelta3h: number;
-  temp850hPa: number | null;
-  thickness5001000Dam?: number | null;
-  windGustsKmh: number;
-  cape: number | null;
-  isStorm: boolean;
-  europeanAqi: number;
-  dominantPollutant: string;
-  uvIndex: number;
-  freezingLevelM: number | null;
-  temperatureC: number;
-  stormScore?: number;
-  scp?: number;
-}): SynopticSignal[] {
-  const signals: SynopticSignal[] = [];
-
-  if (Math.abs(params.pressureDelta3h) >= 3.0) {
-    const dropping = params.pressureDelta3h < 0;
-    signals.push({
-      id: "pressure-tendency",
-      severity: dropping ? "warning" : "info",
-      title: dropping ? "Hızlı Basınç Düşüşü" : "Hızlı Basınç Yükselişi",
-      detail: `${params.pressureDelta3h > 0 ? "+" : ""}${params.pressureDelta3h} hPa/3s · ${
-        dropping ? "Aktif cephe geçişi" : "Cephe arkası yüksek basınç"
-      }`
-    });
-  }
-
-  if (
-    params.isStorm ||
-    (params.stormScore !== undefined && params.stormScore >= 40) ||
-    (params.cape !== null && params.cape >= 1000)
-  ) {
-    const scpText =
-      params.scp !== undefined && params.scp >= 1.0 ? ` · SCP ${params.scp.toFixed(1)}` : "";
-    signals.push({
-      id: "convective",
-      severity: "warning",
-      title: params.isStorm ? "Aktif Oraj / Sağanak" : "Konvektif Kararsızlık",
-      detail:
-        params.cape !== null && params.cape > 0
-          ? `MUCAPE ${params.cape} J/kg${scpText}`
-          : "Şimşek & gök gürültülü sağanak"
-    });
-  }
-
-  if (params.windGustsKmh >= 50) {
-    const bft = windKmhToBeaufort(params.windGustsKmh);
-    signals.push({
-      id: "wind-gusts",
-      severity: params.windGustsKmh >= 70 ? "warning" : "caution",
-      title: "Kuvvetli Rüzgar Hamlesi",
-      detail: `Hamle ${Math.round(params.windGustsKmh)} km/s · Bft ${bft.scale}`
-    });
-  }
-
-  if (
-    (params.temp850hPa !== null && params.temp850hPa <= 0) ||
-    (params.thickness5001000Dam !== undefined &&
-      params.thickness5001000Dam !== null &&
-      params.thickness5001000Dam <= 542)
-  ) {
-    const parts: string[] = [];
-    if (params.temp850hPa !== null) parts.push(`850 hPa ${params.temp850hPa}°C`);
-    if (
-      params.thickness5001000Dam !== undefined &&
-      params.thickness5001000Dam !== null
-    ) {
-      parts.push(`Kalınlık ${params.thickness5001000Dam} dam`);
-    }
-    if (params.freezingLevelM !== null) parts.push(`0°C: ${params.freezingLevelM} m`);
-    signals.push({
-      id: "cold-snow-threshold",
-      severity: "info",
-      title: "Soğuk Hava / Kar Eşiği",
-      detail: parts.join(" · ")
-    });
-  } else if (params.temperatureC <= 1.5) {
-    signals.push({
-      id: "frost",
-      severity: "caution",
-      title: "Don & Buzlanma Eşiği",
-      detail: `Yüzey ${params.temperatureC.toFixed(1)}°C`
-    });
-  }
-
-  if (params.europeanAqi >= 61) {
-    signals.push({
-      id: "air-quality",
-      severity: params.europeanAqi >= 81 ? "warning" : "caution",
-      title: "Hava Kalitesi Kötü",
-      detail: `EAQI ${params.europeanAqi} · Baskın ${params.dominantPollutant}`
-    });
-  }
-
-  if (params.uvIndex >= 6) {
-    signals.push({
-      id: "uv-high",
-      severity: params.uvIndex >= 8 ? "warning" : "caution",
-      title: `UV ${params.uvIndex.toFixed(1)} (${classifyUvIndex(params.uvIndex)})`,
-      detail: "WHO güneş korunma eşiği"
-    });
-  }
-
-  return signals.slice(0, 4);
-}
 
 const DAY_NAMES_TR = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
 
@@ -585,23 +141,123 @@ function formatDayName(dateIso: string, index: number): string {
   return DAY_NAMES_TR[d.getDay()] ?? dateIso.slice(5);
 }
 
-type CacheEntry<T> = { value: T; expiresAt: number };
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+  staleUntil: number;
+  cachedAtMs: number;
+};
 const weatherCache = new Map<string, CacheEntry<WeatherBundle>>();
 const modelCache = new Map<string, CacheEntry<MultiModelBundle>>();
 const windGridCache = new Map<string, CacheEntry<WindGridBundle>>();
 let radarCache: CacheEntry<RadarMetadata> | null = null;
 
 const WEATHER_TTL_MS = 5 * 60 * 1000;
+const WEATHER_STALE_MS = 24 * 60 * 60 * 1000;
+const WEATHER_DEGRADED_TTL_MS = 90 * 1000;
 const MODEL_TTL_MS = 10 * 60 * 1000;
+const MODEL_STALE_MS = 24 * 60 * 60 * 1000;
 const WIND_GRID_TTL_MS = 5 * 60 * 1000;
+const WIND_GRID_STALE_MS = 6 * 60 * 60 * 1000;
 const RADAR_TTL_MS = 2 * 60 * 1000;
+const RADAR_STALE_MS = 2 * 60 * 60 * 1000;
 
-export function clearWeatherCache(): void {
+function mergeLocationIdentity(base: GeoLocation, req: GeoLocation): GeoLocation {
+  return {
+    ...base,
+    id: req.id || base.id,
+    name: req.name || base.name,
+    admin1: req.admin1 ?? base.admin1,
+    country: req.country || base.country
+  };
+}
+
+function findMemoryWeatherEntry(
+  location: GeoLocation,
+  exactKey: string,
+  nowMs: number
+): CacheEntry<WeatherBundle> | null {
+  const direct = weatherCache.get(exactKey);
+  if (direct && direct.staleUntil > nowMs) return direct;
+
+  let best: CacheEntry<WeatherBundle> | null = null;
+  for (const entry of weatherCache.values()) {
+    if (entry.staleUntil <= nowMs) continue;
+    if (areLocationsEquivalent(entry.value.location, location)) {
+      if (!best || entry.cachedAtMs > best.cachedAtMs) {
+        best = entry;
+      }
+    }
+  }
+  return best;
+}
+
+function resolveStaleWeatherFallback(
+  location: GeoLocation,
+  exactKey: string,
+  reason: string,
+  nowMs = Date.now()
+): WeatherBundle | null {
+  const memEntry = findMemoryWeatherEntry(location, exactKey, nowMs);
+  if (memEntry) {
+    return reanchorWeatherBundleToNow(
+      {
+        ...memEntry.value,
+        location: mergeLocationIdentity(memEntry.value.location, location)
+      },
+      nowMs,
+      {
+        status: "stale",
+        sourceTier: "memory-stale",
+        cachedAtMs: memEntry.cachedAtMs,
+        staleReason: reason,
+        modelsRespondedCount: memEntry.value.hybrid.activeModels.length
+      }
+    );
+  }
+
+  const diskHit = getWeatherSnapshotFromDisk(location.lat, location.lon, nowMs);
+  if (diskHit) {
+    return reanchorWeatherBundleToNow(
+      {
+        ...diskHit.bundle,
+        location: mergeLocationIdentity(diskHit.bundle.location, location)
+      },
+      nowMs,
+      {
+        status: "stale",
+        sourceTier: "disk-stale",
+        cachedAtMs: diskHit.savedAtMs,
+        staleReason: reason,
+        modelsRespondedCount: diskHit.bundle.hybrid.activeModels.length
+      }
+    );
+  }
+
+  return null;
+}
+
+export function resetWeatherRuntimeCachesForTests(): void {
   weatherCache.clear();
   modelCache.clear();
   windGridCache.clear();
   radarCache = null;
-  clearMetarCache();
+  resetSubseasonalCacheForTests();
+}
+
+export function expireWeatherRuntimeCachesForTests(): void {
+  for (const [k, v] of weatherCache.entries()) {
+    weatherCache.set(k, { ...v, expiresAt: 0 });
+  }
+  for (const [k, v] of modelCache.entries()) {
+    modelCache.set(k, { ...v, expiresAt: 0 });
+  }
+  for (const [k, v] of windGridCache.entries()) {
+    windGridCache.set(k, { ...v, expiresAt: 0 });
+  }
+  if (radarCache) {
+    radarCache = { ...radarCache, expiresAt: 0 };
+  }
 }
 
 const PRESSURE_LEVEL_META: Array<{ hpa: number; stdAltM: number }> = [
@@ -622,59 +278,6 @@ function localIsoToUtcDate(localIso: string, utcOffsetSeconds: number): Date {
 
 function localIsoToUtcHourKey(localIso: string, utcOffsetSeconds: number): string {
   return localIsoToUtcDate(localIso, utcOffsetSeconds).toISOString().slice(0, 16);
-}
-
-export function blendHybridParameter(
-  snapshot: HybridModelSnapshot,
-  weights: Partial<Record<SevenModelKey, number>>,
-  fallback: number
-): number {
-  let num = 0;
-  let den = 0;
-  for (const key of SEVEN_MODEL_KEYS) {
-    const val = snapshot[key];
-    const w = weights[key] ?? 0;
-    if (val !== null && val !== undefined && Number.isFinite(val) && w > 0) {
-      num += val * w;
-      den += w;
-    }
-  }
-  if (den <= 0) return fallback;
-  return num / den;
-}
-
-export function computePrecipConsensus(
-  snapshot: HybridModelSnapshot
-): PrecipitationConsensus {
-  const vals = SEVEN_MODEL_KEYS.map((k) => snapshot[k])
-    .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v))
-    .sort((a, b) => a - b);
-
-  if (vals.length === 0) {
-    return { agreeingModels: 0, totalModels: 0, minMm: 0, medianMm: 0, maxMm: 0 };
-  }
-
-  const mid = Math.floor(vals.length / 2);
-  const median =
-    vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
-  const agreeing = vals.filter((v) => v >= 0.1).length;
-
-  return {
-    agreeingModels: agreeing,
-    totalModels: vals.length,
-    minMm: Number(vals[0].toFixed(1)),
-    medianMm: Number(median.toFixed(1)),
-    maxMm: Number(vals[vals.length - 1].toFixed(1))
-  };
-}
-
-export function computeHybridConfidence(
-  tempSpreadC: number,
-  pressureSpreadHpa: number
-): number {
-  const tempPenalty = Math.max(0, tempSpreadC - 0.6) * 5.8;
-  const pressPenalty = Math.max(0, pressureSpreadHpa - 0.6) * 4.2;
-  return Math.round(Math.max(45, Math.min(99, 99 - tempPenalty - pressPenalty)));
 }
 
 async function fetchWithRetry(
@@ -708,16 +311,16 @@ function toFiniteNum(v: unknown): number | null {
 }
 
 function spreadOf(snap: HybridModelSnapshot): number {
-  const vals = SEVEN_MODEL_KEYS.map((k) => snap[k]).filter(
+  const vals = CORE_MODEL_KEYS.map((k) => snap[k]).filter(
     (v): v is number => v !== null && v !== undefined && Number.isFinite(v)
   );
   if (vals.length < 2) return 0;
   return Number((Math.max(...vals) - Math.min(...vals)).toFixed(1));
 }
 
-function formatWeightsLabel(weights: Record<SevenModelKey, number>): string {
-  return SEVEN_MODEL_KEYS.map((k) => ({
-    name: SEVEN_MODEL_META[k].shortLabel,
+function formatWeightsLabel(weights: Record<CoreModelKey, number>): string {
+  return CORE_MODEL_KEYS.map((k) => ({
+    name: CORE_MODEL_META[k].shortLabel,
     pct: Math.round(weights[k] * 100)
   }))
     .sort((a, b) => b.pct - a.pct)
@@ -726,12 +329,12 @@ function formatWeightsLabel(weights: Record<SevenModelKey, number>): string {
     .join(" · ");
 }
 
-function topModelLabel(weights: Record<SevenModelKey, number>): string {
-  let best: SevenModelKey = "ecmwfIfs";
-  for (const k of SEVEN_MODEL_KEYS) {
+function topModelLabel(weights: Record<CoreModelKey, number>): string {
+  let best: CoreModelKey = "ecmwfIfs";
+  for (const k of CORE_MODEL_KEYS) {
     if (weights[k] > weights[best]) best = k;
   }
-  return SEVEN_MODEL_META[best].label;
+  return CORE_MODEL_META[best].label;
 }
 
 type EnsembleIndex = {
@@ -835,17 +438,26 @@ export async function fetchWeatherBundle(
 ): Promise<WeatherBundle> {
   const elevTag = location.elevation !== undefined ? Math.round(location.elevation) : "auto";
   const key = `${location.lat.toFixed(3)},${location.lon.toFixed(3)},${elevTag}`;
+  const entryNowMs = Date.now();
   const cached = weatherCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return {
-      ...cached.value,
-      location: {
-        ...cached.value.location,
-        id: location.id,
-        name: location.name || cached.value.location.name,
-        country: location.country || cached.value.location.country
+  if (cached && cached.expiresAt > entryNowMs) {
+    return reanchorWeatherBundleToNow(
+      {
+        ...cached.value,
+        location: mergeLocationIdentity(cached.value.location, location)
+      },
+      entryNowMs,
+      {
+        status: cached.value.freshness?.status ?? "live",
+        sourceTier: cached.value.freshness?.sourceTier ?? "live",
+        cachedAtMs: cached.cachedAtMs,
+        staleReason: cached.value.freshness?.staleReason,
+        degradedStreams: cached.value.freshness?.degradedStreams,
+        modelsRespondedCount:
+          cached.value.freshness?.modelsRespondedCount ??
+          cached.value.hybrid.activeModels.length
       }
-    };
+    );
   }
 
   const isBursaDomain = isWithinBursaDomain(location.lat, location.lon);
@@ -868,7 +480,7 @@ export async function fetchWeatherBundle(
     forecastUrl.searchParams.set("elevation", String(Math.round(location.elevation)));
   }
   forecastUrl.searchParams.set("timezone", "auto");
-  forecastUrl.searchParams.set("forecast_days", "8");
+  forecastUrl.searchParams.set("forecast_days", "16");
   forecastUrl.searchParams.set("forecast_minutely_15", "24");
   forecastUrl.searchParams.set(
     "current",
@@ -956,7 +568,7 @@ export async function fetchWeatherBundle(
   }
   hybridUrl.searchParams.set("timezone", "GMT");
   hybridUrl.searchParams.set("past_days", "3");
-  hybridUrl.searchParams.set("forecast_days", "8");
+  hybridUrl.searchParams.set("forecast_days", "16");
   hybridUrl.searchParams.set(
     "models",
     "ecmwf_ifs,ecmwf_aifs025_single,icon_seamless,ukmo_seamless,meteofrance_seamless,gfs_seamless,gem_seamless,jma_seamless,ecmwf_ifs025,icon_global"
@@ -975,7 +587,7 @@ export async function fetchWeatherBundle(
     ensembleUrl.searchParams.set("elevation", String(Math.round(location.elevation)));
   }
   ensembleUrl.searchParams.set("timezone", "GMT");
-  ensembleUrl.searchParams.set("forecast_days", "8");
+  ensembleUrl.searchParams.set("forecast_days", "16");
   ensembleUrl.searchParams.set(
     "models",
     "ecmwf_ifs025,ecmwf_aifs025,icon_seamless,gfs_seamless,gem_global,ukmo_global_ensemble_20km"
@@ -1003,9 +615,10 @@ export async function fetchWeatherBundle(
     mgmForecasts,
     marmaraSstBundle,
     bursaStencilMap,
-    laggedRunsMap
+    laggedRunsMap,
+    rawSubseasonal
   ] = await Promise.all([
-    fetchWithRetry(forecastUrl.toString(), 11000, 1),
+    fetchWithRetry(forecastUrl.toString(), 11000, 1).catch(() => null),
     fetchWithRetry(hybridUrl.toString(), 10000, 1).catch(() => null),
     fetchWithRetry(ensembleUrl.toString(), 9500, 1).catch(() => null),
     fetchWithRetry(aqiUrl.toString(), 8000, 1).catch(() => null),
@@ -1024,18 +637,43 @@ export async function fetchWeatherBundle(
       lat: location.lat,
       lon: location.lon,
       elevationM: location.elevation,
-      forecastDays: 8
-    }).catch(() => new Map())
+      forecastDays: 15
+    }).catch(() => new Map()),
+    fetchRawSubseasonalEnsemble({
+      lat: location.lat,
+      lon: location.lon,
+      elevationM: location.elevation
+    }).catch(() => null)
   ]);
 
-  if (!forecastRes.ok) {
-    throw new Error(`Open-Meteo forecast HTTP ${forecastRes.status}`);
+  if (!forecastRes || !forecastRes.ok) {
+    const failReason = forecastRes
+      ? `Ana model servisi HTTP ${forecastRes.status} yanıtı verdi`
+      : "Ana model servisine bağlantı kurulamadı";
+    const staleBundle = resolveStaleWeatherFallback(location, key, failReason, Date.now());
+    if (staleBundle) return staleBundle;
+    throw new Error(
+      forecastRes
+        ? `Open-Meteo forecast HTTP ${forecastRes.status}`
+        : "Open-Meteo forecast unreachable"
+    );
   }
 
-  const fJson = await forecastRes.json();
-  const hJson = hybridRes && hybridRes.ok ? await hybridRes.json() : null;
-  const eJson = ensRes && ensRes.ok ? await ensRes.json() : null;
-  const aJson = aqiRes && aqiRes.ok ? await aqiRes.json() : null;
+  const fJson = await forecastRes.json().catch(() => null);
+  if (!fJson || !Array.isArray(fJson?.hourly?.time) || fJson.hourly.time.length === 0) {
+    const staleBundle = resolveStaleWeatherFallback(
+      location,
+      key,
+      "Ana model verisi eksik veya kesik alındı",
+      Date.now()
+    );
+    if (staleBundle) return staleBundle;
+    throw new Error("Open-Meteo forecast payload invalid");
+  }
+
+  const hJson = hybridRes && hybridRes.ok ? await hybridRes.json().catch(() => null) : null;
+  const eJson = ensRes && ensRes.ok ? await ensRes.json().catch(() => null) : null;
+  const aJson = aqiRes && aqiRes.ok ? await aqiRes.json().catch(() => null) : null;
 
   const cur = fJson.current ?? {};
   const hourlyRaw = fJson.hourly ?? {};
@@ -1182,6 +820,9 @@ export async function fetchWeatherBundle(
         primaryStationAgeMin: mappedBursaStations[0].ageMinutes,
         primaryStationDistKm: mappedBursaStations[0].distanceKm
       };
+      if (bursaMesh.tier1OnlineCount > 0) {
+        mos.report.mode = "live-mgm-mesh";
+      }
       mos.report.station = mappedBursaStations[0];
       mos.report.stations = mappedBursaStations;
       mos.summary.active = true;
@@ -1241,7 +882,7 @@ export async function fetchWeatherBundle(
   });
 
   const laggedSeriesList = [...laggedRunsMap.values()];
-  const v4ConsistencyTrack: HourlyConsistencyOutput[] = [];
+  const consistencyTrack: HourlyConsistencyOutput[] = [];
   let firstHourVertPhys: ReturnType<typeof solveVerticalColumnPhysics> | null = null;
   let bimodalHoursResolved = 0;
 
@@ -1265,24 +906,24 @@ export async function fetchWeatherBundle(
     }
     const ifsPrimary = useIfs025ForIfs
       ? toFiniteNum(hybridHourly[`${prefix}_ecmwf_ifs025`]?.[hIdx])
-      : toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.ecmwfIfs.apiModel}`]?.[hIdx]) ??
+      : toFiniteNum(hybridHourly[`${prefix}_${CORE_MODEL_META.ecmwfIfs.apiModel}`]?.[hIdx]) ??
         toFiniteNum(hybridHourly[`${prefix}_ecmwf_ifs025`]?.[hIdx]);
     const iconPrimary =
-      toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.icon.apiModel}`]?.[hIdx]) ??
+      toFiniteNum(hybridHourly[`${prefix}_${CORE_MODEL_META.icon.apiModel}`]?.[hIdx]) ??
       toFiniteNum(hybridHourly[`${prefix}_icon_global`]?.[hIdx]);
     return {
       ecmwfIfs: ifsPrimary,
       ecmwfAifs: toFiniteNum(
-        hybridHourly[`${prefix}_${SEVEN_MODEL_META.ecmwfAifs.apiModel}`]?.[hIdx]
+        hybridHourly[`${prefix}_${CORE_MODEL_META.ecmwfAifs.apiModel}`]?.[hIdx]
       ),
       icon: iconPrimary,
-      ukmo: toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.ukmo.apiModel}`]?.[hIdx]),
+      ukmo: toFiniteNum(hybridHourly[`${prefix}_${CORE_MODEL_META.ukmo.apiModel}`]?.[hIdx]),
       meteofrance: toFiniteNum(
-        hybridHourly[`${prefix}_${SEVEN_MODEL_META.meteofrance.apiModel}`]?.[hIdx]
+        hybridHourly[`${prefix}_${CORE_MODEL_META.meteofrance.apiModel}`]?.[hIdx]
       ),
-      gfs: toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.gfs.apiModel}`]?.[hIdx]),
-      gem: toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.gem.apiModel}`]?.[hIdx]),
-      jma: toFiniteNum(hybridHourly[`${prefix}_jma_seamless`]?.[hIdx])
+      gfs: toFiniteNum(hybridHourly[`${prefix}_${CORE_MODEL_META.gfs.apiModel}`]?.[hIdx]),
+      gem: toFiniteNum(hybridHourly[`${prefix}_${CORE_MODEL_META.gem.apiModel}`]?.[hIdx]),
+      jma: toFiniteNum(hybridHourly[`${prefix}_${CORE_MODEL_META.jma.apiModel}`]?.[hIdx])
     };
   };
 
@@ -1292,7 +933,7 @@ export async function fetchWeatherBundle(
     : [];
   const hybridTempMedians: number[] = hybridUtcList.map((uKey) => {
     const sn = readExtendedModelSnapshot("temperature_2m", uKey);
-    const vals = [...SEVEN_MODEL_KEYS.map((k) => sn[k]), sn.jma]
+    const vals = CORE_MODEL_KEYS.map((k) => sn[k])
       .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v))
       .sort((a, b) => a - b);
     if (vals.length === 0) return Number(cur.temperature_2m ?? 15);
@@ -1301,7 +942,7 @@ export async function fetchWeatherBundle(
   });
   const hybridPrecipMedians: number[] = hybridUtcList.map((uKey) => {
     const sn = readExtendedModelSnapshot("precipitation", uKey);
-    const vals = [...SEVEN_MODEL_KEYS.map((k) => sn[k]), sn.jma]
+    const vals = CORE_MODEL_KEYS.map((k) => sn[k])
       .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v))
       .map((v) => Math.max(0, v))
       .sort((a, b) => a - b);
@@ -1311,7 +952,7 @@ export async function fetchWeatherBundle(
   });
   const hybridPrecipWetFracs: number[] = hybridUtcList.map((uKey) => {
     const sn = readExtendedModelSnapshot("precipitation", uKey);
-    const vals = [...SEVEN_MODEL_KEYS.map((k) => sn[k]), sn.jma].filter(
+    const vals = CORE_MODEL_KEYS.map((k) => sn[k]).filter(
       (v): v is number => v !== null && v !== undefined && Number.isFinite(v)
     );
     return vals.length > 0 ? vals.filter((v) => v >= 0.2).length / vals.length : 0;
@@ -1378,7 +1019,7 @@ export async function fetchWeatherBundle(
     const pressPrev3Snap = readExtendedModelSnapshot("pressure_msl", prev3Key);
 
     const meanSnap = (sn: HybridModelSnapshot, fb: number | null): number | null => {
-      const vals = [...SEVEN_MODEL_KEYS.map((k) => sn[k]), sn.jma].filter(
+      const vals = CORE_MODEL_KEYS.map((k) => sn[k]).filter(
         (v): v is number => v !== null && v !== undefined && Number.isFinite(v)
       );
       return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : fb;
@@ -1541,6 +1182,12 @@ export async function fetchWeatherBundle(
   let rainAccum = 0;
   let snowAccum = 0;
   const hourly: HourlyPoint[] = [];
+  const extendedSynopticHours: HourlyPoint[] = [];
+  const hourBimodalByTime = new Map<string, BimodalEnsembleClusterResult | null>();
+  const hourMetaByTime = new Map<
+    string,
+    { activeModels: number; ensMembers: number; confidencePct: number }
+  >();
   const hourlySoundings: SoundingLevel[][] = [];
   const hourlyStormEvals: HourlyStormEvalResult[] = [];
   const hourlyPrecipTrack: number[] = [];
@@ -1739,9 +1386,10 @@ export async function fetchWeatherBundle(
       if (bimodal.isBimodal) {
         physAdjustedTemp = bimodal.adjustedTempC;
         bimodalHoursResolved++;
+        hourBimodalByTime.set(timeStr, bimodal);
       } else if (bursaEmosElevTemp !== null) {
         // Unimodal 212-member ensemble spread stabilization on Days 4-7 (prevents deterministic phase overshoot)
-        const detVals = [...SEVEN_MODEL_KEYS.map((k) => tempSnap[k]), tempSnap.jma].filter(
+        const detVals = CORE_MODEL_KEYS.map((k) => tempSnap[k]).filter(
           (v): v is number => v !== null && v !== undefined && Number.isFinite(v)
         );
         if (detVals.length >= 3) {
@@ -1785,7 +1433,7 @@ export async function fetchWeatherBundle(
       mos.mediumRangeWeights.wind,
       leadHour
     );
-    const leadGustW: Record<SevenModelKey, number> = {
+    const leadGustW: Record<CoreModelKey, number> = {
       ...leadWindW,
       ecmwfAifs: 0
     };
@@ -1852,22 +1500,11 @@ export async function fetchWeatherBundle(
     const pmqmCheck = fusePrecipitationPmqm({
       leadHours: leadHour,
       regime: stepRegime,
-      modelPrecipMm: [
-        ...SEVEN_MODEL_KEYS.map((mk) => ({
-          modelKey: mk,
-          precipMmHr: Math.max(0, precipSnap[mk] ?? 0) * (vertPhys?.precipMultiplier ?? 1),
-          weight: leadPrecipW[mk] ?? 0.1
-        })),
-        ...(precipSnap.jma !== null && precipSnap.jma !== undefined
-          ? [
-              {
-                modelKey: "jma",
-                precipMmHr: Math.max(0, precipSnap.jma) * (vertPhys?.precipMultiplier ?? 1),
-                weight: 0.06
-              }
-            ]
-          : [])
-      ],
+      modelPrecipMm: CORE_MODEL_KEYS.map((mk) => ({
+        modelKey: mk,
+        precipMmHr: Math.max(0, precipSnap[mk] ?? 0) * (vertPhys?.precipMultiplier ?? 1),
+        weight: leadPrecipW[mk] ?? 0.06
+      })),
       spatialNeighborhoodMm: stencilSlice?.spatialNeighborhoodMm,
       temporalWindowPopPct: Math.round(precipWin.windowMaxWetFrac * 100),
       mgmOfficialWet: mgmWetFlag,
@@ -1951,7 +1588,7 @@ export async function fetchWeatherBundle(
         pressureTrend3hHpa: pressure - preLockP3Prev
       }
     });
-    v4ConsistencyTrack.push(stepConsistency);
+    consistencyTrack.push(stepConsistency);
 
     currentCycleHourLocks[utcKey] = {
       tempC: stepConsistency.finalTempC,
@@ -1997,7 +1634,7 @@ export async function fetchWeatherBundle(
       leadHour
     );
     const hasT850 =
-      SEVEN_MODEL_KEYS.some((k) => t850Snap[k] !== null && t850Snap[k] !== undefined) ||
+      CORE_MODEL_KEYS.some((k) => t850Snap[k] !== null && t850Snap[k] !== undefined) ||
       (typeof rawT850 === "number" && Number.isFinite(rawT850));
     const temp850hPa = hasT850
       ? Number(
@@ -2071,7 +1708,7 @@ export async function fetchWeatherBundle(
     // 5. 0-100 STORM & CONVECTIVE THREAT ENGINE
     let wmoStormAgreeCount = 0;
     let wmoTotalModels = 0;
-    for (const k of SEVEN_MODEL_KEYS) {
+    for (const k of CORE_MODEL_KEYS) {
       const code = wmoSnap[k];
       if (code !== null && code !== undefined && Number.isFinite(code)) {
         wmoTotalModels++;
@@ -2140,6 +1777,8 @@ export async function fetchWeatherBundle(
     let effectiveWmo = wmo;
     if (stormEval.lightningProbPct >= 58 && fusedPrecip.precipitationMm >= 0.4) {
       effectiveWmo = Math.max(effectiveWmo, 95);
+    } else if (phaseResult.precipPhase === "freezing_rain") {
+      effectiveWmo = 66;
     } else if (phaseResult.precipPhase === "snow" && effectiveWmo < 71) {
       effectiveWmo = 73;
     } else if (phaseResult.precipPhase === "rain" && effectiveWmo < 51) {
@@ -2187,15 +1826,18 @@ export async function fetchWeatherBundle(
       precipConsensus: fusedPrecip.consensus,
       precipType: phaseResult.precipType,
       precipPhase: phaseResult.precipPhase,
+      snowLineElevationM: phaseResult.snowLineElevationM,
       rainAccum: Number(rainAccum.toFixed(1)),
       snowAccum: Number(snowAccum.toFixed(1)),
       weatherCode: effectiveWmo,
       condition:
-        phaseResult.precipPhase === "sleet"
-          ? "Karla Karışık Yağmur"
-          : phaseResult.precipPhase === "hail"
-            ? "Dolu Riskli Sağanak"
-            : mapWmoCodeToLabel(effectiveWmo),
+        phaseResult.precipPhase === "freezing_rain"
+          ? "Donan Yağmur"
+          : phaseResult.precipPhase === "sleet"
+            ? "Karla Karışık Yağmur"
+            : phaseResult.precipPhase === "hail"
+              ? "Dolu Riskli Sağanak"
+              : mapWmoCodeToLabel(effectiveWmo),
       isStorm: stormEval.isStorm,
       stormScore: stormEval.score,
       lightningProbPct: stormEval.lightningProbPct,
@@ -2219,6 +1861,322 @@ export async function fetchWeatherBundle(
       temp850hPa,
       stabilityGrade: stepConsistency.stabilityGrade
     });
+
+    const stepDetCount = CORE_MODEL_KEYS.filter(
+      (k) => tempSnap[k] !== null && tempSnap[k] !== undefined && Number.isFinite(tempSnap[k])
+    ).length;
+    const stepSpreadC = spreadOf(tempSnap);
+    const stepPressSpread = spreadOf(pressSnap);
+    hourMetaByTime.set(timeStr, {
+      activeModels: Math.max(1, stepDetCount),
+      ensMembers: ensTempArr?.length ?? 0,
+      confidencePct: Math.max(
+        52,
+        Math.round(computeHybridConfidence(stepSpreadC, stepPressSpread) - leadHour * 0.08)
+      )
+    });
+  }
+
+  // STAGE 3B: EXTENDED SYNOPTIC CALIBRATION LOOP (LEAD HOURS 168..359 -> DAYS 8..15!)
+  // Zero impact on Days 1–7 (`0..167h`); pushes hours `168..239` (up to Day 10 / 240h) into `hourly`
+  // and stores `240..359` in `extendedSynopticHours` so all 15 `daily` rows are 100% calibrated!
+  const maxExtendedIdx = Math.min(startIdx + 360, times.length);
+  if (maxExtendedIdx > maxHourlyIdx) {
+    const ensWetProbByIndex = new Map<number, number>();
+    if (ensIndex.precipCols.length >= 8) {
+      for (const idxVal of ensIndex.utcIndex.values()) {
+        const pRow = readEnsembleRow(ensIndex.precipCols, idxVal);
+        if (pRow && pRow.length > 0) {
+          ensWetProbByIndex.set(
+            idxVal,
+            (pRow.filter((v) => v >= 0.15).length / pRow.length) * 100
+          );
+        }
+      }
+    }
+
+    for (let i = maxHourlyIdx; i < maxExtendedIdx; i++) {
+      const leadHour = i - startIdx;
+      const timeStr = times[i];
+      const dateYmd = timeStr.slice(0, 10);
+      const localHour = Number(timeStr.slice(11, 13)) || 0;
+      const utcDate = localIsoToUtcDate(timeStr, utcOffsetSeconds);
+      const utcKey = utcDate.toISOString().slice(0, 16);
+      const dayIdxFromStart = Math.floor(leadHour / 24);
+      const hourDayLabel = formatDayName(dateYmd, dayIdxFromStart);
+
+      const solarElevationDeg = Number(
+        computeSolarElevationDeg(location.lat, location.lon, utcDate).toFixed(1)
+      );
+      const daylight = solarElevationToDaylight(solarElevationDeg);
+
+      const rawTemp = Number(hourlyRaw.temperature_2m?.[i] ?? cur.temperature_2m ?? 12);
+      const rawDew = Number(hourlyRaw.dew_point_2m?.[i] ?? rawTemp - 5);
+      const rawPress = Number(hourlyRaw.pressure_msl?.[i] ?? 1015);
+      const rawPrecip = Number(hourlyRaw.precipitation?.[i] ?? 0);
+      const rawPop = Number(hourlyRaw.precipitation_probability?.[i] ?? 0);
+      const rawWind = Number(hourlyRaw.wind_speed_10m?.[i] ?? 8);
+      const rawGust = Number(hourlyRaw.wind_gusts_10m?.[i] ?? rawWind);
+      const rawWindDir = Number(hourlyRaw.wind_direction_10m?.[i] ?? 0);
+      const rawFrz = hourlyRaw.freezing_level_height?.[i];
+      const rawCape = hourlyRaw.cape?.[i];
+      const rawCin = hourlyRaw.convective_inhibition?.[i];
+      const rawLi = hourlyRaw.lifted_index?.[i];
+
+      const tempSnap = readExtendedModelSnapshot("temperature_2m", utcKey);
+      const dewSnap = readExtendedModelSnapshot("dew_point_2m", utcKey);
+      const pressSnap = readExtendedModelSnapshot("pressure_msl", utcKey);
+      const precipSnap = readExtendedModelSnapshot("precipitation", utcKey);
+      const snowSnap = readExtendedModelSnapshot("snowfall", utcKey);
+      const windSnap = readExtendedModelSnapshot("wind_speed_10m", utcKey);
+      const gustSnap = readExtendedModelSnapshot("wind_gusts_10m", utcKey);
+      const dirSnap = readExtendedModelSnapshot("wind_direction_10m", utcKey);
+      const t850Snap = readExtendedModelSnapshot("temperature_850hPa", utcKey, true);
+
+      const eIdx = ensIndex.utcIndex.get(utcKey);
+      const ensTempWeighted = readEnsembleRowWithWeights(
+        ensIndex.tempCols,
+        ensIndex.tempColWeights,
+        eIdx
+      );
+      const ensPrecipArr = readEnsembleRow(ensIndex.precipCols, eIdx);
+      const ensGustArr = readEnsembleRow(ensIndex.gustCols, eIdx);
+      const ensGustStats = ensGustArr ? computeEnsembleDistStats(ensGustArr) : null;
+
+      const windowEnsProbs: number[] = [];
+      if (eIdx !== undefined) {
+        for (let off = -6; off <= 6; off += 2) {
+          const wP = ensWetProbByIndex.get(eIdx + off);
+          if (wP !== undefined) windowEnsProbs.push(wP);
+        }
+      }
+
+      const bursaExtendedCandidate = isBursaEmosActive
+        ? (() => {
+            const stepDrv = getBursaPhysicalDriversAt(utcKey, i);
+            const bBase = predictBursaTrainedTempC({
+              leadHours: leadHour,
+              utcDate,
+              localHourTrt: localHour,
+              tempSnapshot: tempSnap,
+              precipSnapshot: precipSnap,
+              neighborMedians: getBursaNeighborMedians(utcKey, rawTemp),
+              physicalDrivers: stepDrv,
+              targetElevationM: cityElevationM,
+              lapseRateCPerKm: effectiveLapsePerKm
+            });
+            if (bBase === null) return null;
+            const dOff = computeBursaDistrictMicroclimateOffsetC({
+              targetLat: location.lat,
+              targetLon: location.lon,
+              targetElevationM: cityElevationM,
+              base17116TempC: bBase,
+              localHour,
+              isNight: solarElevationDeg <= 0,
+              cloudCoverPct: stepDrv.cloudCoverPct ?? 40,
+              windSpeedKmh: stepDrv.windSpeedKmh ?? rawWind,
+              windDirDeg: stepDrv.windDirDeg ?? rawWindDir,
+              marmaraSstC: marmaraSstBundle?.currentSstC ?? null,
+              mgmDistrictDay: null
+            });
+            return bBase + dOff;
+          })()
+        : null;
+
+      const prevLock1 = priorRun1?.hours[utcKey] ?? null;
+      const prevLock2 = priorRun2?.hours[utcKey] ?? null;
+      const prelimTrend =
+        prevLock1 && bursaExtendedCandidate !== null
+          ? bursaExtendedCandidate - prevLock1.tempC
+          : 0;
+
+      const extCal = calibrateExtendedSynopticHour({
+        leadHour,
+        localHour,
+        dateYmd,
+        lat: location.lat,
+        lon: location.lon,
+        elevationM: cityElevationM,
+        tempSnapshot: tempSnap,
+        dewSnapshot: dewSnap,
+        pressSnapshot: pressSnap,
+        windSnapshot: windSnap,
+        precipSnapshot: precipSnap,
+        mos,
+        bursaEmosCandidateC: bursaExtendedCandidate,
+        ensembleTempRow: ensTempWeighted,
+        ensemblePrecipValues: ensPrecipArr,
+        windowEnsembleWetProbsPct: windowEnsProbs,
+        dProgDtTrendC: prelimTrend,
+        rawFallback: {
+          tempC: rawTemp,
+          dewC: rawDew,
+          pressHpa: rawPress,
+          windKmh: rawWind,
+          precipMm: rawPrecip,
+          popPct: rawPop
+        }
+      });
+
+      const extConsistency = evaluateHourlyRunConsistency({
+        leadHours: leadHour,
+        validTimeIso: timeStr,
+        utcHourKey: utcKey,
+        candidateTempC: extCal.temperatureC,
+        candidateIsWet: extCal.precipitationMm >= 0.15,
+        candidatePrecipMmHr: extCal.precipitationMm,
+        candidatePopPct: extCal.precipProbabilityPct,
+        previousLockedTempC: prevLock1?.tempC ?? null,
+        previousLockedRunMinus2TempC: prevLock2?.tempC ?? null,
+        previousLockedIsWet: prevLock1?.isWet ?? null,
+        previousLockedPrecipMmHr: prevLock1?.precipMmHr ?? null,
+        ensembleTempIqrC:
+          extCal.tempP10C !== undefined && extCal.tempP90C !== undefined
+            ? (extCal.tempP90C - extCal.tempP10C) * 0.52
+            : 2.6,
+        laggedModels: laggedSeriesList,
+        hourIndex: i
+      });
+
+      const extTemp = Number(extConsistency.finalTempC.toFixed(1));
+      const extDew = Number(Math.min(extTemp, extCal.dewPointC).toFixed(1));
+      const extRh = Math.round(relativeHumidityFromDewPoint(extTemp, extDew));
+      const extWetBulb = Number(wetBulbStullC(extTemp, extRh).toFixed(1));
+      const extWindDir = blendWindDirectionDeg(
+        dirSnap,
+        mos.mediumRangeWeights.wind,
+        rawWindDir
+      );
+      const extGustBase = blendHybridParameter(
+        gustSnap,
+        mos.mediumRangeWeights.wind,
+        rawGust
+      );
+      const extGusts = Number(
+        Math.max(extCal.windSpeedKmh, ensGustStats?.p50 ?? extGustBase).toFixed(1)
+      );
+      const extGustP90 = ensGustStats ? Math.round(ensGustStats.p90) : undefined;
+
+      const t850Vals = CORE_MODEL_KEYS.map((k) => t850Snap[k]).filter(
+        (v): v is number => v !== null && v !== undefined && Number.isFinite(v)
+      );
+      const extT850 =
+        t850Vals.length > 0
+          ? Number(
+              (t850Vals.reduce((a, b) => a + b, 0) / t850Vals.length).toFixed(1)
+            )
+          : typeof hourlyRaw["temperature_850hPa"]?.[i] === "number"
+            ? Number(Number(hourlyRaw["temperature_850hPa"][i]).toFixed(1))
+            : null;
+
+      const extFrz =
+        typeof rawFrz === "number" && Number.isFinite(rawFrz) ? Math.round(rawFrz) : null;
+      const extSnowCm = Number(
+        Math.max(
+          0,
+          blendHybridParameter(
+            snowSnap,
+            mos.mediumRangeWeights.precipitation,
+            Number(hourlyRaw.snowfall?.[i] ?? 0)
+          )
+        ).toFixed(2)
+      );
+      const rawWmo = Number(hourlyRaw.weather_code?.[i] ?? 1);
+      const extPhase = classifyPrecipPhase({
+        temperatureC: extTemp,
+        humidityPct: extRh,
+        precipitationMm: extConsistency.finalPrecipMmHr,
+        snowfallCm: extSnowCm,
+        weatherCode: rawWmo,
+        temp850hPa: extT850,
+        freezingLevelM: extFrz,
+        elevationM: cityElevationM,
+        mucape: typeof rawCape === "number" && Number.isFinite(rawCape) ? rawCape : 0
+      });
+
+      if (leadHour < 240) {
+        if (extPhase.precipType === "rain") {
+          rainAccum += extConsistency.finalPrecipMmHr;
+        } else if (extPhase.precipType === "snow") {
+          snowAccum += Math.max(extSnowCm, extConsistency.finalPrecipMmHr * 0.8);
+        }
+      }
+
+      let effWmo = rawWmo;
+      if (extPhase.precipPhase === "freezing_rain") {
+        effWmo = 66;
+      } else if (extPhase.precipPhase === "snow" && effWmo < 71) {
+        effWmo = 73;
+      } else if (extPhase.precipPhase === "rain" && effWmo < 51) {
+        effWmo = extConsistency.finalPrecipMmHr >= 1.5 ? 61 : 51;
+      } else if (extPhase.precipPhase === "none" && effWmo >= 51) {
+        effWmo = Number(hourlyRaw.cloud_cover?.[i] ?? 45) >= 75 ? 3 : 2;
+      }
+
+      const rawApparent = Number(hourlyRaw.apparent_temperature?.[i] ?? rawTemp);
+      const extPoint: HourlyPoint = {
+        time: timeStr,
+        hourLabel: timeStr.slice(11, 16),
+        dayLabel: hourDayLabel,
+        temperature: extTemp,
+        tempP10: extCal.tempP10C,
+        tempP90: extCal.tempP90C,
+        apparentTemperature: Number((rawApparent + (extTemp - rawTemp)).toFixed(1)),
+        wetBulbC: extWetBulb,
+        humidity: extRh,
+        dewPoint: extDew,
+        pressure: extCal.pressureHpa,
+        windSpeed: extCal.windSpeedKmh,
+        windGusts: extGusts,
+        gustP90: extGustP90,
+        windDirection: extWindDir,
+        cloudCover: Math.round(Number(hourlyRaw.cloud_cover?.[i] ?? 40)),
+        visibilityKm: 15,
+        uvIndex: Number(hourlyRaw.uv_index?.[i] ?? 0),
+        precipitation: extConsistency.finalPrecipMmHr,
+        precipProbability: extConsistency.finalPopPct,
+        precipConsensus: extCal.precipConsensus,
+        precipType: extPhase.precipType,
+        precipPhase: extPhase.precipPhase,
+        snowLineElevationM: extPhase.snowLineElevationM,
+        rainAccum: Number(rainAccum.toFixed(1)),
+        snowAccum: Number(snowAccum.toFixed(1)),
+        weatherCode: effWmo,
+        condition:
+          extPhase.precipPhase === "freezing_rain"
+            ? "Donan Yağmur"
+            : extPhase.precipPhase === "sleet"
+              ? "Karla Karışık Yağmur"
+              : mapWmoCodeToLabel(effWmo),
+        isStorm: effWmo >= 95,
+        stormScore: effWmo >= 95 ? 45 : 0,
+        solarElevationDeg,
+        daylight,
+        cape: typeof rawCape === "number" && Number.isFinite(rawCape) ? Math.round(rawCape) : null,
+        cin: typeof rawCin === "number" && Number.isFinite(rawCin) ? Math.round(rawCin) : null,
+        liftedIndex:
+          typeof rawLi === "number" && Number.isFinite(rawLi) ? Number(rawLi.toFixed(1)) : null,
+        freezingLevelM: extFrz,
+        temp850hPa: extT850,
+        stabilityGrade: extConsistency.stabilityGrade
+      };
+
+      if (extCal.bimodal) {
+        hourBimodalByTime.set(timeStr, extCal.bimodal);
+        bimodalHoursResolved++;
+      }
+      hourMetaByTime.set(timeStr, {
+        activeModels: extCal.activeModelCount,
+        ensMembers: extCal.ensembleMemberCount,
+        confidencePct: extCal.confidencePct
+      });
+
+      if (leadHour < 240) {
+        hourly.push(extPoint);
+      } else {
+        extendedSynopticHours.push(extPoint);
+      }
+    }
   }
 
   // Persist calibrated 168-hour trajectory lock for active synoptic cycle!
@@ -2318,12 +2276,9 @@ export async function fetchWeatherBundle(
   const curPrecipSnap = readExtendedModelSnapshot("precipitation", curUtcKey);
   const curCapeSnap = readExtendedModelSnapshot("cape", curUtcKey);
 
-  const activeModels = [
-    ...SEVEN_MODEL_KEYS.filter(
-      (k) => curTempSnap[k] !== null && curTempSnap[k] !== undefined
-    ).map((k) => SEVEN_MODEL_META[k].label),
-    ...(curTempSnap.jma !== null && curTempSnap.jma !== undefined ? ["JMA GSM 20km"] : [])
-  ];
+  const activeModels = CORE_MODEL_KEYS.filter(
+    (k) => curTempSnap[k] !== null && curTempSnap[k] !== undefined
+  ).map((k) => CORE_MODEL_META[k].label);
 
   const tempSpreadC = spreadOf(curTempSnap);
   const pressureSpreadHpa = spreadOf(curPressSnap);
@@ -2415,16 +2370,24 @@ export async function fetchWeatherBundle(
   });
   const pressureDelta3h = Number((pNow - pPrev).toFixed(1));
 
-  // 6. CALIBRATED 7-DAY FORECAST (`daily[0..6]`)
-  // Derived directly from the 168-hour calibrated `hourly` series + real observed intraday extremes for `daily[0]`!
+  // 6. CALIBRATED 15-DAY FORECAST (`daily[0..14]`: Days 1–7 Exact + Days 8–15 Synoptic AI+Ensemble)
+  // Keep Days 1–7 (`dIdx < 7`) strictly isolated to the 0..167h precision map for 0.00°C zero-regression!
+  const hourlyPrecisionMap = new Map<string, HourlyPoint>();
   const hourlyByTimeMap = new Map<string, HourlyPoint>();
-  for (const pt of hourly) {
+  for (let idxH = 0; idxH < hourly.length; idxH++) {
+    const pt = hourly[idxH];
+    if (idxH < 168) {
+      hourlyPrecisionMap.set(pt.time, pt);
+    }
+    hourlyByTimeMap.set(pt.time, pt);
+  }
+  for (const pt of extendedSynopticHours) {
     hourlyByTimeMap.set(pt.time, pt);
   }
   const todayLedgerExtremes = getTodayObservedExtremesFromLedger(ledgerLocKey, todayDateYmd);
 
   const dailyDates: string[] = dailyRaw.time ?? [];
-  const daily: DailyPoint[] = dailyDates.slice(0, 7).map((dateStr, dIdx) => {
+  const daily: DailyPoint[] = dailyDates.slice(0, 15).map((dateStr, dIdx) => {
     let minT = Infinity;
     let maxT = -Infinity;
     let minP10 = Infinity;
@@ -2443,7 +2406,7 @@ export async function fetchWeatherBundle(
 
     for (let hh = 0; hh < 24; hh++) {
       const localIso = `${dateStr}T${String(hh).padStart(2, "0")}:00`;
-      const existingH = hourlyByTimeMap.get(localIso);
+      const existingH = dIdx < 7 ? hourlyPrecisionMap.get(localIso) : hourlyByTimeMap.get(localIso);
       if (existingH) {
         matchedDayHours++;
         if (existingH.temperature < minT) minT = existingH.temperature;
@@ -2460,7 +2423,14 @@ export async function fetchWeatherBundle(
         maxStormScore = Math.max(maxStormScore, existingH.stormScore ?? 0);
         if (existingH.stabilityGrade) dayGrades.push(existingH.stabilityGrade);
         if (existingH.precipPhase === "hail") dominantPhase = "hail";
-        else if (existingH.precipPhase === "snow" && dominantPhase !== "hail") dominantPhase = "snow";
+        else if (existingH.precipPhase === "freezing_rain" && dominantPhase !== "hail")
+          dominantPhase = "freezing_rain";
+        else if (
+          existingH.precipPhase === "snow" &&
+          dominantPhase !== "hail" &&
+          dominantPhase !== "freezing_rain"
+        )
+          dominantPhase = "snow";
         else if (
           existingH.precipPhase === "sleet" &&
           dominantPhase !== "hail" &&
@@ -2631,15 +2601,84 @@ export async function fetchWeatherBundle(
           ? "CONVERGING"
           : "WATCH";
 
+    const dayClim = computeDailyClimatologyNormals({
+      lat: location.lat,
+      lon: location.lon,
+      elevationM: cityElevationM,
+      dateYmd: dateStr
+    });
+    const finalMaxRounded = Number(finalMax.toFixed(1));
+    const finalMinRounded = Number(finalMin.toFixed(1));
+    const tempAnomalyC = Number(
+      (0.5 * (finalMaxRounded + finalMinRounded) - dayClim.normalMeanC).toFixed(1)
+    );
+
+    // Collect daytime/nighttime, dominant wind direction, model/ensemble counts & bimodal splits
+    const dayBimodals: Array<BimodalEnsembleClusterResult | null | undefined> = [];
+    const dayConfs: number[] = [];
+    let maxDayModels = dIdx < 7 ? activeModels.length : 3;
+    let maxDayEns = ensIndex.memberCount;
+    const dayTemps12to16: number[] = [];
+    const nightTemps02to06: number[] = [];
+    let sinDirSum = 0;
+    let cosDirSum = 0;
+
+    for (let hh = 0; hh < 24; hh++) {
+      const lIso = `${dateStr}T${String(hh).padStart(2, "0")}:00`;
+      const hPt = hourlyByTimeMap.get(lIso);
+      if (hPt) {
+        if (hh >= 12 && hh <= 16) dayTemps12to16.push(hPt.temperature);
+        if (hh >= 2 && hh <= 6) nightTemps02to06.push(hPt.temperature);
+        const rad = (hPt.windDirection * Math.PI) / 180;
+        const wMag = Math.max(1, hPt.windSpeed);
+        sinDirSum += Math.sin(rad) * wMag;
+        cosDirSum += Math.cos(rad) * wMag;
+      }
+      if (hourBimodalByTime.has(lIso)) {
+        dayBimodals.push(hourBimodalByTime.get(lIso));
+      }
+      const meta = hourMetaByTime.get(lIso);
+      if (meta) {
+        dayConfs.push(meta.confidencePct);
+        maxDayModels = Math.max(maxDayModels, meta.activeModels);
+        if (meta.ensMembers > 0) maxDayEns = meta.ensMembers;
+      }
+    }
+
+    const avgWindDeg =
+      Math.abs(sinDirSum) > 1e-4 || Math.abs(cosDirSum) > 1e-4
+        ? (((Math.atan2(sinDirSum, cosDirSum) * 180) / Math.PI) + 360) % 360
+        : 0;
+    const dayConfidencePct =
+      dayConfs.length > 0
+        ? Math.round(dayConfs.reduce((a, b) => a + b, 0) / dayConfs.length)
+        : Math.max(42, 92 - dIdx * 3.5);
+
     return {
       date: dateStr,
       dayName: formatDayName(dateStr, dIdx),
-      tempMax: Number(finalMax.toFixed(1)),
-      tempMin: Number(finalMin.toFixed(1)),
+      horizonTier: dIdx < 7 ? "exact" : "synoptic",
+      tempMax: finalMaxRounded,
+      tempMin: finalMinRounded,
       tempMaxP10: Number.isFinite(maxP10) && maxP10 > -90 ? Math.round(maxP10) : undefined,
       tempMaxP90: Number.isFinite(maxP90) && maxP90 > -90 ? Math.round(maxP90) : undefined,
       tempMinP10: Number.isFinite(minP10) && minP10 < 90 ? Math.round(minP10) : undefined,
       tempMinP90: Number.isFinite(minP90) && minP90 < 90 ? Math.round(minP90) : undefined,
+      tempNormalMax: dayClim.normalMaxC,
+      tempNormalMin: dayClim.normalMinC,
+      tempAnomalyC,
+      daytimeTempC:
+        dayTemps12to16.length > 0
+          ? Number(
+              (dayTemps12to16.reduce((a, b) => a + b, 0) / dayTemps12to16.length).toFixed(1)
+            )
+          : finalMaxRounded,
+      nighttimeTempC:
+        nightTemps02to06.length > 0
+          ? Number(
+              (nightTemps02to06.reduce((a, b) => a + b, 0) / nightTemps02to06.length).toFixed(1)
+            )
+          : finalMinRounded,
       weatherCode: code,
       condition: mapWmoCodeToLabel(code),
       precipSum: finalPrecip,
@@ -2648,12 +2687,26 @@ export async function fetchWeatherBundle(
       precipPhase: dominantPhase,
       windSpeedMax: finalWind,
       windGustMax: matchedDayHours >= 8 ? Math.round(maxGust) : undefined,
+      dominantWindCompass: windDirectionToCompass(avgWindDeg),
       stormScoreMax: maxStormScore > 0 ? maxStormScore : undefined,
       uvIndexMax: Number(Number(dailyRaw.uv_index_max?.[dIdx] ?? 0).toFixed(1)),
       sunrise: String(dailyRaw.sunrise?.[dIdx] ?? ""),
       sunset: String(dailyRaw.sunset?.[dIdx] ?? ""),
+      confidencePct: dayConfidencePct,
+      activeModelCount: maxDayModels,
+      ensembleMemberCount: maxDayEns,
+      bimodalSplit: summarizeDailyBimodalSplits(dayBimodals),
       stabilityGrade: dayStability
     };
+  });
+
+  // 6B. CALIBRATED SUBSEASONAL OUTLOOK (`Days 16..30` via 52-Member GEFSv12 + GEPS Seamless Bias Stitching)
+  const subseasonal = buildCalibratedSubseasonalOutlook({
+    raw: rawSubseasonal,
+    calibratedDaily: daily,
+    lat: location.lat,
+    lon: location.lon,
+    elevationM: cityElevationM
   });
 
   const aqiCur = aJson?.current ?? {};
@@ -2684,9 +2737,9 @@ export async function fetchWeatherBundle(
   const curUv = firstHour?.uvIndex ?? 0;
 
   const isLiveVerified =
-    mos.report.mode === "live-metar-48h" ||
-    mos.report.mode === "live-metar-24h" ||
-    Boolean(bursaMesh && bursaMesh.tier1OnlineCount > 0);
+    mos.report.mode === "live-mgm-mesh" ||
+    mos.report.mode === "live-station-48h" ||
+    mos.report.mode === "live-station-24h";
   const stIdsText =
     mos.summary.stationIds.length > 0 ? mos.summary.stationIds.join(" + ") : "WMO";
   const ensLabel =
@@ -2770,7 +2823,7 @@ export async function fetchWeatherBundle(
   const activeRegimeLabel = isBursaDomain
     ? (regimeTrMap[activeBursaRegime] ?? "Sinoptik Akış")
     : "Çoklu Model Sinoptik Rejim";
-  const stabilitySummary = summarizeForecastStability(v4ConsistencyTrack, activeRegimeLabel);
+  const stabilitySummary = summarizeForecastStability(consistencyTrack, activeRegimeLabel);
 
   const hybrid: HybridMeta = {
     engineVersion: isBursaDomain
@@ -2791,7 +2844,7 @@ export async function fetchWeatherBundle(
     },
     verification: mos.report,
     attributions,
-    atmosV4: {
+    engineMeta: {
       activeRegime: activeBursaRegime,
       activeRegimeLabel,
       verticalMechanism: firstHourVertPhys?.activeMechanism ?? "STANDARD_PROFILE",
@@ -2820,6 +2873,87 @@ export async function fetchWeatherBundle(
     curWmo = Number(cur.cloud_cover ?? 50) >= 75 ? 3 : 2;
   }
 
+  const savedNowMs = Date.now();
+  const fetchedAtIso = new Date(savedNowMs).toISOString();
+  const hybridFailed =
+    !hJson || !Array.isArray(hJson?.hourly?.time) || hJson.hourly.time.length === 0;
+  const ensembleFailed = ensIndex.memberCount === 0;
+  const degradedStreams: string[] = [];
+  if (hybridFailed) degradedStreams.push("8-Model NWP Havuzu");
+  if (ensembleFailed) degradedStreams.push("212-Üye Ensemble");
+
+  // Anti-Downgrade Guard: if BOTH 8-model NWP and 212-member ensemble failed simultaneously,
+  // never let uncalibrated single-model noise overwrite a recent (<3h) calibrated multi-model run!
+  if (hybridFailed && ensembleFailed) {
+    const memPrior = findMemoryWeatherEntry(location, key, savedNowMs);
+    const diskPrior = !memPrior
+      ? getWeatherSnapshotFromDisk(location.lat, location.lon, savedNowMs)
+      : null;
+    const priorCandidate = memPrior
+      ? {
+          bundle: memPrior.value,
+          savedAtMs: memPrior.cachedAtMs,
+          tier: "memory-stale" as const
+        }
+      : diskPrior
+        ? {
+            bundle: diskPrior.bundle,
+            savedAtMs: diskPrior.savedAtMs,
+            tier: "disk-stale" as const
+          }
+        : null;
+
+    if (
+      priorCandidate &&
+      savedNowMs - priorCandidate.savedAtMs <= 3 * 3600 * 1000 &&
+      priorCandidate.bundle.hybrid.activeModels.length >= 4
+    ) {
+      const protectedBundle = reanchorWeatherBundleToNow(
+        {
+          ...priorCandidate.bundle,
+          location: mergeLocationIdentity(priorCandidate.bundle.location, location)
+        },
+        savedNowMs,
+        {
+          status: "degraded",
+          sourceTier: priorCandidate.tier,
+          cachedAtMs: priorCandidate.savedAtMs,
+          staleReason:
+            "Çoklu model ve ensemble havuzu geçici yanıt vermedi; önceki 8-model kalibreli koşu korundu",
+          degradedStreams,
+          modelsRespondedCount: 1
+        }
+      );
+      if (liveBursaSurface !== null || mos.anchor.active) {
+        protectedBundle.current = {
+          ...protectedBundle.current,
+          temperature: hybridCurTemp,
+          apparentTemperature: hybridCurApparent,
+          humidity: hybridCurRh,
+          dewPoint: hybridCurDew,
+          pressure: pNow,
+          windSpeed: hybridCurWind,
+          windGusts: hybridCurGust,
+          windDirection: hybridCurDir
+        };
+      }
+      return protectedBundle;
+    }
+  }
+
+  const bundleStatus = degradedStreams.length > 0 ? "degraded" : "live";
+  const bundleFreshness = buildFreshnessMeta(fetchedAtIso, savedNowMs, {
+    status: bundleStatus,
+    sourceTier: "live",
+    cachedAtMs: savedNowMs,
+    staleReason:
+      bundleStatus === "degraded"
+        ? `Kısmi model akışı (${degradedStreams.join(", ")} geçici devre dışı)`
+        : undefined,
+    degradedStreams,
+    modelsRespondedCount: activeModels.length
+  });
+
   const bundle: WeatherBundle = {
     location: {
       ...location,
@@ -2831,9 +2965,10 @@ export async function fetchWeatherBundle(
       : activeModels.length >= 2
         ? "hybrid-nwp"
         : "open-meteo",
-    fetchedAt: new Date().toISOString(),
+    fetchedAt: fetchedAtIso,
     timezone: String(fJson.timezone ?? "UTC"),
     utcOffsetSeconds,
+    freshness: bundleFreshness,
     current: {
       time: String(cur.time ?? new Date().toISOString()),
       temperature: hybridCurTemp,
@@ -2869,6 +3004,7 @@ export async function fetchWeatherBundle(
               ? "snow"
               : "rain"
           : "none",
+      snowLineElevationM: firstHour?.snowLineElevationM ?? null,
       weatherCode: curWmo,
       condition: mapWmoCodeToLabel(curWmo),
       isStorm: firstHour?.isStorm ?? (hybridCurWind >= 50 || curWmo >= 95),
@@ -2884,6 +3020,7 @@ export async function fetchWeatherBundle(
     hourly,
     minutely15,
     daily,
+    subseasonal,
     sounding: hourlySoundings[0] ?? initialSounding,
     hourlySoundings,
     nativeConvective: {
@@ -2897,7 +3034,22 @@ export async function fetchWeatherBundle(
     hybrid
   };
 
-  weatherCache.set(key, { value: bundle, expiresAt: Date.now() + WEATHER_TTL_MS });
+  const effectiveTtl =
+    bundleStatus === "live" ? WEATHER_TTL_MS : WEATHER_DEGRADED_TTL_MS;
+  weatherCache.set(key, {
+    value: bundle,
+    expiresAt: savedNowMs + effectiveTtl,
+    staleUntil: savedNowMs + WEATHER_STALE_MS,
+    cachedAtMs: savedNowMs
+  });
+
+  if (
+    bundleStatus === "live" ||
+    !getWeatherSnapshotFromDisk(location.lat, location.lon, savedNowMs)
+  ) {
+    saveWeatherSnapshotToDisk(bundle, savedNowMs);
+  }
+
   return bundle;
 }
 
@@ -2906,10 +3058,40 @@ export async function fetchMultiModelBundle(
   lon: number
 ): Promise<MultiModelBundle> {
   const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  const nowMs = Date.now();
   const cached = modelCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.value;
+  if (cached && cached.expiresAt > nowMs) {
+    return reanchorMultiModelBundleToNow(cached.value, nowMs, {
+      status: cached.value.freshness?.status ?? "live",
+      sourceTier: cached.value.freshness?.sourceTier ?? "live",
+      cachedAtMs: cached.cachedAtMs,
+      modelsRespondedCount: cached.value.freshness?.modelsRespondedCount
+    });
   }
+
+  const resolveStaleModels = (reason: string): MultiModelBundle | null => {
+    const fallbackNow = Date.now();
+    if (cached && cached.staleUntil > fallbackNow) {
+      return reanchorMultiModelBundleToNow(cached.value, fallbackNow, {
+        status: "stale",
+        sourceTier: "memory-stale",
+        cachedAtMs: cached.cachedAtMs,
+        staleReason: reason,
+        modelsRespondedCount: cached.value.freshness?.modelsRespondedCount
+      });
+    }
+    const diskHit = getModelsSnapshotFromDisk(lat, lon, fallbackNow);
+    if (diskHit) {
+      return reanchorMultiModelBundleToNow(diskHit.models, fallbackNow, {
+        status: "stale",
+        sourceTier: "disk-stale",
+        cachedAtMs: diskHit.savedAtMs,
+        staleReason: reason,
+        modelsRespondedCount: diskHit.models.freshness?.modelsRespondedCount
+      });
+    }
+    return null;
+  };
 
   const url = new URL("https://api.open-meteo.com/v1/forecast");
   url.searchParams.set("latitude", lat.toFixed(4));
@@ -2922,27 +3104,37 @@ export async function fetchMultiModelBundle(
     "models",
     "ecmwf_ifs,ecmwf_aifs025_single,icon_seamless,ukmo_seamless,meteofrance_seamless,gfs_seamless,gem_seamless,jma_seamless,ecmwf_ifs025"
   );
-  url.searchParams.set("forecast_days", "7");
+  url.searchParams.set("forecast_days", "15");
   url.searchParams.set("timezone", "auto");
 
-  const res = await fetchWithRetry(url.toString(), 11000, 1);
-  if (!res.ok) {
-    throw new Error(`Open-Meteo multi-model HTTP ${res.status}`);
+  const res = await fetchWithRetry(url.toString(), 11000, 1).catch(() => null);
+  if (!res || !res.ok) {
+    const stale = resolveStaleModels(
+      res ? `Çoklu model servisi HTTP ${res.status} döndürdü` : "Çoklu model servisine ulaşılamadı"
+    );
+    if (stale) return stale;
+    throw new Error(
+      res ? `Open-Meteo multi-model HTTP ${res.status}` : "Open-Meteo multi-model unreachable"
+    );
   }
 
-  const json = await res.json();
-  const h = json.hourly ?? {};
-  const times: string[] = h.time ?? [];
+  const json = await res.json().catch(() => null);
+  const h = json?.hourly ?? {};
+  const times: string[] = Array.isArray(h.time) ? h.time : [];
+  if (times.length === 0) {
+    const stale = resolveStaleModels("Çoklu model serisi boş döndü");
+    if (stale) return stale;
+    throw new Error("Open-Meteo multi-model payload empty");
+  }
 
-  const nowIso = new Date(
-    Date.now() + Number(json.utc_offset_seconds ?? 0) * 1000
-  )
+  const utcOffsetSeconds = Number(json.utc_offset_seconds ?? 0);
+  const nowIso = new Date(Date.now() + utcOffsetSeconds * 1000)
     .toISOString()
     .slice(0, 13);
   let startIdx = times.findIndex((t) => t >= nowIso);
   if (startIdx < 0) startIdx = 0;
 
-  const endIdx = Math.min(startIdx + 168, times.length);
+  const endIdx = Math.min(startIdx + 360, times.length);
 
   const buildSeries = (
     prefix: string,
@@ -2976,19 +3168,19 @@ export async function fetchMultiModelBundle(
   const wind10m = buildSeries("wind_speed_10m");
 
   const slice72 = <T,>(arr: T[]) => arr.slice(0, 72);
-  const sumOf = (arr: ModelSeriesPoint[], field: SevenModelKey) =>
-    Number(slice72(arr).reduce((acc, p) => acc + (p[field] ?? 0), 0).toFixed(1));
+  const sumSlice = (arr: ModelSeriesPoint[], field: CoreModelKey) =>
+    Number(arr.reduce((acc, p) => acc + (p[field] ?? 0), 0).toFixed(1));
 
-  const minOf = (arr: ModelSeriesPoint[], field: SevenModelKey) => {
-    const vals = slice72(arr)
+  const minSlice = (arr: ModelSeriesPoint[], field: CoreModelKey) => {
+    const vals = arr
       .map((p) => p[field])
       .filter((v): v is number => v !== null && v !== undefined);
     return vals.length > 0 ? Math.min(...vals) : null;
   };
 
   let maxSpreadTemp2m = 0;
-  for (const pt of slice72(temp2m)) {
-    const vals = SEVEN_MODEL_KEYS.map((k) => pt[k]).filter(
+  for (const pt of temp2m) {
+    const vals = CORE_MODEL_KEYS.map((k) => pt[k]).filter(
       (v): v is number => v !== null && v !== undefined
     );
     if (vals.length >= 2) {
@@ -2999,43 +3191,65 @@ export async function fetchMultiModelBundle(
     }
   }
 
+  const precip72h = Object.fromEntries(
+    CORE_MODEL_KEYS.map((k) => [k, sumSlice(slice72(precip), k)])
+  ) as Record<CoreModelKey, number>;
+  const precip168h = Object.fromEntries(
+    CORE_MODEL_KEYS.map((k) => [k, sumSlice(precip.slice(0, 168), k)])
+  ) as Record<CoreModelKey, number>;
+  const precip360h = Object.fromEntries(
+    CORE_MODEL_KEYS.map((k) => [k, sumSlice(precip, k)])
+  ) as Record<CoreModelKey, number>;
+  const min850hPa = Object.fromEntries(
+    CORE_MODEL_KEYS.map((k) => [k, minSlice(temp850, k)])
+  ) as Record<CoreModelKey, number | null>;
+
+  const modelsRespondedCount = CORE_MODEL_KEYS.filter((k) =>
+    temp2m.some((pt) => pt[k] !== null && pt[k] !== undefined)
+  ).length;
+
+  const savedMs = Date.now();
+  const fetchedIso = new Date(savedMs).toISOString();
+
   const bundle: MultiModelBundle = {
-    fetchedAt: new Date().toISOString(),
+    fetchedAt: fetchedIso,
     lat,
     lon,
+    utcOffsetSeconds,
+    freshness: buildFreshnessMeta(fetchedIso, savedMs, {
+      status: modelsRespondedCount >= 4 ? "live" : "degraded",
+      sourceTier: "live",
+      cachedAtMs: savedMs,
+      modelsRespondedCount
+    }),
     temp2m,
     temp850,
     precip,
     wind10m,
     summary: {
-      precip72h: {
-        ecmwfIfs: sumOf(precip, "ecmwfIfs"),
-        ecmwfAifs: sumOf(precip, "ecmwfAifs"),
-        icon: sumOf(precip, "icon"),
-        ukmo: sumOf(precip, "ukmo"),
-        meteofrance: sumOf(precip, "meteofrance"),
-        gfs: sumOf(precip, "gfs"),
-        gem: sumOf(precip, "gem")
-      },
+      precip72h,
+      precip168h,
+      precip360h,
       maxSpreadTemp2m,
-      min850hPa: {
-        ecmwfIfs: minOf(temp850, "ecmwfIfs"),
-        ecmwfAifs: minOf(temp850, "ecmwfAifs"),
-        icon: minOf(temp850, "icon"),
-        ukmo: minOf(temp850, "ukmo"),
-        meteofrance: minOf(temp850, "meteofrance"),
-        gfs: minOf(temp850, "gfs"),
-        gem: minOf(temp850, "gem")
-      }
+      min850hPa
     }
   };
 
-  modelCache.set(key, { value: bundle, expiresAt: Date.now() + MODEL_TTL_MS });
+  modelCache.set(key, {
+    value: bundle,
+    expiresAt: savedMs + MODEL_TTL_MS,
+    staleUntil: savedMs + MODEL_STALE_MS,
+    cachedAtMs: savedMs
+  });
+  if (modelsRespondedCount >= 4 || !getModelsSnapshotFromDisk(lat, lon, savedMs)) {
+    saveModelsSnapshotToDisk(bundle, savedMs);
+  }
   return bundle;
 }
 
 export async function fetchRadarMetadata(): Promise<RadarMetadata> {
-  if (radarCache && radarCache.expiresAt > Date.now()) {
+  const nowMs = Date.now();
+  if (radarCache && radarCache.expiresAt > nowMs) {
     return radarCache.value;
   }
 
@@ -3043,13 +3257,25 @@ export async function fetchRadarMetadata(): Promise<RadarMetadata> {
     "https://api.rainviewer.com/public/weather-maps.json",
     8000,
     1
-  );
+  ).catch(() => null);
 
-  if (!res.ok) {
-    throw new Error(`RainViewer HTTP ${res.status}`);
+  if (!res || !res.ok) {
+    if (radarCache && radarCache.staleUntil > Date.now()) {
+      const genIso = new Date(radarCache.value.generated * 1000).toISOString();
+      return {
+        ...radarCache.value,
+        freshness: buildFreshnessMeta(genIso, Date.now(), {
+          status: "stale",
+          sourceTier: "memory-stale",
+          cachedAtMs: radarCache.cachedAtMs,
+          staleReason: "Canlı radar servisi yanıt vermedi; son kareler korunuyor"
+        })
+      };
+    }
+    throw new Error(res ? `RainViewer HTTP ${res.status}` : "RainViewer unreachable");
   }
 
-  const json = await res.json();
+  const json = await res.json().catch(() => null);
   const past = Array.isArray(json?.radar?.past) ? json.radar.past : [];
   const nowcast = Array.isArray(json?.radar?.nowcast) ? json.radar.nowcast : [];
   const frames = [...past, ...nowcast].map((f: { time: number; path: string }) => ({
@@ -3057,13 +3283,40 @@ export async function fetchRadarMetadata(): Promise<RadarMetadata> {
     path: String(f.path)
   }));
 
+  if (frames.length === 0 && radarCache && radarCache.staleUntil > Date.now()) {
+    const genIso = new Date(radarCache.value.generated * 1000).toISOString();
+    return {
+      ...radarCache.value,
+      freshness: buildFreshnessMeta(genIso, Date.now(), {
+        status: "stale",
+        sourceTier: "memory-stale",
+        cachedAtMs: radarCache.cachedAtMs,
+        staleReason: "Radar kare listesi boş döndü; son kareler korunuyor"
+      })
+    };
+  }
+
+  const savedMs = Date.now();
+  const generatedSec = Number(json?.generated ?? Math.floor(savedMs / 1000));
+  const genIso = new Date(generatedSec * 1000).toISOString();
+
   const meta: RadarMetadata = {
-    host: String(json.host ?? "https://tilecache.rainviewer.com"),
-    generated: Number(json.generated ?? Math.floor(Date.now() / 1000)),
-    frames
+    host: String(json?.host ?? "https://tilecache.rainviewer.com"),
+    generated: generatedSec,
+    frames,
+    freshness: buildFreshnessMeta(genIso, savedMs, {
+      status: "live",
+      sourceTier: "live",
+      cachedAtMs: savedMs
+    })
   };
 
-  radarCache = { value: meta, expiresAt: Date.now() + RADAR_TTL_MS };
+  radarCache = {
+    value: meta,
+    expiresAt: savedMs + RADAR_TTL_MS,
+    staleUntil: savedMs + RADAR_STALE_MS,
+    cachedAtMs: savedMs
+  };
   return meta;
 }
 
@@ -3082,8 +3335,9 @@ export async function fetchWindGrid(bounds: {
 
   const snap = (n: number) => (Math.round(n * 2) / 2).toFixed(1);
   const cacheKey = `${snap(south)},${snap(west)},${snap(north)},${snap(east)}`;
+  const nowMs = Date.now();
   const cached = windGridCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.expiresAt > nowMs) {
     return cached.value;
   }
 
@@ -3099,12 +3353,37 @@ export async function fetchWindGrid(bounds: {
   }
 
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats.join(",")}&longitude=${lons.join(",")}&current=wind_speed_10m,wind_direction_10m`;
-  const res = await fetchWithRetry(url, 9000, 1);
-  if (!res.ok) {
-    throw new Error(`Open-Meteo wind-grid HTTP ${res.status}`);
+  const res = await fetchWithRetry(url, 9000, 1).catch(() => null);
+  if (!res || !res.ok) {
+    if (cached && cached.staleUntil > Date.now()) {
+      return {
+        ...cached.value,
+        freshness: buildFreshnessMeta(cached.value.fetchedAt, Date.now(), {
+          status: "stale",
+          sourceTier: "memory-stale",
+          cachedAtMs: cached.cachedAtMs,
+          staleReason: "Rüzgar ızgarası servisi yanıt vermedi; son vektör alanı korunuyor"
+        })
+      };
+    }
+    throw new Error(
+      res ? `Open-Meteo wind-grid HTTP ${res.status}` : "Open-Meteo wind-grid unreachable"
+    );
   }
 
-  const raw = await res.json();
+  const raw = await res.json().catch(() => null);
+  if (!raw && cached && cached.staleUntil > Date.now()) {
+    return {
+      ...cached.value,
+      freshness: buildFreshnessMeta(cached.value.fetchedAt, Date.now(), {
+        status: "stale",
+        sourceTier: "memory-stale",
+        cachedAtMs: cached.cachedAtMs,
+        staleReason: "Rüzgar ızgarası yanıtı okunamadı; son vektör alanı korunuyor"
+      })
+    };
+  }
+
   const list: Array<{ current?: { wind_speed_10m?: number; wind_direction_10m?: number } }> =
     Array.isArray(raw) ? raw : [raw];
 
@@ -3131,6 +3410,9 @@ export async function fetchWindGrid(bounds: {
     if (spd > maxSpeedKmh) maxSpeedKmh = spd;
   }
 
+  const savedMs = Date.now();
+  const fetchedIso = new Date(savedMs).toISOString();
+
   const grid: WindGridBundle = {
     rows,
     cols,
@@ -3142,11 +3424,19 @@ export async function fetchWindGrid(bounds: {
     v,
     speedKmh,
     maxSpeedKmh,
-    fetchedAt: new Date().toISOString()
+    fetchedAt: fetchedIso,
+    freshness: buildFreshnessMeta(fetchedIso, savedMs, {
+      status: "live",
+      sourceTier: "live",
+      cachedAtMs: savedMs
+    })
   };
 
-  windGridCache.set(cacheKey, { value: grid, expiresAt: Date.now() + WIND_GRID_TTL_MS });
+  windGridCache.set(cacheKey, {
+    value: grid,
+    expiresAt: savedMs + WIND_GRID_TTL_MS,
+    staleUntil: savedMs + WIND_GRID_STALE_MS,
+    cachedAtMs: savedMs
+  });
   return grid;
 }
-
-export { WMO_PRIOR_WEIGHTS };

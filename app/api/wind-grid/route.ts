@@ -29,16 +29,27 @@ export async function GET(request: NextRequest) {
 
   try {
     const data = await fetchWindGrid({ south, west, north, east });
+    const freshnessStatus = data.freshness?.status ?? "live";
+    const isFullyLive = freshnessStatus === "live";
+
     return NextResponse.json(data, {
       headers: {
-        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600"
+        "Cache-Control": isFullyLive
+          ? "public, s-maxage=300, stale-while-revalidate=600"
+          : "no-store, must-revalidate",
+        "X-Atmos-Freshness": freshnessStatus
       }
     });
   } catch (err) {
     console.error("Wind grid API error:", err);
     return NextResponse.json(
       { error: "Canlı rüzgar vektör ızgarası alınamadı." },
-      { status: 503 }
+      {
+        status: 503,
+        headers: {
+          "Cache-Control": "no-store, must-revalidate"
+        }
+      }
     );
   }
 }

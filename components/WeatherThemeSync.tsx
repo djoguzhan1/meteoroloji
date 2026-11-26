@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { useWeather } from "@/context/WeatherContext";
+import { memo, useEffect } from "react";
+import { useWeatherData, useWeatherScrub } from "@/context/WeatherContext";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 
 export type AtmosRegimeId =
@@ -30,7 +30,7 @@ const REGIME_PALETTES: Record<AtmosRegimeId, RegimePalette> = {
     secondaryRgb: "245, 158, 11",
     rimRgb: "186, 230, 253",
     glow: "rgba(56, 189, 248, 0.24)",
-    surfaceTint: "rgba(8, 13, 25, 0.72)"
+    surfaceTint: "rgba(8, 13, 25, 0.78)"
   },
   frost: {
     accent: "#bae6fd",
@@ -39,7 +39,7 @@ const REGIME_PALETTES: Record<AtmosRegimeId, RegimePalette> = {
     secondaryRgb: "226, 232, 240",
     rimRgb: "224, 242, 254",
     glow: "rgba(186, 230, 253, 0.22)",
-    surfaceTint: "rgba(9, 15, 27, 0.70)"
+    surfaceTint: "rgba(9, 15, 27, 0.76)"
   },
   "rain-front": {
     accent: "#38bdf8",
@@ -48,7 +48,7 @@ const REGIME_PALETTES: Record<AtmosRegimeId, RegimePalette> = {
     secondaryRgb: "103, 232, 249",
     rimRgb: "147, 197, 253",
     glow: "rgba(56, 189, 248, 0.22)",
-    surfaceTint: "rgba(8, 13, 23, 0.71)"
+    surfaceTint: "rgba(8, 13, 23, 0.77)"
   },
   golden: {
     accent: "#f6bd60",
@@ -57,7 +57,7 @@ const REGIME_PALETTES: Record<AtmosRegimeId, RegimePalette> = {
     secondaryRgb: "251, 146, 60",
     rimRgb: "253, 213, 152",
     glow: "rgba(246, 189, 96, 0.22)",
-    surfaceTint: "rgba(16, 12, 18, 0.68)"
+    surfaceTint: "rgba(16, 12, 18, 0.74)"
   },
   "clear-day": {
     accent: "#56ccf2",
@@ -66,7 +66,7 @@ const REGIME_PALETTES: Record<AtmosRegimeId, RegimePalette> = {
     secondaryRgb: "251, 191, 36",
     rimRgb: "191, 235, 255",
     glow: "rgba(86, 204, 242, 0.20)",
-    surfaceTint: "rgba(9, 15, 26, 0.66)"
+    surfaceTint: "rgba(9, 15, 26, 0.72)"
   },
   "clear-night": {
     accent: "#7da5ff",
@@ -75,7 +75,7 @@ const REGIME_PALETTES: Record<AtmosRegimeId, RegimePalette> = {
     secondaryRgb: "56, 189, 248",
     rimRgb: "165, 196, 255",
     glow: "rgba(125, 165, 255, 0.20)",
-    surfaceTint: "rgba(7, 11, 21, 0.72)"
+    surfaceTint: "rgba(7, 11, 21, 0.78)"
   }
 };
 
@@ -108,13 +108,12 @@ export function resolveAtmosRegime(input: {
 }
 
 /**
- * 1) Canlı atmosfer rejimini CSS değişkenleri olarak :root'a yansıtır.
- * 2) Tüm .surface-panel / .surface-tile / .atmos-btn elemanları için
- *    tek bir GPU-friendly delegated pointer spotlight takipçisi çalıştırır (0 React re-render!).
- * 3) UI mikro-seslerinin aktif/pasif durumunu senkronlar.
+ * 1) Canlı atmosfer rejimini yalnızca rejim gerçekten değiştiğinde :root'a yazar.
+ * 2) Geometri önbellekli (0 layout-thrashing) pointer spotlight takipçisi çalıştırır.
  */
-export default function WeatherThemeSync() {
-  const { atmosphere, bundle, frameIndex, audioEnabled } = useWeather();
+function WeatherThemeSyncBase() {
+  const { bundle, audioEnabled } = useWeatherData();
+  const { atmosphere, frameIndex } = useWeatherScrub();
 
   useEffect(() => {
     atmosUiSfx.setEnabled(audioEnabled);
@@ -136,8 +135,10 @@ export default function WeatherThemeSync() {
       stormScore
     });
 
-    const pal = REGIME_PALETTES[regime];
     const root = document.documentElement;
+    if (root.dataset.atmosRegime === regime) return;
+
+    const pal = REGIME_PALETTES[regime];
     root.dataset.atmosRegime = regime;
     root.style.setProperty("--atmos-accent", pal.accent);
     root.style.setProperty("--atmos-accent-rgb", pal.accentRgb);
@@ -148,7 +149,7 @@ export default function WeatherThemeSync() {
     root.style.setProperty("--atmos-surface-tint", pal.surfaceTint);
   }, [atmosphere, bundle, frameIndex]);
 
-  // Delegated 60 FPS pointer spotlight — tek bir dinleyici, 0 React render maliyeti
+  // Zero-Reflow Delegated Pointer Spotlight (caches rects per active element; invalidates passively on scroll/resize)
   useEffect(() => {
     if (typeof window === "undefined") return;
     const coarse = window.matchMedia?.("(pointer: coarse)").matches;
@@ -161,6 +162,13 @@ export default function WeatherThemeSync() {
     let lastTarget: EventTarget | null = null;
     let activePanel: HTMLElement | null = null;
     let activeTile: HTMLElement | null = null;
+    let panelRect: DOMRect | null = null;
+    let tileRect: DOMRect | null = null;
+    let rectsDirty = true;
+
+    const markRectsDirty = () => {
+      rectsDirty = true;
+    };
 
     const updateSpot = () => {
       raf = 0;
@@ -175,18 +183,24 @@ export default function WeatherThemeSync() {
         activeTile.style.setProperty("--spot-o", "0");
       }
 
-      if (panel) {
-        const rect = panel.getBoundingClientRect();
-        panel.style.setProperty("--mx", `${(lastX - rect.left).toFixed(1)}px`);
-        panel.style.setProperty("--my", `${(lastY - rect.top).toFixed(1)}px`);
-        panel.style.setProperty("--spot-o", "1");
+      if (panel !== activePanel || rectsDirty) {
+        panelRect = panel ? panel.getBoundingClientRect() : null;
+      }
+      if (tile !== activeTile || rectsDirty) {
+        tileRect = tile ? tile.getBoundingClientRect() : null;
+      }
+      rectsDirty = false;
+
+      if (panel && panelRect) {
+        panel.style.setProperty("--mx", `${Math.round(lastX - panelRect.left)}px`);
+        panel.style.setProperty("--my", `${Math.round(lastY - panelRect.top)}px`);
+        if (activePanel !== panel) panel.style.setProperty("--spot-o", "1");
       }
 
-      if (tile) {
-        const rect = tile.getBoundingClientRect();
-        tile.style.setProperty("--mx", `${(lastX - rect.left).toFixed(1)}px`);
-        tile.style.setProperty("--my", `${(lastY - rect.top).toFixed(1)}px`);
-        tile.style.setProperty("--spot-o", "1");
+      if (tile && tileRect) {
+        tile.style.setProperty("--mx", `${Math.round(lastX - tileRect.left)}px`);
+        tile.style.setProperty("--my", `${Math.round(lastY - tileRect.top)}px`);
+        if (activeTile !== tile) tile.style.setProperty("--spot-o", "1");
       }
 
       activePanel = panel;
@@ -207,16 +221,25 @@ export default function WeatherThemeSync() {
       if (activeTile) activeTile.style.setProperty("--spot-o", "0");
       activePanel = null;
       activeTile = null;
+      panelRect = null;
+      tileRect = null;
     };
 
     window.addEventListener("pointermove", onPointerMove, { passive: true });
+    window.addEventListener("scroll", markRectsDirty, { passive: true, capture: true });
+    window.addEventListener("resize", markRectsDirty, { passive: true });
     document.addEventListener("mouseleave", onPointerLeave);
     return () => {
       if (raf) window.cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("scroll", markRectsDirty, true);
+      window.removeEventListener("resize", markRectsDirty);
       document.removeEventListener("mouseleave", onPointerLeave);
     };
   }, []);
 
   return null;
 }
+
+const WeatherThemeSync = memo(WeatherThemeSyncBase);
+export default WeatherThemeSync;

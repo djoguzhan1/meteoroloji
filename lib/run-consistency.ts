@@ -1,25 +1,16 @@
 /**
  * ATMOS v5.0 — Calibrated-vs-Calibrated dProg/dt Lagged-Run Consistency & Anti-Flip-Flop Hysteresis Engine
  * File: lib/run-consistency.ts
- *
- * Fixes the v4.5 raw-vs-calibrated mismatch:
- *  - Compares today's calibrated forecast (`candidateTempC`) against prior CALIBRATED runs (`R-1`, `R-2`)
- *    from `state-ledger.ts` when available.
- *  - On cold start (before `R-1` is persisted), aligns raw `previous-runs-api` consensus (`R-1`, `R-2`)
- *    into the exact calibrated target frame via `calibrationOffsetC = candidateTempC - rawRun0ConsensusC`,
- *    so `dProgDtTrendC = rawRun0ConsensusC - rawRun1ConsensusC` reflects pure synoptic run shift and NEVER
- *    destroys EMOS UHI/topographic bias corrections!
- *  - Expands lagged consensus to 8 operational models across 7 global centers (including JMA GSM).
  */
 
 import { ATMOS_HTTP_USER_AGENT } from "./bursa-mesh";
-import { SEVEN_MODEL_KEYS, SEVEN_MODEL_META } from "./metar-verify";
-import type { SevenModelKey } from "./weather-types";
+import { CORE_MODEL_KEYS, CORE_MODEL_META } from "./model-registry";
+import type { CoreModelKey } from "./weather-types";
 
 export type StabilityGrade = "LOCKED" | "CONVERGING" | "WATCH";
 
 export interface LaggedModelSeries {
-  modelKey: SevenModelKey | string;
+  modelKey: CoreModelKey | string;
   family: string;
   utcTimeIndex?: Map<string, number>;
   run0TempC: Array<number | null>;
@@ -82,17 +73,6 @@ export interface ForecastStabilitySummary {
   badgeLabelTr: string;
 }
 
-const MODEL_FAMILY_MAP: Record<string, string> = {
-  ecmwfIfs: "ECMWF",
-  ecmwfAifs: "ECMWF_AI",
-  icon: "DWD",
-  ukmo: "UKMO",
-  meteofrance: "METEOFRANCE",
-  gfs: "NOAA",
-  gem: "CMC",
-  jma: "JMA"
-};
-
 export function getSynopticCycleReliabilityWeight(initCycleUtcHour?: number): number {
   if (initCycleUtcHour === 0 || initCycleUtcHour === 12) return 1.3;
   if (initCycleUtcHour === 6 || initCycleUtcHour === 18) return 0.82;
@@ -101,7 +81,7 @@ export function getSynopticCycleReliabilityWeight(initCycleUtcHour?: number): nu
 
 /**
  * Fetches 4-generation lagged forecast trajectories (`temperature_2m` + `previous_day1..3`
- * and `precipitation` + `previous_day1..2`) for all 8 operational models (7 core + JMA) in ONE HTTP call
+ * and `precipitation` + `previous_day1..2`) for all 8 operational models in ONE HTTP call
  * from `https://previous-runs-api.open-meteo.com/v1/forecast`.
  */
 export async function fetchOpenMeteoLaggedRuns(params: {
@@ -110,13 +90,9 @@ export async function fetchOpenMeteoLaggedRuns(params: {
   elevationM?: number;
   forecastDays?: number;
   timeoutMs?: number;
-}): Promise<Map<string, LaggedModelSeries>> {
-  const result = new Map<string, LaggedModelSeries>();
-  const modelEntries: Array<{ key: string; apiId: string }> = [
-    ...SEVEN_MODEL_KEYS.map((k) => ({ key: k, apiId: SEVEN_MODEL_META[k].apiModel })),
-    { key: "jma", apiId: "jma_seamless" }
-  ];
-  const apiModels = modelEntries.map((m) => m.apiId).join(",");
+}): Promise<Map<CoreModelKey, LaggedModelSeries>> {
+  const result = new Map<CoreModelKey, LaggedModelSeries>();
+  const apiModels = CORE_MODEL_KEYS.map((k) => CORE_MODEL_META[k].apiModel).join(",");
   const vars = [
     "temperature_2m",
     "temperature_2m_previous_day1",
@@ -155,13 +131,15 @@ export async function fetchOpenMeteoLaggedRuns(params: {
     const utcTimeIndex = new Map<string, number>();
     (h.time as string[]).forEach((t, idx) => utcTimeIndex.set(String(t), idx));
 
-    for (const { key, apiId } of modelEntries) {
+    for (const key of CORE_MODEL_KEYS) {
+      const meta = CORE_MODEL_META[key];
+      const apiId = meta.apiModel;
       const r0 = h[`temperature_2m_${apiId}`] as Array<number | null> | undefined;
       if (!Array.isArray(r0)) continue;
 
       result.set(key, {
         modelKey: key,
-        family: MODEL_FAMILY_MAP[key] ?? key.toUpperCase(),
+        family: meta.family,
         utcTimeIndex,
         run0TempC: r0,
         runMinus1TempC: h[`temperature_2m_previous_day1_${apiId}`] as Array<number | null> | undefined,
@@ -187,7 +165,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
   let spinUpVetoApplied = false;
   let hysteresisDamped = false;
 
-  // 1. MODEL SPIN-UP SHOCK VETO (T+0 .. T+2h)
   if (input.leadHours <= 2 && input.liveAnchor) {
     const liveT = input.liveAnchor.liveObsTempC;
     if (liveT !== null && liveT !== undefined && Number.isFinite(liveT)) {
@@ -195,7 +172,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
       if (Math.abs(finalTempC - liveT) >= 0.8) {
         spinUpVetoApplied = true;
       }
-      // At T+0 we lock directly toward live observation; at T+1..2h only intervene if spin-up gap exceeds diurnal rate
       if (input.leadHours === 0 || Math.abs(finalTempC - liveT) >= 1.6) {
         finalTempC = obsBlendWeight * liveT + (1 - obsBlendWeight) * finalTempC;
       }
@@ -216,7 +192,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
     }
   }
 
-  // 2. CALIBRATED-VS-CALIBRATED LAGGED CONSENSUS BASELINE & dProg/dt MONOTONICITY
   let sumPairR0 = 0;
   let sumPairR1 = 0;
   let wPair01 = 0;
@@ -270,9 +245,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
     }
   }
 
-  // Bias-invariant cold-start alignment:
-  // calibratedPrev1 = rawR1 + (finalTempC - rawR0) = finalTempC - (rawR0 - rawR1)
-  // Preserves 100% of EMOS UHI/elevation calibration while measuring exact synoptic run shift!
   const alignedColdStartPrev1 =
     wPair01 > 0
       ? finalTempC - Math.max(-6.5, Math.min(6.5, sumPairR0 / wPair01 - sumPairR1 / wPair01))
@@ -314,7 +286,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
     }
   }
 
-  // 3. 2-OF-3 PHYSICAL EVIDENCE ANTI-FLIP-FLOP GATEKEEPER
   let evidenceScore = 0;
 
   const isMonotonicMacro =
@@ -357,8 +328,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
     finalTempC = 0.72 * laggedPrev1Temp + 0.28 * finalTempC;
   }
 
-  // Precipitation flip-flop gatekeeper: uses persisted calibrated wet state when available,
-  // or compares R0 vs R-1 wet model fraction shift so calibrated drizzle suppression is preserved.
   const prevWet =
     input.previousLockedIsWet !== null && input.previousLockedIsWet !== undefined
       ? input.previousLockedIsWet
@@ -388,7 +357,6 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
           }
           if (total < 3) return null;
           const shiftFrac = (wetVotesR0 - wetVotesR1) / total;
-          // Only trigger cold-start wet flip protection if R0 suddenly flipped >=35% of models vs R-1
           if (Math.abs(shiftFrac) < 0.35) return finalIsWet;
           return wetVotesR1 / total >= 0.45;
         })();

@@ -10,8 +10,24 @@ import {
   useRef,
   useState
 } from "react";
-import { DEFAULT_LOCATION, PRESET_CITIES } from "@/lib/weather";
+import {
+  readCachedWeatherBundleAsync,
+  readCachedWeatherBundleSync,
+  writeCachedWeatherBundle
+} from "@/lib/client-forecast-cache";
+import {
+  areLocationsEquivalent,
+  LIVE_FRESHNESS_MAX_AGE_MS,
+  reanchorWeatherBundleToNow
+} from "@/lib/forecast-resilience";
+import {
+  ATMOS_STORAGE_KEYS,
+  DEFAULT_LOCATION,
+  PRESET_CITIES,
+  readMigratedStorageItem
+} from "@/lib/weather-client";
 import type {
+  DataFreshnessMeta,
   GeoLocation,
   SceneAtmosphereInput,
   UnitSystem,
@@ -19,20 +35,13 @@ import type {
   WeatherBundle
 } from "@/lib/weather-types";
 
-const STORAGE_KEYS = {
-  location: "atmos:location:v45",
-  favorites: "atmos:stations:v45",
-  alerts: "atmos:alerts:v45",
-  unit: "atmos:unit:v45"
-};
+const STORAGE_KEYS = ATMOS_STORAGE_KEYS;
+const RECOVERY_BACKOFF_SEC = [10, 20, 35, 60] as const;
 
-type WeatherContextValue = {
+export type WeatherDataContextValue = {
   bundle: WeatherBundle | null;
-  loading: boolean;
-  error: string | null;
   activeLocation: GeoLocation;
   setActiveLocation: (loc: GeoLocation) => void;
-  refreshWeather: () => Promise<void>;
   favorites: GeoLocation[];
   addFavorite: (loc: GeoLocation) => void;
   removeFavorite: (id: string) => void;
@@ -43,16 +52,41 @@ type WeatherContextValue = {
   toggleAlert: (id: string) => void;
   unit: UnitSystem;
   setUnit: (u: UnitSystem) => void;
-  frameIndex: number;
-  setFrameIndex: (idx: number) => void;
   audioEnabled: boolean;
   setAudioEnabled: (v: boolean) => void;
   searchOpen: boolean;
   setSearchOpen: (v: boolean) => void;
+};
+
+export type WeatherScrubContextValue = {
+  frameIndex: number;
+  setFrameIndex: (idx: number) => void;
   atmosphere: SceneAtmosphereInput;
 };
 
-const WeatherContext = createContext<WeatherContextValue | null>(null);
+export type WeatherStatusContextValue = {
+  loading: boolean;
+  isRevalidating: boolean;
+  error: string | null;
+  freshness: DataFreshnessMeta | null;
+  isStale: boolean;
+  isDegraded: boolean;
+  isOffline: boolean;
+  recoveryCount: number;
+  justRecovered: boolean;
+  refreshWeather: () => Promise<void>;
+};
+
+export type WeatherContextValue = WeatherDataContextValue &
+  WeatherScrubContextValue &
+  WeatherStatusContextValue & {
+    retryCountdownSec: number | null;
+  };
+
+const WeatherDataContext = createContext<WeatherDataContextValue | null>(null);
+const WeatherScrubContext = createContext<WeatherScrubContextValue | null>(null);
+const WeatherStatusContext = createContext<WeatherStatusContextValue | null>(null);
+const WeatherRetryCountdownContext = createContext<number | null>(null);
 
 const DEFAULT_ALERTS: WeatherAlertRule[] = [
   {
@@ -105,87 +139,300 @@ export function WeatherProvider({
     initialBundle?.location ?? DEFAULT_LOCATION
   );
   const [loading, setLoading] = useState(false);
+  const [isRevalidating, setIsRevalidating] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
+  const [isOffline, setIsOffline] = useState(false);
+  const [retryCountdownSec, setRetryCountdownSec] = useState<number | null>(null);
+  const [recoveryCount, setRecoveryCount] = useState(0);
+  const [justRecovered, setJustRecovered] = useState(false);
 
   const [favorites, setFavorites] = useState<GeoLocation[]>(PRESET_CITIES);
   const [alerts, setAlerts] = useState<WeatherAlertRule[]>(DEFAULT_ALERTS);
   const [unit, setUnitState] = useState<UnitSystem>("metric");
-  const [frameIndex, setFrameIndex] = useState(0);
+  const [frameIndex, setFrameIndexState] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
-  const loadSeqRef = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const loadForLocation = useCallback(async (loc: GeoLocation) => {
-    const seq = ++loadSeqRef.current;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setLoading(true);
-    setError(null);
-    try {
-      const qs = new URLSearchParams({
-        lat: String(loc.lat),
-        lon: String(loc.lon),
-        name: loc.name,
-        country: loc.country ?? ""
-      });
-      if (loc.elevation !== undefined && Number.isFinite(loc.elevation)) {
-        qs.set("elevation", String(Math.round(loc.elevation)));
-      }
-      const res = await fetch(`/api/weather?${qs.toString()}`, {
-        signal: controller.signal
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      const data: WeatherBundle = await res.json();
-      if (seq !== loadSeqRef.current) return;
-      setBundle({
-        ...data,
-        location: {
-          ...data.location,
-          id: loc.id,
-          name: loc.name,
-          admin1: loc.admin1 ?? data.location.admin1,
-          country: loc.country || data.location.country
-        }
-      });
-      setFrameIndex(0);
-    } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") return;
-      if (seq !== loadSeqRef.current) return;
-      setError(
-        e instanceof Error
-          ? e.message
-          : "Meteoroloji verileri alınamadı. Bağlantını kontrol edip tekrar dene."
-      );
-    } finally {
-      if (seq === loadSeqRef.current) {
-        setLoading(false);
-      }
-    }
+  const setFrameIndex = useCallback((idx: number) => {
+    setFrameIndexState((prev) => (prev === idx ? prev : idx));
   }, []);
 
+  const loadSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const bundleRef = useRef<WeatherBundle | null>(initialBundle);
+  const activeLocRef = useRef<GeoLocation>(initialBundle?.location ?? DEFAULT_LOCATION);
+  const frameIndexRef = useRef(0);
+  const errorRef = useRef<string | null>(initialError);
+  const retryAttemptRef = useRef(0);
+  const wasOfflineSinceLiveRef = useRef(false);
+  const hadInitialFailureRef = useRef(
+    initialBundle === null ||
+      (initialBundle?.freshness !== undefined && initialBundle.freshness.status !== "live")
+  );
+  const recoveryBadgeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    bundleRef.current = bundle;
+  }, [bundle]);
+
+  useEffect(() => {
+    activeLocRef.current = activeLocation;
+  }, [activeLocation]);
+
+  useEffect(() => {
+    frameIndexRef.current = frameIndex;
+  }, [frameIndex]);
+
+  useEffect(() => {
+    errorRef.current = error;
+  }, [error]);
+
+  const triggerJustRecovered = useCallback(() => {
+    setJustRecovered(true);
+    if (recoveryBadgeTimerRef.current !== null) {
+      window.clearTimeout(recoveryBadgeTimerRef.current);
+    }
+    recoveryBadgeTimerRef.current = window.setTimeout(() => {
+      setJustRecovered(false);
+      recoveryBadgeTimerRef.current = null;
+    }, 4500);
+  }, []);
+
+  const loadForLocation = useCallback(
+    async (
+      loc: GeoLocation,
+      opts?: { background?: boolean; manual?: boolean }
+    ) => {
+      const seq = ++loadSeqRef.current;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const hasMatchingBundle = Boolean(
+        bundleRef.current && areLocationsEquivalent(bundleRef.current.location, loc)
+      );
+      const runInBackground = Boolean(opts?.background || hasMatchingBundle);
+
+      if (runInBackground) {
+        setIsRevalidating(true);
+      } else {
+        setLoading(true);
+      }
+      if (!runInBackground) {
+        setError(null);
+      }
+
+      try {
+        const qs = new URLSearchParams({
+          lat: String(loc.lat),
+          lon: String(loc.lon),
+          name: loc.name,
+          country: loc.country ?? ""
+        });
+        const bypassHttpCache =
+          runInBackground ||
+          Boolean(opts?.manual) ||
+          bundleRef.current?.freshness?.status !== "live";
+
+        const res = await fetch(`/api/weather?${qs.toString()}`, {
+          signal: controller.signal,
+          cache: bypassHttpCache ? "no-store" : "default"
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+        const data: WeatherBundle = await res.json();
+        if (seq !== loadSeqRef.current) return;
+        if (!areLocationsEquivalent(activeLocRef.current, loc)) return;
+
+        const merged: WeatherBundle = {
+          ...data,
+          location: {
+            ...data.location,
+            id: loc.id || data.location.id,
+            name: loc.name || data.location.name,
+            admin1: loc.admin1 ?? data.location.admin1,
+            country: loc.country || data.location.country
+          }
+        };
+
+        const prevWasImpaired =
+          Boolean(errorRef.current) ||
+          wasOfflineSinceLiveRef.current ||
+          hadInitialFailureRef.current ||
+          (bundleRef.current !== null &&
+            areLocationsEquivalent(bundleRef.current.location, loc) &&
+            bundleRef.current.freshness !== undefined &&
+            bundleRef.current.freshness.status !== "live");
+
+        // Preserve user's selected hour across silent background live updates
+        let nextFrameIdx = 0;
+        if (
+          runInBackground &&
+          frameIndexRef.current > 0 &&
+          bundleRef.current &&
+          areLocationsEquivalent(bundleRef.current.location, loc)
+        ) {
+          const prevIso = bundleRef.current.hourly[frameIndexRef.current]?.time;
+          if (prevIso) {
+            const matched = merged.hourly.findIndex((h) => h.time === prevIso);
+            if (matched >= 0) nextFrameIdx = matched;
+          }
+        }
+
+        setBundle(merged);
+        setFrameIndexState(nextFrameIdx);
+        setError(null);
+
+        const nextStatus = merged.freshness?.status ?? "live";
+        if (nextStatus === "live") {
+          writeCachedWeatherBundle(merged);
+          retryAttemptRef.current = 0;
+          wasOfflineSinceLiveRef.current = false;
+          hadInitialFailureRef.current = false;
+          setRetryCountdownSec(null);
+
+          if (prevWasImpaired) {
+            setRecoveryCount((c) => c + 1);
+            triggerJustRecovered();
+          } else if (opts?.manual) {
+            setRecoveryCount((c) => c + 1);
+          }
+        } else {
+          // Server returned L2/L3 stale or degraded fallback; keep probing in background!
+          retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, 6);
+        }
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
+        if (seq !== loadSeqRef.current) return;
+        if (!areLocationsEquivalent(activeLocRef.current, loc)) return;
+
+        const errMessage =
+          e instanceof Error
+            ? e.message
+            : "Meteoroloji verileri alınamadı. Bağlantı sağlandığında otomatik güncellenecek.";
+
+        retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, 6);
+
+        // Tier 1 client defense: keep current bundle if it belongs to `loc`, marking it stale & re-anchored
+        if (
+          bundleRef.current &&
+          areLocationsEquivalent(bundleRef.current.location, loc)
+        ) {
+          const priorTier = bundleRef.current.freshness?.sourceTier;
+          const fallbackBundle = reanchorWeatherBundleToNow(
+            bundleRef.current,
+            Date.now(),
+            {
+              status: "stale",
+              sourceTier:
+                priorTier && priorTier !== "live" ? priorTier : "client-cache",
+              cachedAtMs:
+                bundleRef.current.freshness?.cachedAtMs ??
+                Date.parse(bundleRef.current.fetchedAt),
+              staleReason: errMessage,
+              modelsRespondedCount: bundleRef.current.hybrid.activeModels.length
+            }
+          );
+          setBundle(fallbackBundle);
+          setError(null);
+        } else {
+          // Tier 2 client defense: check IndexedDB / localStorage L4 vault for `loc`
+          const cachedFallback = await readCachedWeatherBundleAsync(
+            loc,
+            Date.now(),
+            {
+              forceStale: true,
+              staleReason: errMessage
+            }
+          );
+          if (seq !== loadSeqRef.current) return;
+          if (cachedFallback) {
+            setBundle(cachedFallback);
+            setFrameIndexState(0);
+            setError(null);
+          } else {
+            setBundle(null);
+            setError(errMessage);
+          }
+        }
+      } finally {
+        if (seq === loadSeqRef.current) {
+          setLoading(false);
+          setIsRevalidating(false);
+        }
+      }
+    },
+    [triggerJustRecovered]
+  );
+
+  const switchAndHydrateLocation = useCallback(
+    (loc: GeoLocation) => {
+      setActiveLocationState(loc);
+      activeLocRef.current = loc;
+      retryAttemptRef.current = 0;
+      setRetryCountdownSec(null);
+      setFrameIndexState(0);
+
+      const sameAsCurrent = Boolean(
+        bundleRef.current && areLocationsEquivalent(bundleRef.current.location, loc)
+      );
+
+      if (!sameAsCurrent) {
+        const offlineNow =
+          typeof navigator !== "undefined" && navigator.onLine === false;
+        const syncCached = readCachedWeatherBundleSync(loc, Date.now(), {
+          forceStale: offlineNow
+        });
+
+        if (syncCached) {
+          bundleRef.current = syncCached;
+          setBundle(syncCached);
+          setError(null);
+        } else {
+          // Strict city isolation: NEVER keep the old city's bundle under the new city's title!
+          bundleRef.current = null;
+          setBundle(null);
+          setError(null);
+        }
+      }
+
+      void loadForLocation(loc, { background: Boolean(bundleRef.current) });
+    },
+    [loadForLocation]
+  );
+
+  // Initial mount: persist live SSR bundle, restore preferences, and recover from L4 if SSR failed
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
+
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        setIsOffline(true);
+        wasOfflineSinceLiveRef.current = true;
+      }
+
+      if (
+        initialBundle &&
+        (initialBundle.freshness?.status ?? "live") === "live"
+      ) {
+        writeCachedWeatherBundle(initialBundle);
+      }
+
       try {
-        const savedFavs = localStorage.getItem(STORAGE_KEYS.favorites);
+        const savedFavs = readMigratedStorageItem("favorites", localStorage);
         if (savedFavs) {
           const parsed = JSON.parse(savedFavs);
           if (Array.isArray(parsed) && parsed.length > 0) setFavorites(parsed);
         }
-        const savedAlerts = localStorage.getItem(STORAGE_KEYS.alerts);
+        const savedAlerts = readMigratedStorageItem("alerts", localStorage);
         if (savedAlerts) {
           const parsed = JSON.parse(savedAlerts);
           if (Array.isArray(parsed)) setAlerts(parsed);
         }
-        const savedUnit = localStorage.getItem(STORAGE_KEYS.unit);
+        const savedUnit = readMigratedStorageItem("unit", localStorage);
         if (savedUnit === "metric" || savedUnit === "imperial") setUnitState(savedUnit);
 
         // 1. Öncelik: Paylaşılabilir URL query parametreleri (?lat=&lon=&city=&country=)
@@ -212,13 +459,14 @@ export function WeatherProvider({
             lat: urlLat,
             lon: urlLon
           };
-          setActiveLocationState(urlLoc);
-          void loadForLocation(urlLoc);
-          return;
+          if (!areLocationsEquivalent(initialBundle?.location, urlLoc)) {
+            switchAndHydrateLocation(urlLoc);
+            return;
+          }
         }
 
         // 2. Öncelik: Kayıtlı son konum
-        const savedLoc = localStorage.getItem(STORAGE_KEYS.location);
+        const savedLoc = readMigratedStorageItem("location", localStorage);
         if (savedLoc) {
           const loc: GeoLocation = JSON.parse(savedLoc);
           const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
@@ -226,27 +474,165 @@ export function WeatherProvider({
             loc &&
             typeof loc.lat === "number" &&
             typeof loc.lon === "number" &&
-            (Math.abs(loc.lat - initLoc.lat) > 0.05 ||
-              Math.abs(loc.lon - initLoc.lon) > 0.05)
+            !areLocationsEquivalent(loc, initLoc)
           ) {
-            setActiveLocationState(loc);
-            void loadForLocation(loc);
+            switchAndHydrateLocation(loc);
+            return;
           }
         }
       } catch {
         // ignore storage errors
       }
+
+      // 3. SSR başlangıçta başarısız olduysa (initialBundle === null), L4 tarayıcı kasasından anında kurtar
+      if (!initialBundle) {
+        void readCachedWeatherBundleAsync(DEFAULT_LOCATION, Date.now(), {
+          forceStale: true,
+          staleReason:
+            initialError ??
+            "Sunucu başlangıç verisi alınamadı; tarayıcı kasasındaki son tahmin yüklendi"
+        }).then((cached) => {
+          if (!active || !cached) return;
+          if (
+            !bundleRef.current &&
+            areLocationsEquivalent(activeLocRef.current, DEFAULT_LOCATION)
+          ) {
+            setBundle(cached);
+            setError(null);
+          }
+        });
+      }
     });
+
     return () => {
       active = false;
+      if (recoveryBadgeTimerRef.current !== null) {
+        window.clearTimeout(recoveryBadgeTimerRef.current);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Real-time `online` / `offline` & `visibilitychange` instant recovery hooks
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOffline(false);
+      retryAttemptRef.current = 0;
+      setRetryCountdownSec(null);
+      setRecoveryCount((c) => c + 1);
+      void loadForLocation(activeLocRef.current, {
+        background: Boolean(bundleRef.current)
+      });
+    };
+
+    const handleOffline = () => {
+      wasOfflineSinceLiveRef.current = true;
+      setIsOffline(true);
+      setRetryCountdownSec(null);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+
+      const cur = bundleRef.current;
+      const curStatus = cur?.freshness?.status ?? "live";
+      const fetchedMs = cur ? Date.parse(cur.fetchedAt) : 0;
+      const ageMs = Number.isFinite(fetchedMs) ? Date.now() - fetchedMs : Infinity;
+
+      if (!cur || curStatus !== "live" || errorRef.current || ageMs >= LIVE_FRESHNESS_MAX_AGE_MS) {
+        retryAttemptRef.current = 0;
+        void loadForLocation(activeLocRef.current, {
+          background: Boolean(cur)
+        });
+      }
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [loadForLocation]);
+
+  const freshness: DataFreshnessMeta | null = bundle?.freshness ?? null;
+  const isStale = freshness?.status === "stale";
+  const isDegraded = freshness?.status === "degraded";
+  const needsAutoRecovery =
+    isStale || isDegraded || (bundle === null && error !== null);
+
+  // Adaptive exponential backoff poller (10s -> 20s -> 35s -> 60s) with isolated 1s live countdown
+  useEffect(() => {
+    if (!needsAutoRecovery || isOffline || loading || isRevalidating) {
+      return;
+    }
+
+    const stepIdx = Math.min(
+      retryAttemptRef.current,
+      RECOVERY_BACKOFF_SEC.length - 1
+    );
+    let remaining = RECOVERY_BACKOFF_SEC[stepIdx];
+
+    queueMicrotask(() => {
+      setRetryCountdownSec(remaining);
+    });
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(interval);
+        setRetryCountdownSec(0);
+        void loadForLocation(activeLocRef.current, {
+          background: Boolean(bundleRef.current)
+        });
+      } else {
+        setRetryCountdownSec(remaining);
+      }
+    }, 1000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [needsAutoRecovery, isOffline, loading, isRevalidating, loadForLocation]);
+
+  // Steady-state 45s heartbeat: silently refreshes live data after 5 min & advances stale clock across hour boundaries
+  useEffect(() => {
+    const heartbeat = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      const cur = bundleRef.current;
+      if (!cur) return;
+
+      const nowMs = Date.now();
+      const status = cur.freshness?.status ?? "live";
+
+      if (status !== "live") {
+        const localNowHourIso = `${new Date(nowMs + cur.utcOffsetSeconds * 1000)
+          .toISOString()
+          .slice(0, 13)}:00`;
+        if (cur.hourly[0] && cur.hourly[0].time < localNowHourIso) {
+          setBundle(reanchorWeatherBundleToNow(cur, nowMs));
+        }
+        return;
+      }
+
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+      const fetchedMs = Date.parse(cur.fetchedAt);
+      if (Number.isFinite(fetchedMs) && nowMs - fetchedMs >= LIVE_FRESHNESS_MAX_AGE_MS) {
+        void loadForLocation(activeLocRef.current, { background: true });
+      }
+    }, 45_000);
+
+    return () => window.clearInterval(heartbeat);
+  }, [loadForLocation]);
+
   const setActiveLocation = useCallback(
     (loc: GeoLocation) => {
-      setActiveLocationState(loc);
-      setFrameIndex(0);
       try {
         localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
         if (typeof window !== "undefined" && window.location.pathname === "/") {
@@ -261,14 +647,18 @@ export function WeatherProvider({
       } catch {
         // ignore
       }
-      void loadForLocation(loc);
+      switchAndHydrateLocation(loc);
     },
-    [loadForLocation]
+    [switchAndHydrateLocation]
   );
 
   const refreshWeather = useCallback(async () => {
-    await loadForLocation(activeLocation);
-  }, [activeLocation, loadForLocation]);
+    retryAttemptRef.current = 0;
+    await loadForLocation(activeLocRef.current, {
+      background: Boolean(bundleRef.current),
+      manual: true
+    });
+  }, [loadForLocation]);
 
   const setUnit = useCallback((u: UnitSystem) => {
     setUnitState(u);
@@ -283,9 +673,7 @@ export function WeatherProvider({
     setFavorites((prev) => {
       if (
         prev.some(
-          (f) =>
-            f.id === loc.id ||
-            (Math.abs(f.lat - loc.lat) < 0.05 && Math.abs(f.lon - loc.lon) < 0.05)
+          (f) => f.id === loc.id || areLocationsEquivalent(f, loc)
         )
       ) {
         return prev;
@@ -315,9 +703,7 @@ export function WeatherProvider({
   const isFavorite = useCallback(
     (loc: GeoLocation) =>
       favorites.some(
-        (f) =>
-          f.id === loc.id ||
-          (Math.abs(f.lat - loc.lat) < 0.05 && Math.abs(f.lon - loc.lon) < 0.05)
+        (f) => f.id === loc.id || areLocationsEquivalent(f, loc)
       ),
     [favorites]
   );
@@ -405,14 +791,11 @@ export function WeatherProvider({
     };
   }, [bundle, frameIndex]);
 
-  const value = useMemo<WeatherContextValue>(
+  const dataValue = useMemo<WeatherDataContextValue>(
     () => ({
       bundle,
-      loading,
-      error,
       activeLocation,
       setActiveLocation,
-      refreshWeather,
       favorites,
       addFavorite,
       removeFavorite,
@@ -423,21 +806,15 @@ export function WeatherProvider({
       toggleAlert,
       unit,
       setUnit,
-      frameIndex,
-      setFrameIndex,
       audioEnabled,
       setAudioEnabled,
       searchOpen,
-      setSearchOpen,
-      atmosphere
+      setSearchOpen
     }),
     [
       bundle,
-      loading,
-      error,
       activeLocation,
       setActiveLocation,
-      refreshWeather,
       favorites,
       addFavorite,
       removeFavorite,
@@ -448,22 +825,104 @@ export function WeatherProvider({
       toggleAlert,
       unit,
       setUnit,
-      frameIndex,
       audioEnabled,
-      searchOpen,
+      searchOpen
+    ]
+  );
+
+  const scrubValue = useMemo<WeatherScrubContextValue>(
+    () => ({
+      frameIndex,
+      setFrameIndex,
       atmosphere
+    }),
+    [frameIndex, setFrameIndex, atmosphere]
+  );
+
+  const statusValue = useMemo<WeatherStatusContextValue>(
+    () => ({
+      loading,
+      isRevalidating,
+      error,
+      freshness,
+      isStale,
+      isDegraded,
+      isOffline,
+      recoveryCount,
+      justRecovered,
+      refreshWeather
+    }),
+    [
+      loading,
+      isRevalidating,
+      error,
+      freshness,
+      isStale,
+      isDegraded,
+      isOffline,
+      recoveryCount,
+      justRecovered,
+      refreshWeather
     ]
   );
 
   return (
-    <WeatherContext.Provider value={value}>{children}</WeatherContext.Provider>
+    <WeatherDataContext.Provider value={dataValue}>
+      <WeatherStatusContext.Provider value={statusValue}>
+        <WeatherRetryCountdownContext.Provider value={retryCountdownSec}>
+          <WeatherScrubContext.Provider value={scrubValue}>
+            {children}
+          </WeatherScrubContext.Provider>
+        </WeatherRetryCountdownContext.Provider>
+      </WeatherStatusContext.Provider>
+    </WeatherDataContext.Provider>
   );
 }
 
-export function useWeather(): WeatherContextValue {
-  const ctx = useContext(WeatherContext);
+export function useWeatherData(): WeatherDataContextValue {
+  const ctx = useContext(WeatherDataContext);
   if (!ctx) {
-    throw new Error("useWeather must be used inside WeatherProvider");
+    throw new Error("useWeatherData must be used inside WeatherProvider");
   }
   return ctx;
+}
+
+export function useWeatherScrub(): WeatherScrubContextValue {
+  const ctx = useContext(WeatherScrubContext);
+  if (!ctx) {
+    throw new Error("useWeatherScrub must be used inside WeatherProvider");
+  }
+  return ctx;
+}
+
+export function useWeatherStatus(): WeatherStatusContextValue {
+  const ctx = useContext(WeatherStatusContext);
+  if (!ctx) {
+    throw new Error("useWeatherStatus must be used inside WeatherProvider");
+  }
+  return ctx;
+}
+
+export function useWeatherRetryCountdown(): number | null {
+  return useContext(WeatherRetryCountdownContext);
+}
+
+/**
+ * Geriye dönük %100 uyumlu birleşik kanca; dar performans izolasyonu için
+ * bileşenlerde `useWeatherData`, `useWeatherScrub` ve `useWeatherStatus` tercih edilir.
+ */
+export function useWeather(): WeatherContextValue {
+  const data = useWeatherData();
+  const scrub = useWeatherScrub();
+  const status = useWeatherStatus();
+  const retryCountdownSec = useWeatherRetryCountdown();
+  return useMemo(
+    () => ({
+      ...data,
+      ...scrub,
+      ...status,
+      retryCountdownSec
+    }),
+    [data, scrub, status, retryCountdownSec]
+  );
 }

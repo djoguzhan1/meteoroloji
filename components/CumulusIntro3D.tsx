@@ -1387,6 +1387,11 @@ export default function CumulusIntro3D({
     const startTs = lastTs;
 
     const animate = (now: number) => {
+      if (document.visibilityState === "hidden") {
+        lastTs = now;
+        rafId = window.requestAnimationFrame(animate);
+        return;
+      }
       const rawMs = now - lastTs;
       const dt = Math.min(0.05, Math.max(0.001, rawMs / 1000));
       lastTs = now;
@@ -1760,7 +1765,7 @@ export default function CumulusIntro3D({
               }
             }}
             aria-label={sfxEnabled ? "Fırtına sesini kapat" : "Fırtına sesini aç"}
-            className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/15 bg-[#050912]/65 px-3.5 py-1.5 font-mono text-[11px] text-slate-100 backdrop-blur-md transition-colors hover:border-white/35 hover:bg-[#050912]/85"
+            className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/15 bg-[#050912]/65 px-3.5 py-1.5 font-mono text-[11px] text-slate-100 transition-colors hover:border-white/35 hover:bg-[#050912]/85"
           >
             {sfxEnabled ? (
               <Volume2 className="h-3.5 w-3.5 text-slate-100" />
@@ -1809,7 +1814,7 @@ export default function CumulusIntro3D({
             <button
               type="button"
               onClick={onSkip}
-              className="rounded-full border border-white/15 bg-[#050912]/50 px-5 py-3.5 text-xs font-medium tracking-wider text-slate-200/90 backdrop-blur-md transition-colors hover:border-white/35 hover:bg-[#050912]/80 hover:text-white"
+              className="rounded-full border border-white/15 bg-[#050912]/50 px-5 py-3.5 text-xs font-medium tracking-wider text-slate-200/90 transition-colors hover:border-white/35 hover:bg-[#050912]/80 hover:text-white"
             >
               Hızlı Geç
             </button>
@@ -1833,7 +1838,7 @@ export default function CumulusIntro3D({
                 key={st.id}
                 type="button"
                 onClick={() => handleSelectStage(st.id, idx)}
-                className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-medium backdrop-blur-md transition-all ${
+                className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all ${
                   active
                     ? "border-white/55 bg-white/16 text-white shadow-[0_6px_24px_rgba(0,0,0,0.55)]"
                     : "border-white/12 bg-[#050912]/58 text-slate-200/85 hover:border-white/32 hover:bg-[#050912]/82 hover:text-white"
@@ -1859,7 +1864,7 @@ export default function CumulusIntro3D({
       {/* Supersonik Bulut Dalışı esnasında sade sinematik odak şeridi */}
       {diving && !fadeOut && (
         <div className="pointer-events-none absolute inset-x-0 bottom-8 flex flex-col items-center gap-2">
-          <div className="rounded-full border border-white/25 bg-[#050912]/72 px-5 py-1.5 font-mono text-[11px] font-medium tracking-[0.26em] text-slate-100 backdrop-blur-md">
+          <div className="rounded-full border border-white/25 bg-[#050912]/72 px-5 py-1.5 font-mono text-[11px] font-medium tracking-[0.26em] text-slate-100">
             {divePhaseText}
           </div>
           <div className="font-mono text-[10px] tracking-[0.32em] text-slate-300/80">

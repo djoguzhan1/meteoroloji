@@ -1,17 +1,30 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
-import { SEVEN_MODEL_KEYS, SEVEN_MODEL_META } from "@/lib/metar-verify";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Clock, RefreshCw } from "lucide-react";
+import { useWeatherStatus } from "@/context/WeatherContext";
+import {
+  readCachedModelsBundleAsync,
+  readCachedModelsBundleSync,
+  writeCachedModelsBundle
+} from "@/lib/client-forecast-cache";
+import {
+  areLocationsEquivalent,
+  formatClockTr,
+  formatFreshnessAgeTr,
+  reanchorMultiModelBundleToNow
+} from "@/lib/forecast-resilience";
+import { CORE_MODEL_KEYS, CORE_MODEL_META } from "@/lib/model-registry";
 import type {
+  CoreModelKey,
   GeoLocation,
   ModelSeriesPoint,
   MultiModelBundle,
-  SevenModelKey,
   UnitSystem
 } from "@/lib/weather-types";
 
 type MetricTab = "temp2m" | "temp850" | "precip" | "wind10m";
+type HorizonHours = 72 | 168 | 360;
 
 const TAB_CONFIG: Record<
   MetricTab,
@@ -19,7 +32,7 @@ const TAB_CONFIG: Record<
 > = {
   temp2m: {
     label: "2m Sıcaklık",
-    subtitle: "7 Tier-1 model yüzey hava sıcaklığı karşılaştırması",
+    subtitle: "8 operasyonel NWP ve AI modelinin yüzey hava sıcaklığı karşılaştırması",
     unitMetric: "°C",
     unitImperial: "°F"
   },
@@ -66,84 +79,226 @@ function buildLinePath(points: Array<{ x: number; y: number | null }>): string {
   return d.trim();
 }
 
-export default function ModelComparisonChart({
+function ModelComparisonChartBase({
   location,
   unit
 }: {
   location: GeoLocation;
   unit: UnitSystem;
 }) {
+  const { recoveryCount, isOffline } = useWeatherStatus();
+
   const [models, setModels] = useState<MultiModelBundle | null>(null);
   const [loading, setLoading] = useState(true);
+  const [revalidating, setRevalidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<MetricTab>("temp2m");
+  const [horizonHours, setHorizonHours] = useState<HorizonHours>(72);
   const [hoverIdx, setHoverIdx] = useState<number>(0);
-  const [visibleModels, setVisibleModels] = useState<Record<SevenModelKey, boolean>>({
+  const [visibleModels, setVisibleModels] = useState<Record<CoreModelKey, boolean>>({
     ecmwfIfs: true,
     ecmwfAifs: true,
     icon: true,
     ukmo: true,
     meteofrance: true,
     gfs: true,
-    gem: true
+    gem: true,
+    jma: true
   });
 
-  const toggleModel = (k: SevenModelKey) => {
+  const toggleModel = (k: CoreModelKey) => {
     setVisibleModels((prev) => {
-      const enabledCount = SEVEN_MODEL_KEYS.filter((m) => prev[m]).length;
+      const enabledCount = CORE_MODEL_KEYS.filter((m) => prev[m]).length;
       if (prev[k] && enabledCount <= 1) return prev;
       return { ...prev, [k]: !prev[k] };
     });
   };
 
   const reqSeqRef = useRef(0);
+  const modelsRef = useRef<MultiModelBundle | null>(null);
+  const locRef = useRef<GeoLocation>(location);
 
-  const loadModels = useCallback(async () => {
-    const seq = ++reqSeqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const qs = new URLSearchParams({
-        lat: String(location.lat),
-        lon: String(location.lon)
-      });
-      const res = await fetch(`/api/models?${qs.toString()}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      const data: MultiModelBundle = await res.json();
-      if (seq !== reqSeqRef.current) return;
-      setModels(data);
-      setHoverIdx(0);
-    } catch (e) {
-      if (seq !== reqSeqRef.current) return;
-      setError(
-        e instanceof Error
-          ? e.message
-          : "7-Model sayısal tahmin verileri alınamadı."
-      );
-    } finally {
-      if (seq === reqSeqRef.current) {
-        setLoading(false);
-      }
-    }
-  }, [location.lat, location.lon]);
+  useEffect(() => {
+    modelsRef.current = models;
+  }, [models]);
 
+  useEffect(() => {
+    locRef.current = location;
+  }, [location]);
+
+  const loadModels = useCallback(
+    async (opts?: { background?: boolean }) => {
+      const seq = ++reqSeqRef.current;
+      const targetLat = location.lat;
+      const targetLon = location.lon;
+
+      const hasMatching =
+        modelsRef.current !== null &&
+        areLocationsEquivalent(
+          { lat: modelsRef.current.lat, lon: modelsRef.current.lon },
+          { lat: targetLat, lon: targetLon }
+        );
+      const isBg = Boolean(opts?.background || hasMatching);
+
+      if (isBg) {
+        setRevalidating(true);
+      } else {
+        setLoading(true);
+        setError(null);
+      }
+
+      try {
+        const qs = new URLSearchParams({
+          lat: String(targetLat),
+          lon: String(targetLon)
+        });
+        const bypassCache =
+          isBg || modelsRef.current?.freshness?.status !== "live";
+        const res = await fetch(`/api/models?${qs.toString()}`, {
+          cache: bypassCache ? "no-store" : "default"
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+        const data: MultiModelBundle = await res.json();
+        if (seq !== reqSeqRef.current) return;
+        if (
+          !areLocationsEquivalent(locRef.current, {
+            lat: targetLat,
+            lon: targetLon
+          })
+        ) {
+          return;
+        }
+
+        if ((data.freshness?.status ?? "live") === "live") {
+          writeCachedModelsBundle(data);
+        }
+        setModels(data);
+        setError(null);
+        if (!isBg) setHoverIdx(0);
+      } catch (e) {
+        if (seq !== reqSeqRef.current) return;
+        const msg =
+          e instanceof Error
+            ? e.message
+            : "8-Model sayısal tahmin verileri alınamadı.";
+
+        if (
+          modelsRef.current &&
+          areLocationsEquivalent(
+            { lat: modelsRef.current.lat, lon: modelsRef.current.lon },
+            { lat: targetLat, lon: targetLon }
+          )
+        ) {
+          const reanchored = reanchorMultiModelBundleToNow(
+            modelsRef.current,
+            Date.now(),
+            {
+              status: "stale",
+              sourceTier:
+                modelsRef.current.freshness?.sourceTier === "live"
+                  ? "client-cache"
+                  : (modelsRef.current.freshness?.sourceTier ?? "client-cache"),
+              cachedAtMs:
+                modelsRef.current.freshness?.cachedAtMs ??
+                Date.parse(modelsRef.current.fetchedAt),
+              staleReason: msg,
+              modelsRespondedCount:
+                modelsRef.current.freshness?.modelsRespondedCount
+            }
+          );
+          setModels(reanchored);
+          setError(null);
+        } else {
+          const cached = await readCachedModelsBundleAsync(
+            targetLat,
+            targetLon,
+            Date.now(),
+            { forceStale: true, staleReason: msg }
+          );
+          if (seq !== reqSeqRef.current) return;
+          if (cached) {
+            setModels(cached);
+            setError(null);
+            setHoverIdx(0);
+          } else {
+            setModels(null);
+            setError(msg);
+          }
+        }
+      } finally {
+        if (seq === reqSeqRef.current) {
+          setLoading(false);
+          setRevalidating(false);
+        }
+      }
+    },
+    [location.lat, location.lon]
+  );
+
+  // Hydrate city-isolated cache immediately on location change, then fetch live
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
-      if (active) void loadModels();
+      if (!active) return;
+      const cur = modelsRef.current;
+      const sameLoc =
+        cur !== null &&
+        areLocationsEquivalent({ lat: cur.lat, lon: cur.lon }, location);
+
+      if (!sameLoc) {
+        const syncHit = readCachedModelsBundleSync(
+          location.lat,
+          location.lon,
+          Date.now(),
+          { forceStale: isOffline }
+        );
+        if (syncHit) {
+          modelsRef.current = syncHit;
+          setModels(syncHit);
+          setError(null);
+          setHoverIdx(0);
+        } else {
+          modelsRef.current = null;
+          setModels(null);
+          setError(null);
+        }
+      }
+      void loadModels({ background: Boolean(modelsRef.current) });
     });
     return () => {
       active = false;
     };
-  }, [loadModels]);
+  }, [location.lat, location.lon, loadModels]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch automatically when global WeatherContext recovers live connectivity
+  useEffect(() => {
+    if (recoveryCount <= 0) return;
+    queueMicrotask(() => {
+      void loadModels({ background: Boolean(modelsRef.current) });
+    });
+  }, [recoveryCount, loadModels]);
+
+  // Self-healing retry loop if models chart is stale or failed while online
+  const isModelsStale =
+    models?.freshness?.status === "stale" ||
+    models?.freshness?.status === "degraded";
+  useEffect(() => {
+    if (isOffline || (!isModelsStale && !error) || loading || revalidating) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadModels({ background: Boolean(modelsRef.current) });
+    }, 18_000);
+    return () => window.clearTimeout(timer);
+  }, [isOffline, isModelsStale, error, loading, revalidating, loadModels]);
 
   const activeSeries: ModelSeriesPoint[] = useMemo(() => {
     if (!models) return [];
-    return models[tab] ?? [];
-  }, [models, tab]);
+    return (models[tab] ?? []).slice(0, horizonHours);
+  }, [models, tab, horizonHours]);
 
   const chart = useMemo(() => {
     const W = 920;
@@ -157,7 +312,7 @@ export default function ModelComparisonChart({
 
     const allVals: number[] = [];
     for (const pt of activeSeries) {
-      for (const k of SEVEN_MODEL_KEYS) {
+      for (const k of CORE_MODEL_KEYS) {
         if (!visibleModels[k]) continue;
         const v = convertValue(pt[k] ?? null, tab, unit);
         if (v !== null) allVals.push(v);
@@ -177,8 +332,8 @@ export default function ModelComparisonChart({
     const xAt = (i: number) => padL + (i / (n - 1)) * plotW;
     const yAt = (v: number) => padT + plotH - ((v - minVal) / span) * plotH;
 
-    const paths = {} as Record<SevenModelKey, string>;
-    for (const k of SEVEN_MODEL_KEYS) {
+    const paths = {} as Record<CoreModelKey, string>;
+    for (const k of CORE_MODEL_KEYS) {
       paths[k] = buildLinePath(
         activeSeries.map((pt, i) => {
           const v = convertValue(pt[k] ?? null, tab, unit);
@@ -187,12 +342,11 @@ export default function ModelComparisonChart({
       );
     }
 
-    // 7-Model Belirsizlik Zarfı (Min–Max Spread Ribbon)
     const upperPts: string[] = [];
     const lowerPts: string[] = [];
     activeSeries.forEach((pt, i) => {
       const vals: number[] = [];
-      for (const k of SEVEN_MODEL_KEYS) {
+      for (const k of CORE_MODEL_KEYS) {
         if (!visibleModels[k]) continue;
         const v = convertValue(pt[k] ?? null, tab, unit);
         if (v !== null) vals.push(v);
@@ -241,9 +395,9 @@ export default function ModelComparisonChart({
 
   const inspectedValues = useMemo(() => {
     if (!inspected) return null;
-    const map = {} as Record<SevenModelKey, number | null>;
+    const map = {} as Record<CoreModelKey, number | null>;
     const present: number[] = [];
-    for (const k of SEVEN_MODEL_KEYS) {
+    for (const k of CORE_MODEL_KEYS) {
       const v = convertValue(inspected[k] ?? null, tab, unit);
       map[k] = v;
       if (v !== null && visibleModels[k]) present.push(v);
@@ -266,41 +420,98 @@ export default function ModelComparisonChart({
     setHoverIdx(Math.round(frac * (activeSeries.length - 1)));
   };
 
+  const tickStride = horizonHours === 360 ? 48 : horizonHours === 168 ? 24 : 12;
+  const activePrecipSummary =
+    horizonHours === 360
+      ? (models?.summary.precip360h ?? models?.summary.precip168h)
+      : horizonHours === 168
+        ? models?.summary.precip168h
+        : models?.summary.precip72h;
+  const showArchiveBadge = Boolean(
+    models && (isModelsStale || isOffline)
+  );
+
   return (
     <section className="surface-panel p-5 sm:p-6 space-y-5">
-      {/* Üst Satır: Başlık + Değişken Sekmeleri */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="font-display text-lg font-semibold text-ink-primary">
-            72 Saatlik 7-Model Karşılaştırma
-          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-display text-lg font-semibold text-ink-primary">
+              {horizonHours === 360 ? "15 Günlük (360s)" : `${horizonHours} Saatlik`} 8-Model Karşılaştırma
+            </h2>
+            {showArchiveBadge && models && (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-signal-amber/35 bg-signal-amber/12 px-2.5 py-0.5 font-mono text-[11px] text-amber-200 tabular">
+                <Clock className="h-3 w-3 text-signal-amber" />
+                <span>
+                  Arşiv · {formatFreshnessAgeTr(models.fetchedAt)} (
+                  {formatClockTr(models.fetchedAt, location.timezone)})
+                </span>
+              </span>
+            )}
+          </div>
           <p className="mt-0.5 text-xs text-ink-muted">
             {location.name} · {TAB_CONFIG[tab].subtitle}
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-obsidian-950/75 p-1">
-          {(Object.keys(TAB_CONFIG) as MetricTab[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setTab(key)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                tab === key
-                  ? "bg-white/15 text-ink-primary"
-                  : "text-ink-secondary hover:text-ink-primary"
-              }`}
-            >
-              {TAB_CONFIG[key].label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void loadModels({ background: Boolean(models) })}
+            disabled={loading || revalidating}
+            title="8-Model serisini yenile"
+            aria-label="8-Model serisini yenile"
+            className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-obsidian-950/75 text-ink-secondary hover:text-ink-primary disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${loading || revalidating ? "animate-spin" : ""}`}
+            />
+          </button>
+
+          <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-obsidian-950/75 p-1">
+            {([72, 168, 360] as HorizonHours[]).map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => {
+                  setHorizonHours(h);
+                  setHoverIdx((prev) => Math.min(prev, h - 1));
+                }}
+                className={`rounded-lg px-2.5 py-1.5 font-mono text-xs font-medium transition-colors ${
+                  horizonHours === h
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-secondary hover:text-ink-primary"
+                }`}
+              >
+                {h === 360 ? "15g" : h === 168 ? "7g" : "72s"}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-obsidian-950/75 p-1">
+            {(Object.keys(TAB_CONFIG) as MetricTab[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  tab === key
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-secondary hover:text-ink-primary"
+                }`}
+              >
+                {TAB_CONFIG[key].label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Hata veya Yüklenme */}
-      {error && (
+      {error && !models && (
         <div className="rounded-xl border border-signal-rose/35 bg-signal-rose/10 p-4 flex items-center justify-between gap-3 text-xs text-ink-primary">
-          <span>{error}</span>
+          <span>
+            {error} · Bağlantı sağlandığında otomatik olarak yüklenecek.
+          </span>
           <button
             type="button"
             onClick={() => void loadModels()}
@@ -313,20 +524,19 @@ export default function ModelComparisonChart({
 
       {loading && !models && !error && (
         <div className="h-[260px] rounded-xl border border-white/[0.06] bg-obsidian-950/60 flex items-center justify-center font-mono text-xs text-ink-muted">
-          7 Tier-1 model verisi çekiliyor...
+          8 küresel ve mezoskaleli model verisi çekiliyor...
         </div>
       )}
 
       {models && activeSeries.length > 0 && (
         <>
-          {/* Seçili Saat + Tıklanabilir 7-Model Filtre Bandı */}
           <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.07] bg-obsidian-950/60 px-3.5 py-2.5 text-xs font-mono tabular">
             <span className="text-ink-secondary">
               {inspected ? `${inspected.dayLabel} · ${inspected.hourLabel}` : "--"}
             </span>
             <div className="flex flex-wrap items-center gap-2">
-              {SEVEN_MODEL_KEYS.map((k) => {
-                const meta = SEVEN_MODEL_META[k];
+              {CORE_MODEL_KEYS.map((k) => {
+                const meta = CORE_MODEL_META[k];
                 const active = visibleModels[k];
                 const val = inspectedValues?.map[k];
                 return (
@@ -364,7 +574,6 @@ export default function ModelComparisonChart({
             </div>
           </div>
 
-          {/* 7-Model SVG Grafiği */}
           <div className="rounded-xl border border-white/[0.07] bg-[#070b14] p-2">
             <svg
               viewBox={`0 0 ${chart.W} ${chart.H}`}
@@ -372,7 +581,7 @@ export default function ModelComparisonChart({
               onPointerDown={handlePointer}
               className="h-60 w-full cursor-crosshair select-none touch-none"
               role="img"
-              aria-label="7 Tier-1 meteoroloji modeli 72 saatlik karşılaştırma grafiği"
+              aria-label={`8 meteoroloji modeli ${horizonHours} saatlik karşılaştırma grafiği`}
             >
               {chart.yTicks.map((tick) => (
                 <g key={tick.val}>
@@ -410,7 +619,7 @@ export default function ModelComparisonChart({
               )}
 
               {activeSeries.map((pt, idx) => {
-                if (idx % 12 !== 0) return null;
+                if (idx % tickStride !== 0) return null;
                 const x = chart.xAt(idx);
                 return (
                   <g key={pt.time}>
@@ -430,7 +639,7 @@ export default function ModelComparisonChart({
                       fontSize="10"
                       fontFamily="monospace"
                     >
-                      {pt.hourLabel === "00:00" || idx === 0
+                      {pt.hourLabel === "00:00" || idx === 0 || horizonHours >= 168
                         ? `${pt.dayLabel} ${pt.hourLabel}`
                         : pt.hourLabel}
                     </text>
@@ -438,7 +647,6 @@ export default function ModelComparisonChart({
                 );
               })}
 
-              {/* 7-Model Belirsizlik Zarfı (Min–Max Spread Ribbon) */}
               {chart.envelopePath && (
                 <path
                   d={chart.envelopePath}
@@ -448,15 +656,15 @@ export default function ModelComparisonChart({
                 />
               )}
 
-              <g key={tab}>
-                {SEVEN_MODEL_KEYS.map((k) => {
+              <g key={`${tab}-${horizonHours}`}>
+                {CORE_MODEL_KEYS.map((k) => {
                   if (!visibleModels[k] || !chart.paths[k]) return null;
                   return (
                     <path
                       key={k}
                       d={chart.paths[k]}
                       fill="none"
-                      stroke={SEVEN_MODEL_META[k].color}
+                      stroke={CORE_MODEL_META[k].color}
                       strokeWidth={k === "ecmwfIfs" || k === "ecmwfAifs" ? 2.3 : 1.75}
                       strokeLinejoin="round"
                       strokeLinecap="round"
@@ -476,9 +684,8 @@ export default function ModelComparisonChart({
                 strokeWidth="1.2"
               />
 
-              {/* Seçili Saatte 7 Modelin Tamamında Eşzamanlı Parlayan Kesişim Düğümleri */}
               {inspectedValues &&
-                SEVEN_MODEL_KEYS.map((k) => {
+                CORE_MODEL_KEYS.map((k) => {
                   if (!visibleModels[k]) return null;
                   const val = inspectedValues.map[k];
                   if (val === null || val === undefined) return null;
@@ -490,14 +697,14 @@ export default function ModelComparisonChart({
                         cx={cx}
                         cy={cy}
                         r={6.5}
-                        fill={SEVEN_MODEL_META[k].color}
+                        fill={CORE_MODEL_META[k].color}
                         fillOpacity={0.22}
                       />
                       <circle
                         cx={cx}
                         cy={cy}
                         r={3.2}
-                        fill={SEVEN_MODEL_META[k].color}
+                        fill={CORE_MODEL_META[k].color}
                         stroke="#070b14"
                         strokeWidth="1.4"
                       />
@@ -505,27 +712,33 @@ export default function ModelComparisonChart({
                   );
                 })}
             </svg>
+            {horizonHours === 360 && (
+              <p className="mt-1.5 px-2 font-mono text-[10px] text-ink-muted">
+                Doğal model vade sınırları: AROME/ARP 4.8g · UKMO 7g · ICON 8g · GEM 10.5g · JMA 11.2g · ECMWF IFS / AIFS AI / NOAA GFS 15g+
+              </p>
+            )}
           </div>
 
-          {/* 7-Model Özet Kartları */}
           <div className="grid gap-3 sm:grid-cols-3 text-xs font-mono tabular">
             <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">72 Saat Toplam Yağış (mm)</span>
+              <span className="text-[11px] text-ink-muted">
+                {horizonHours} Saat Toplam Yağış (mm)
+              </span>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {SEVEN_MODEL_KEYS.map((k) => (
-                  <span key={k} style={{ color: SEVEN_MODEL_META[k].color }}>
-                    {SEVEN_MODEL_META[k].shortLabel}: {models.summary.precip72h[k]}
+                {CORE_MODEL_KEYS.map((k) => (
+                  <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
+                    {CORE_MODEL_META[k].shortLabel}: {activePrecipSummary?.[k] ?? 0}
                   </span>
                 ))}
               </div>
             </div>
 
             <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">72s En Düşük 850 hPa (°C)</span>
+              <span className="text-[11px] text-ink-muted">En Düşük 850 hPa (°C)</span>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {SEVEN_MODEL_KEYS.map((k) => (
-                  <span key={k} style={{ color: SEVEN_MODEL_META[k].color }}>
-                    {SEVEN_MODEL_META[k].shortLabel}:{" "}
+                {CORE_MODEL_KEYS.map((k) => (
+                  <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
+                    {CORE_MODEL_META[k].shortLabel}:{" "}
                     {models.summary.min850hPa[k] !== null
                       ? `${models.summary.min850hPa[k]}°`
                       : "—"}
@@ -535,7 +748,7 @@ export default function ModelComparisonChart({
             </div>
 
             <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">Maks. 2m 7-Model Sapması</span>
+              <span className="text-[11px] text-ink-muted">Maks. 2m 8-Model Sapması</span>
               <p className="text-sm font-semibold text-ink-primary">
                 ±{models.summary.maxSpreadTemp2m}°C{" "}
                 <span className="text-[11px] font-normal text-ink-muted">
@@ -553,3 +766,6 @@ export default function ModelComparisonChart({
     </section>
   );
 }
+
+const ModelComparisonChart = memo(ModelComparisonChartBase);
+export default ModelComparisonChart;

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CapeAnalysisResult } from "@/lib/thermo-cape";
-import { windDirectionToCompass } from "@/lib/weather";
+import { windDirectionToCompass } from "@/lib/weather-client";
 
 const CANVAS_W = 560;
 const CANVAS_H = 430;

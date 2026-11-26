@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
+  Clock,
   Droplets,
   Gauge,
   Globe,
@@ -16,17 +17,34 @@ import {
   Star,
   Wind
 } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
+import { useWeatherData, useWeatherStatus } from "@/context/WeatherContext";
+import {
+  readCachedWeatherBundleAsync,
+  readCachedWeatherBundleSync,
+  writeCachedWeatherBundle
+} from "@/lib/client-forecast-cache";
+import {
+  areLocationsEquivalent,
+  formatFreshnessAgeTr,
+  reanchorWeatherBundleToNow
+} from "@/lib/forecast-resilience";
 import {
   formatLatLon,
   formatTemperature,
   formatWindSpeed,
   GLOBE_CITIES,
   windDirectionToCompass
-} from "@/lib/weather";
+} from "@/lib/weather-client";
 import type { GeoLocation, WeatherBundle } from "@/lib/weather-types";
 import { atmosUiSfx } from "@/lib/ui-sfx";
-import LiveRadarMap from "./LiveRadarMap";
+const LiveRadarMap = dynamic(() => import("./LiveRadarMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full w-full items-center justify-center bg-[#070c16] font-mono text-xs text-ink-muted">
+      Doppler yağış radarı hazırlanıyor...
+    </div>
+  )
+});
 import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
@@ -48,7 +66,8 @@ export default function WorldView() {
     addFavorite,
     isFavorite,
     unit
-  } = useWeather();
+  } = useWeatherData();
+  const { recoveryCount, isOffline } = useWeatherStatus();
 
   const [viewMode, setViewMode] = useState<"radar" | "globe">("radar");
   const [manualPick, setManualPick] = useState<{
@@ -59,8 +78,14 @@ export default function WorldView() {
   const [fetching, setFetching] = useState(false);
   const [pointError, setPointError] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
+  const manualPickRef = useRef(manualPick);
 
-  const isManualActive = manualPick !== null && manualPick.baseId === activeLocation.id;
+  useEffect(() => {
+    manualPickRef.current = manualPick;
+  }, [manualPick]);
+
+  const isManualActive =
+    manualPick !== null && manualPick.baseId === activeLocation.id;
   const selectedLoc = isManualActive ? manualPick.loc : activeLocation;
   const pointBundle = isManualActive ? manualPick.bundle : bundle;
 
@@ -68,13 +93,30 @@ export default function WorldView() {
     async (loc: GeoLocation) => {
       const seq = ++requestSeqRef.current;
       const baseId = activeLocation.id;
-      setManualPick((prev) => ({
+
+      // Strict city isolation: only prefill if existing bundle belongs to `loc`, or L4 vault has `loc`
+      const prevPick = manualPickRef.current;
+      const sameAsPrevPick =
+        prevPick !== null &&
+        prevPick.bundle !== null &&
+        areLocationsEquivalent(prevPick.bundle.location, loc);
+      const sameAsContext =
+        bundle !== null && areLocationsEquivalent(bundle.location, loc);
+
+      const initialPointBundle = sameAsPrevPick
+        ? prevPick.bundle
+        : sameAsContext
+          ? bundle
+          : readCachedWeatherBundleSync(loc, Date.now(), { forceStale: isOffline });
+
+      setManualPick({
         baseId,
         loc,
-        bundle: prev && prev.baseId === baseId ? prev.bundle : bundle
-      }));
+        bundle: initialPointBundle
+      });
       setFetching(true);
       setPointError(null);
+
       try {
         const qs = new URLSearchParams({
           lat: String(loc.lat),
@@ -82,32 +124,85 @@ export default function WorldView() {
           name: loc.name,
           country: loc.country ?? ""
         });
-        const res = await fetch(`/api/weather?${qs.toString()}`);
+        const res = await fetch(`/api/weather?${qs.toString()}`, {
+          cache: initialPointBundle ? "no-store" : "default"
+        });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
           throw new Error(body?.error ?? `HTTP ${res.status}`);
         }
         const data: WeatherBundle = await res.json();
         if (seq !== requestSeqRef.current) return;
+        const merged: WeatherBundle = {
+          ...data,
+          location: { ...data.location, name: loc.name, country: loc.country }
+        };
+        if ((merged.freshness?.status ?? "live") === "live") {
+          writeCachedWeatherBundle(merged);
+        }
         setManualPick({
           baseId,
           loc,
-          bundle: {
-            ...data,
-            location: { ...data.location, name: loc.name, country: loc.country }
-          }
+          bundle: merged
         });
+        setPointError(null);
       } catch (e) {
         if (seq !== requestSeqRef.current) return;
-        setPointError(
-          e instanceof Error ? e.message : "Seçili koordinat için veri alınamadı."
-        );
+        const msg =
+          e instanceof Error
+            ? e.message
+            : "Seçili koordinat için canlı veri alınamadı.";
+
+        if (initialPointBundle) {
+          const staleCopy = reanchorWeatherBundleToNow(
+            initialPointBundle,
+            Date.now(),
+            {
+              status: "stale",
+              sourceTier:
+                initialPointBundle.freshness?.sourceTier === "live"
+                  ? "client-cache"
+                  : (initialPointBundle.freshness?.sourceTier ?? "client-cache"),
+              cachedAtMs:
+                initialPointBundle.freshness?.cachedAtMs ??
+                Date.parse(initialPointBundle.fetchedAt),
+              staleReason: msg,
+              modelsRespondedCount: initialPointBundle.hybrid.activeModels.length
+            }
+          );
+          setManualPick({ baseId, loc, bundle: staleCopy });
+          setPointError(null);
+        } else {
+          const idbHit = await readCachedWeatherBundleAsync(loc, Date.now(), {
+            forceStale: true,
+            staleReason: msg
+          });
+          if (seq !== requestSeqRef.current) return;
+          if (idbHit) {
+            setManualPick({ baseId, loc, bundle: idbHit });
+            setPointError(null);
+          } else {
+            setPointError(msg);
+          }
+        }
       } finally {
         if (seq === requestSeqRef.current) setFetching(false);
       }
     },
-    [activeLocation.id, bundle]
+    [activeLocation.id, bundle, isOffline]
   );
+
+  // Auto-recover manually selected coordinate/city when live connection returns
+  useEffect(() => {
+    if (recoveryCount <= 0) return;
+    const cur = manualPickRef.current;
+    if (!cur || cur.baseId !== activeLocation.id) return;
+    if (!cur.bundle || (cur.bundle.freshness?.status ?? "live") !== "live") {
+      queueMicrotask(() => {
+        void fetchPoint(cur.loc);
+      });
+    }
+  }, [recoveryCount, activeLocation.id, fetchPoint]);
 
   const handlePickCoords = useCallback(
     async (lat: number, lon: number) => {
@@ -142,6 +237,10 @@ export default function WorldView() {
   );
 
   const fav = isFavorite(selectedLoc);
+  const isPointArchive = Boolean(
+    pointBundle &&
+      (isOffline || (pointBundle.freshness?.status ?? "live") === "stale")
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
@@ -253,9 +352,17 @@ export default function WorldView() {
                   <MapPin className="h-3.5 w-3.5 text-signal-sky" />
                   {formatLatLon(selectedLoc.lat, selectedLoc.lon, 3)}
                 </p>
-                <h2 className="mt-1 font-display text-2xl font-semibold text-ink-primary">
-                  {selectedLoc.name}
-                </h2>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <h2 className="font-display text-2xl font-semibold text-ink-primary">
+                    {selectedLoc.name}
+                  </h2>
+                  {isPointArchive && pointBundle && (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-signal-amber/35 bg-signal-amber/12 px-2 py-0.5 font-mono text-[10px] text-amber-200 tabular">
+                      <Clock className="h-2.5 w-2.5 text-signal-amber" />
+                      <span>Arşiv · {formatFreshnessAgeTr(pointBundle.fetchedAt)}</span>
+                    </span>
+                  )}
+                </div>
                 {selectedLoc.country && (
                   <p className="text-xs text-ink-secondary">{selectedLoc.country}</p>
                 )}
@@ -267,7 +374,7 @@ export default function WorldView() {
               )}
             </div>
 
-            {pointError && (
+            {pointError && !pointBundle && (
               <div className="rounded-xl border border-signal-rose/35 bg-signal-rose/10 p-3 text-xs text-ink-primary flex items-center justify-between gap-2">
                 <span>{pointError}</span>
                 <button
@@ -377,7 +484,9 @@ export default function WorldView() {
               </>
             ) : (
               <div className="surface-tile p-6 text-center text-xs text-ink-muted">
-                Ölçüm verisi bekleniyor...
+                {fetching
+                  ? "Ölçüm verisi hazırlanıyor..."
+                  : "Kayıtlı önbellek bulunamadı. Bağlantı sağlandığında otomatik güncellenecek."}
               </div>
             )}
           </div>

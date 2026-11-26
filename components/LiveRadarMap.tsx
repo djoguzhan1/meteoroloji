@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CloudRain,
   Crosshair,
@@ -13,6 +13,7 @@ import {
   Satellite,
   Wind
 } from "lucide-react";
+import { useWeatherStatus } from "@/context/WeatherContext";
 import type {
   GeoLocation,
   RadarMetadata,
@@ -74,7 +75,7 @@ function formatRadarClock(unixSec: number): string {
   }
 }
 
-export default function LiveRadarMap({
+function LiveRadarMapBase({
   selectedLat,
   selectedLon,
   presetCities,
@@ -87,6 +88,11 @@ export default function LiveRadarMap({
   onPickCoords: (lat: number, lon: number) => void;
   onPickCity: (city: GeoLocation) => void;
 }) {
+  const { recoveryCount, isOffline } = useWeatherStatus();
+  const [isDragging, setIsDragging] = useState(false);
+  const panRafRef = useRef<number>(0);
+  const pendingCenterRef = useRef<{ lat: number; lon: number } | null>(null);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 760, height: 540 });
   const [center, setCenter] = useState({ lat: selectedLat, lon: selectedLon });
@@ -95,13 +101,20 @@ export default function LiveRadarMap({
   const [overlayMode, setOverlayMode] = useState<OverlayLayerMode>("both");
 
   const [radar, setRadar] = useState<RadarMetadata | null>(null);
+  const [radarStale, setRadarStale] = useState(false);
   const [radarError, setRadarError] = useState<string | null>(null);
   const [loadingRadar, setLoadingRadar] = useState(true);
   const [frameIdx, setFrameIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
 
   const [windGrid, setWindGrid] = useState<WindGridBundle | null>(null);
+  const [windStale, setWindStale] = useState(false);
   const [windLoading, setWindLoading] = useState(false);
+  const radarRef = useRef<RadarMetadata | null>(null);
+
+  useEffect(() => {
+    radarRef.current = radar;
+  }, [radar]);
 
   const dragRef = useRef<{
     active: boolean;
@@ -144,22 +157,38 @@ export default function LiveRadarMap({
     return () => ro.disconnect();
   }, []);
 
-  const loadRadar = useCallback(async () => {
-    setLoadingRadar(true);
+  const loadRadar = useCallback(async (background = false) => {
+    if (!background && !radarRef.current) {
+      setLoadingRadar(true);
+    }
     setRadarError(null);
     try {
-      const res = await fetch("/api/radar");
+      const res = await fetch("/api/radar", {
+        cache: background || radarRef.current ? "no-store" : "default"
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const data: RadarMetadata = await res.json();
       setRadar(data);
-      setFrameIdx(Math.max(0, data.frames.length - 1));
+      setRadarStale((data.freshness?.status ?? "live") !== "live");
+      setRadarError(null);
+      if (!radarRef.current) {
+        setFrameIdx(Math.max(0, data.frames.length - 1));
+      } else {
+        setFrameIdx((prev) => Math.min(prev, Math.max(0, data.frames.length - 1)));
+      }
     } catch (e) {
-      setRadarError(
-        e instanceof Error ? e.message : "Canlı radar kareleri yüklenemedi."
-      );
+      if (radarRef.current && radarRef.current.frames.length > 0) {
+        // Keep last valid radar frames intact during outage
+        setRadarStale(true);
+        setRadarError(null);
+      } else {
+        setRadarError(
+          e instanceof Error ? e.message : "Canlı radar kareleri yüklenemedi."
+        );
+      }
     } finally {
       setLoadingRadar(false);
     }
@@ -168,12 +197,29 @@ export default function LiveRadarMap({
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
-      if (active) void loadRadar();
+      if (active) void loadRadar(false);
     });
     return () => {
       active = false;
     };
   }, [loadRadar]);
+
+  // Recover radar automatically when global live connectivity returns
+  useEffect(() => {
+    if (recoveryCount <= 0) return;
+    queueMicrotask(() => {
+      void loadRadar(true);
+    });
+  }, [recoveryCount, loadRadar]);
+
+  // Self-healing retry timer when radar is stale or unreachable while online
+  useEffect(() => {
+    if (isOffline || (!radarStale && !radarError) || loadingRadar) return;
+    const timer = window.setTimeout(() => {
+      void loadRadar(true);
+    }, 20_000);
+    return () => window.clearTimeout(timer);
+  }, [isOffline, radarStale, radarError, loadingRadar, loadRadar]);
 
   // Oynatma döngüsü
   useEffect(() => {
@@ -232,14 +278,20 @@ export default function LiveRadarMap({
           east: east.toFixed(2)
         });
         const res = await fetch(`/api/wind-grid?${qs.toString()}`, {
-          signal: controller.signal
+          signal: controller.signal,
+          cache: recoveryCount > 0 ? "no-store" : "default"
         });
         if (res.ok) {
           const data: WindGridBundle = await res.json();
           setWindGrid(data);
+          setWindStale((data.freshness?.status ?? "live") !== "live");
+        } else {
+          setWindStale(true);
         }
-      } catch {
-        // aborted or transient
+      } catch (err) {
+        if (!(err instanceof Error && err.name === "AbortError")) {
+          setWindStale(true);
+        }
       } finally {
         setWindLoading(false);
       }
@@ -249,7 +301,7 @@ export default function LiveRadarMap({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [overlayMode, center.lat, center.lon, zoom, size.width, size.height, screenToLatLon]);
+  }, [overlayMode, center.lat, center.lon, zoom, size.width, size.height, screenToLatLon, recoveryCount]);
 
   const tiles = useMemo(() => {
     const minTileX = Math.floor((centerWorldX - size.width / 2) / TILE_SIZE) - 1;
@@ -290,17 +342,31 @@ export default function LiveRadarMap({
     return list;
   }, [centerWorldX, centerWorldY, numTiles, size.height, size.width, zoom]);
 
-  // Radar karelerini arka planda önbelleğe al
+  // Radar karelerini yalnızca sürükleme durduktan 450ms sonra, iptal edilebilir ve sınırlı (<= 36 karo) şekilde önbelleğe al
   useEffect(() => {
-    if (!radar || tiles.length === 0 || overlayMode === "wind") return;
-    const sampleTiles = tiles.slice(0, 16);
-    for (const f of radar.frames) {
-      for (const t of sampleTiles) {
-        const img = new window.Image();
-        img.src = `${radar.host}${f.path}/256/${zoom}/${t.wrapX}/${t.y}/6/1_1.png`;
+    if (!radar || tiles.length === 0 || overlayMode === "wind" || isDragging) return;
+    const sampleTiles = tiles.slice(0, 9);
+    const recentFrames = radar.frames.slice(-4);
+    const createdImages: HTMLImageElement[] = [];
+
+    const timer = window.setTimeout(() => {
+      for (const f of recentFrames) {
+        for (const t of sampleTiles) {
+          const img = new window.Image();
+          img.decoding = "async";
+          img.src = `${radar.host}${f.path}/256/${zoom}/${t.wrapX}/${t.y}/6/1_1.png`;
+          createdImages.push(img);
+        }
       }
-    }
-  }, [radar, zoom, tiles, overlayMode]);
+    }, 450);
+
+    return () => {
+      window.clearTimeout(timer);
+      for (const img of createdImages) {
+        if (!img.complete) img.src = "";
+      }
+    };
+  }, [radar, zoom, tiles, overlayMode, isDragging]);
 
   const projectToScreen = useCallback(
     (lat: number, lon: number) => {
@@ -339,18 +405,33 @@ export default function LiveRadarMap({
     }
     if (!dragRef.current.moved) return;
 
+    if (!isDragging) setIsDragging(true);
     const nextWX = dragRef.current.startWorldX - dx;
     const nextWY = dragRef.current.startWorldY - dy;
-    setCenter({
+    pendingCenterRef.current = {
       lat: worldYToLat(nextWY, zoom),
       lon: worldXToLon(nextWX, zoom)
-    });
+    };
+    if (!panRafRef.current) {
+      panRafRef.current = window.requestAnimationFrame(() => {
+        panRafRef.current = 0;
+        if (pendingCenterRef.current) {
+          setCenter(pendingCenterRef.current);
+          pendingCenterRef.current = null;
+        }
+      });
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragRef.current.active) return;
     const wasMoved = dragRef.current.moved;
     dragRef.current.active = false;
+    setIsDragging(false);
+    if (panRafRef.current) {
+      window.cancelAnimationFrame(panRafRef.current);
+      panRafRef.current = 0;
+    }
     try {
       (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
     } catch {
@@ -389,6 +470,9 @@ export default function LiveRadarMap({
 
   const showRadar = overlayMode === "both" || overlayMode === "radar";
   const showWind = overlayMode === "both" || overlayMode === "wind";
+  const isRadarArchive = Boolean(
+    activeFrame && (radarStale || isOffline || radar?.freshness?.status === "stale")
+  );
 
   return (
     <div className="relative h-full w-full select-none overflow-hidden bg-[#0a0f18]">
@@ -566,7 +650,7 @@ export default function LiveRadarMap({
 
       {/* Üst Sol: Radar & Rüzgar Akışı Lejantı */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1.5">
-        <div className="rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 backdrop-blur-md">
+        <div className="rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5">
           <div className="flex items-center gap-2 text-[11px] font-mono text-ink-secondary tabular">
             <span className="font-semibold text-ink-primary">
               {overlayMode === "wind"
@@ -578,9 +662,11 @@ export default function LiveRadarMap({
             {showRadar && (
               <>
                 <span className="text-ink-muted">·</span>
-                <span>
+                <span className={isRadarArchive ? "text-amber-200" : ""}>
                   {activeFrame
-                    ? `${formatRadarClock(activeFrame.time)} (${relativeOffsetLabel})`
+                    ? `${formatRadarClock(activeFrame.time)} (${
+                        isRadarArchive ? "Arşiv Kare" : relativeOffsetLabel
+                      })`
                     : loadingRadar
                       ? "Yükleniyor..."
                       : "Çevrimdışı"}
@@ -599,9 +685,11 @@ export default function LiveRadarMap({
             <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted tabular">
               <span>Rüzgar 0</span>
               <span className="h-1.5 w-24 rounded-full bg-gradient-to-r from-[#93c5fd] via-[#38bdf8] via-[#34d399] via-[#f59e0b] to-[#f87171]" />
-              <span>
+              <span className={windStale && windGrid ? "text-amber-200" : ""}>
                 {windGrid
-                  ? `Maks ${Math.round(windGrid.maxSpeedKmh)} km/s`
+                  ? `Maks ${Math.round(windGrid.maxSpeedKmh)} km/s${
+                      windStale ? " · Arşiv" : ""
+                    }`
                   : windLoading
                     ? "Alan yükleniyor..."
                     : "60+ km/s"}
@@ -615,7 +703,7 @@ export default function LiveRadarMap({
       <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
         <div className="flex flex-wrap justify-end gap-1.5">
           {/* Canlı Atmosfer Katman Seçici */}
-          <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 backdrop-blur-md text-[11px]">
+          <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
             <button
               type="button"
               onClick={() => setOverlayMode("both")}
@@ -654,7 +742,7 @@ export default function LiveRadarMap({
           </div>
 
           {/* Taban Harita Seçici */}
-          <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 backdrop-blur-md text-[11px]">
+          <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
             <button
               type="button"
               onClick={() => setBasemap("dark")}
@@ -688,7 +776,7 @@ export default function LiveRadarMap({
             onClick={() => setZoom((z) => Math.min(MAX_ZOOM, z + 1))}
             disabled={zoom >= MAX_ZOOM}
             aria-label="Haritayı yakınlaştır"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 backdrop-blur-md transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 transition-colors"
           >
             <Plus className="h-4 w-4" />
           </button>
@@ -697,7 +785,7 @@ export default function LiveRadarMap({
             onClick={() => setZoom((z) => Math.max(MIN_ZOOM, z - 1))}
             disabled={zoom <= MIN_ZOOM}
             aria-label="Haritayı uzaklaştır"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 backdrop-blur-md transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 transition-colors"
           >
             <Minus className="h-4 w-4" />
           </button>
@@ -709,20 +797,20 @@ export default function LiveRadarMap({
             }}
             aria-label="Seçili konuma odaklan"
             title="Seçili konuma odaklan"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-secondary hover:text-ink-primary hover:bg-obsidian-800 backdrop-blur-md transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-secondary hover:text-ink-primary hover:bg-obsidian-800 transition-colors"
           >
             <Crosshair className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Radar Hatası */}
-      {showRadar && radarError && (
-        <div className="absolute inset-x-4 top-24 mx-auto max-w-sm rounded-xl border border-signal-rose/40 bg-obsidian-950/90 p-3 text-xs text-ink-primary backdrop-blur-md flex items-center justify-between gap-3">
+      {/* Radar Hatası (Yalnızca elde hiçbir kayıtlı kare yoksa gösterilir) */}
+      {showRadar && radarError && !radar && (
+        <div className="absolute inset-x-4 top-24 mx-auto max-w-sm rounded-xl border border-signal-rose/40 bg-obsidian-950/90 p-3 text-xs text-ink-primary flex items-center justify-between gap-3">
           <span>{radarError}</span>
           <button
             type="button"
-            onClick={() => void loadRadar()}
+            onClick={() => void loadRadar(false)}
             className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs hover:bg-white/10"
           >
             <RefreshCw className="h-3.5 w-3.5" /> Tekrar
@@ -733,7 +821,7 @@ export default function LiveRadarMap({
       {/* Alt Zaman Oynatıcı & İpucu */}
       <div className="absolute inset-x-3 bottom-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         {showRadar ? (
-          <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 py-2 backdrop-blur-md">
+          <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 py-2">
             <button
               type="button"
               onClick={() => setPlaying((p) => !p)}
@@ -762,16 +850,19 @@ export default function LiveRadarMap({
             </span>
           </div>
         ) : (
-          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-obsidian-950/85 px-3 py-2 font-mono text-[11px] text-ink-secondary backdrop-blur-md">
+          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-obsidian-950/85 px-3 py-2 font-mono text-[11px] text-ink-secondary">
             <Wind className="h-3.5 w-3.5 text-signal-sky" />
             <span>Gerçek 10m Rüzgar Vektör Alanı (5×5 Bilineer Enterpolasyon · Open-Meteo)</span>
           </div>
         )}
 
-        <div className="pointer-events-none hidden sm:flex items-center gap-2 rounded-xl border border-white/10 bg-obsidian-950/85 px-2.5 py-2 text-[11px] text-ink-muted backdrop-blur-md">
+        <div className="pointer-events-none hidden sm:flex items-center gap-2 rounded-xl border border-white/10 bg-obsidian-950/85 px-2.5 py-2 text-[11px] text-ink-muted">
           <span>Tıkla: Koordinat Ölç · Esri · RainViewer · Open-Meteo</span>
         </div>
       </div>
     </div>
   );
 }
+
+const LiveRadarMap = memo(LiveRadarMapBase);
+export default LiveRadarMap;

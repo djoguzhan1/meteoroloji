@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LocateFixed, MapPin, Search, X } from "lucide-react";
 import type { GeoLocation } from "@/lib/weather-types";
-import { GLOBE_CITIES } from "@/lib/weather";
+import { GLOBE_CITIES } from "@/lib/weather-client";
 
 type CitySearchProps = {
   onSelect: (loc: GeoLocation) => void;

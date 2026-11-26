@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import type { SceneAtmosphereInput } from "@/lib/weather-types";
 
 type AtmosphereAudioProps = {
@@ -10,7 +10,7 @@ type AtmosphereAudioProps = {
   muffled: boolean;
 };
 
-export default function AtmosphereAudio({
+function AtmosphereAudioBase({
   atmosphere,
   enabled,
   volume,
@@ -32,7 +32,6 @@ export default function AtmosphereAudio({
           .webkitAudioContext;
       const ctx = new AudioCtx();
 
-      // 3 saniyelik pembe gürültü (rüzgar katmanı)
       const len = ctx.sampleRate * 3;
       const pinkBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
       const pink = pinkBuffer.getChannelData(0);
@@ -47,7 +46,6 @@ export default function AtmosphereAudio({
         pink[i] = (b0 + b1 + b2 + w * 0.1848) * 0.06;
       }
 
-      // 2 saniyelik beyaz gürültü (yağmur şıpırtısı katmanı)
       const rainBuffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
       const rain = rainBuffer.getChannelData(0);
       for (let i = 0; i < rain.length; i++) {
@@ -169,7 +167,6 @@ export default function AtmosphereAudio({
     ensureContext
   ]);
 
-  // Fırtına modunda aralıklı düşük frekanslı gök gürültüsü
   useEffect(() => {
     if (!enabled || !atmosphere.isStorm) return;
 
@@ -211,3 +208,6 @@ export default function AtmosphereAudio({
 
   return null;
 }
+
+const AtmosphereAudio = memo(AtmosphereAudioBase);
+export default AtmosphereAudio;

@@ -6,11 +6,10 @@ import {
 } from "../lib/kalman-mos";
 import {
   parseMetarWxTokens,
-  SEVEN_MODEL_KEYS,
-  WMO_PRIOR_WEIGHTS,
   type MetarNetworkStation,
   type RawMetarRecord
 } from "../lib/metar-verify";
+import { CORE_MODEL_KEYS, WMO_PRIOR_WEIGHTS } from "../lib/model-registry";
 import { classifyPrecipPhase, fusePrecipitationHour } from "../lib/precip-engine";
 import { buildStormAssessment, evaluateHourlyStormRisk } from "../lib/storm-engine";
 import {
@@ -20,8 +19,8 @@ import {
 } from "../lib/thermo-cape";
 import type { SoundingLevel } from "../lib/weather-types";
 
-describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli Fırtına Motoru", () => {
-  it("tüm 7 model sistematik +2.6°C sıcak kaldığında Kalman/MOS sapmayı < 0.5°C altına indirir", () => {
+describe("ATMOS-Core v5.0 — 8-Model Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli Fırtına Motoru", () => {
+  it("tüm 8 model sistematik +2.6°C sıcak kaldığında Kalman/MOS sapmayı < 0.65°C altına indirir", () => {
     const baseMs = Date.parse("2026-11-21T00:00:00Z");
     const utcTimeIndex = new Map<string, number>();
     const hours = 48;
@@ -80,6 +79,7 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       temperature_2m_meteofrance_seamless: makeSeries(2.8, 0.4),
       temperature_2m_gfs_seamless: makeSeries(3.1, 0.5),
       temperature_2m_gem_seamless: makeSeries(2.9, 0.45),
+      temperature_2m_jma_seamless: makeSeries(2.65, 0.32),
       dew_point_2m_ecmwf_ifs: Array(hours).fill(9.5),
       dew_point_2m_ecmwf_aifs025_single: Array(hours).fill(9.5),
       dew_point_2m_icon_seamless: Array(hours).fill(9.5),
@@ -87,6 +87,7 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       dew_point_2m_meteofrance_seamless: Array(hours).fill(9.5),
       dew_point_2m_gfs_seamless: Array(hours).fill(9.5),
       dew_point_2m_gem_seamless: Array(hours).fill(9.5),
+      dew_point_2m_jma_seamless: Array(hours).fill(9.5),
       pressure_msl_ecmwf_ifs: Array(hours).fill(1014.2),
       pressure_msl_ecmwf_aifs025_single: Array(hours).fill(1014.1),
       pressure_msl_icon_seamless: Array(hours).fill(1014.3),
@@ -94,6 +95,7 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       pressure_msl_meteofrance_seamless: Array(hours).fill(1014.4),
       pressure_msl_gfs_seamless: Array(hours).fill(1014.6),
       pressure_msl_gem_seamless: Array(hours).fill(1014.5),
+      pressure_msl_jma_seamless: Array(hours).fill(1014.25),
       wind_speed_10m_ecmwf_ifs: Array(hours).fill(15),
       wind_speed_10m_ecmwf_aifs025_single: Array(hours).fill(15),
       wind_speed_10m_icon_seamless: Array(hours).fill(15),
@@ -101,13 +103,15 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       wind_speed_10m_meteofrance_seamless: Array(hours).fill(15),
       wind_speed_10m_gfs_seamless: Array(hours).fill(15),
       wind_speed_10m_gem_seamless: Array(hours).fill(15),
+      wind_speed_10m_jma_seamless: Array(hours).fill(15),
       precipitation_ecmwf_ifs: Array(hours).fill(0),
       precipitation_ecmwf_aifs025_single: Array(hours).fill(0),
       precipitation_icon_seamless: Array(hours).fill(0),
       precipitation_ukmo_seamless: Array(hours).fill(0),
       precipitation_meteofrance_seamless: Array(hours).fill(0),
       precipitation_gfs_seamless: Array(hours).fill(0),
-      precipitation_gem_seamless: Array(hours).fill(0)
+      precipitation_gem_seamless: Array(hours).fill(0),
+      precipitation_jma_seamless: Array(hours).fill(0)
     };
 
     const mos = trainKalmanMos({
@@ -118,14 +122,14 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       utcTimeIndex,
       nowUtcMs: baseMs + 35 * 3600000,
       utcOffsetSeconds: 10800,
-      ensembleMembers: 122
+      ensembleMembers: 212
     });
 
     expect(mos.active).toBe(true);
-    expect(mos.report.mode).toBe("live-metar-48h");
+    expect(mos.report.mode).toBe("live-station-48h");
     expect(mos.biases.ecmwfIfs.tempKalmanBiasC).toBeGreaterThan(2.0);
+    expect(mos.biases.jma.tempKalmanBiasC).toBeGreaterThan(2.0);
 
-    // Gelecek 3. saat tahmini: gerçek sıcaklık 12.0°C iken tüm ham modeller ~14.6°C diyor
     const truthFuture = 12.0;
     const predicted = blendKalmanCorrectedScalar({
       snapshot: {
@@ -135,7 +139,8 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
         ukmo: truthFuture + 2.5,
         meteofrance: truthFuture + 2.8,
         gfs: truthFuture + 3.1,
-        gem: truthFuture + 2.9
+        gem: truthFuture + 2.9,
+        jma: truthFuture + 2.65
       },
       mos,
       param: "temperature",
@@ -187,14 +192,12 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
         ]
       }
     ];
-    // İnversiyon altında alçak vadi (100 m), yüksek tepeden (500 m) daha SOĞUK olmalı!
     const tl = buildCressmanMetarTimeline(net, 100, lapse);
     const pt = tl.get("2026-11-21T06:00");
     expect(pt?.tempC).toBeLessThan(4.0);
   });
 
   it("PMM yağış motoru hayalet çiselemeyi bastırır ve gerçek sağanak zirvesini korur", () => {
-    // Senaryo A: 6 model kuru, 1 model 0.4 mm -> hayalet çiseleme 0.0 mm olmalı
     const dryRes = fusePrecipitationHour({
       detSnapshot: {
         ecmwfIfs: 0,
@@ -203,7 +206,8 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
         ukmo: 0,
         meteofrance: 0,
         gfs: 0.4,
-        gem: 0
+        gem: 0,
+        jma: 0
       },
       detWeights: WMO_PRIOR_WEIGHTS.precipitation,
       ensembleMembersMm: Array.from({ length: 120 }, (_, i) => (i < 112 ? 0 : 0.3)),
@@ -214,7 +218,6 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
     expect(dryRes.precipitationMm).toBe(0);
     expect(dryRes.precipProbabilityPct).toBeLessThan(18);
 
-    // Senaryo B: Şiddetli sağanak uzlaşısı -> zirve ezilmez, yüksek PoP & P90 üretir
     const wetRes = fusePrecipitationHour({
       detSnapshot: {
         ecmwfIfs: 8.5,
@@ -223,7 +226,8 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
         ukmo: 9.0,
         meteofrance: 14.2,
         gfs: 7.5,
-        gem: 5.0
+        gem: 5.0,
+        jma: 8.8
       },
       detWeights: WMO_PRIOR_WEIGHTS.precipitation,
       ensembleMembersMm: Array.from({ length: 120 }, (_, i) => 2 + (i / 120) * 16),
@@ -237,7 +241,7 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
     expect(wetRes.consensus.ensembleMembers).toBe(120);
   });
 
-  it("METAR wxString ayrıştırıcı ve Stull Tw faz sınıflandırıcısı kar/sulu kar/dolu ayrımını doğru yapar", () => {
+  it("METAR wxString ayrıştırıcı ve Stull Tw faz sınıflandırıcısı kar/donan yağmur/dolu ayrımını doğru yapar", () => {
     const flags = parseMetarWxTokens("+TSRA GR SQ");
     expect(flags.hasPrecip).toBe(true);
     expect(flags.heavyPrecip).toBe(true);
@@ -245,7 +249,6 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
     expect(flags.hasHail).toBe(true);
     expect(flags.hasSquall).toBe(true);
 
-    // +1.2°C ama kuru hava (%45 RH) -> Stull Tw < 0°C -> KAR!
     expect(wetBulbStullC(1.2, 45)).toBeLessThan(0);
     const snowPhase = classifyPrecipPhase({
       temperatureC: 1.2,
@@ -257,8 +260,18 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
     });
     expect(snowPhase.precipPhase).toBe("snow");
     expect(snowPhase.precipType).toBe("snow");
+    expect(snowPhase.snowLineElevationM).toBeGreaterThanOrEqual(0);
 
-    // Yüksek MUCAPE + Shear -> DOLU!
+    const freezingRainPhase = classifyPrecipPhase({
+      temperatureC: -0.8,
+      humidityPct: 92,
+      precipitationMm: 2.2,
+      temp850hPa: 2.4,
+      freezingLevelM: 1650,
+      elevationM: 155
+    });
+    expect(freezingRainPhase.precipPhase).toBe("freezing_rain");
+
     const hailPhase = classifyPrecipPhase({
       temperatureC: 24,
       humidityPct: 72,
@@ -272,7 +285,6 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
   });
 
   it("MUCAPE gece yükseltilmiş kararsızlığı yakalar, SRH/SCP ve 0–100 StormAssessment fırtına penceresini tespit eder", () => {
-    // Gece yüzey serin (14°C), 850 hPa sıcak & nemli (18°C / Td 15°C), 500 hPa çok soğuk (-16°C), güçlü yönlü kırılma
     const elevatedStormLevels: SoundingLevel[] = [
       { pressure: 1000, altitudeM: 110, temperature: 14, dewPoint: 12, humidity: 88, windSpeedKt: 12, windDirection: 110 },
       { pressure: 925, altitudeM: 770, temperature: 16, dewPoint: 14, humidity: 88, windSpeedKt: 24, windDirection: 155 },
@@ -312,7 +324,7 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       precipP90Mm: 0,
       precip3hAccumMm: 0,
       wmoStormAgreeCount: 0,
-      wmoTotalModels: 7,
+      wmoTotalModels: 8,
       weatherCode: 1,
       pressureDelta3h: 0.2,
       pressureDelta6h: 0.4,
@@ -335,8 +347,8 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
       precipitationMm: 14.5,
       precipP90Mm: 24,
       precip3hAccumMm: 26,
-      wmoStormAgreeCount: 6,
-      wmoTotalModels: 7,
+      wmoStormAgreeCount: 7,
+      wmoTotalModels: 8,
       weatherCode: 95,
       pressureDelta3h: -4.2,
       pressureDelta6h: -7.1,
@@ -347,7 +359,7 @@ describe("ATMOS-Core v3.0 — Kalman/MOS, PMM Yağış, Stull Tw ve Şiddetli F�
     expect(hSevere.score).toBeGreaterThanOrEqual(70);
     expect(hSevere.isStorm).toBe(true);
     expect(hSevere.lightningProbPct).toBeGreaterThanOrEqual(75);
-    expect(SEVEN_MODEL_KEYS.length).toBe(7);
+    expect(CORE_MODEL_KEYS.length).toBe(8);
 
     const summary = buildStormAssessment([hCalm, hSevere], [0, 14.5]);
     expect(summary.nextWindow).not.toBeNull();

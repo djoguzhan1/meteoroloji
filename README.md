@@ -1,20 +1,41 @@
-# ATMOS v4.5 — Hiper-Yerel Kanıta Dayalı Meteoroloji & 7-Model EMOS Platformu
+# ATMOS v5.0 — Sıfır-Sapma Hibrit Meteoroloji, 19-İlçe MGM Ağı & Doppler Radar
 
-Bursa başta olmak üzere gerçek fiziksel yer istasyonu ağları, 8.712 saatlik WMO 17116 Hibrit EMOS kalibrasyonu, 7 Tier-1 NWP/AI modeli ve 122 olasılıksal ensemble üyesiyle çalışan yeni nesil meteoroloji gözlem ve tahmin platformu (**ATMOS-Core v4.5**).
+**ATMOS v5.0**, Bursa (WMO `17116` ve 19 ilçe mikroklima ağı) öncelikli olmak üzere küresel istasyonlar için tasarlanmış, 8 ana NWP/AI model ailesini ve 212 üyeli olasılıksal ensemble havuzunu canlı yer gözlemleriyle kalibre eden hibrit meteoroloji platformudur.
 
-## ATMOS-Core v4.5 Mimarisi
+## Mimari Bileşenler
 
-- **Bursa 19-İlçe MGM Hiper-Yerel Gözlem Ağı & LTBR İzolasyonu (`lib/bursa-mesh.ts`, `lib/topographic-cressman.ts`):** Resmi MGM 19 ilçe istasyonu (Osmangazi WMO 17116, Nilüfer, Yıldırım, Mudanya, Gemlik, Kestel, Uludağ 1.877 m vb.) canlı çekilir; Yenişehir Havalimanı (`LTBR`) çanak-ova radyasyon soğuması tuzağı topografik bariyer cezasıyla izole edilir ve anizotropik Topografik Cressman-Barnes enterpolasyonu uygulanır.
-- **8.712 Saatlik WMO 17116 Eğitimli Hibrit Huber-Ridge + L1-Ağaç EMOS (`lib/bursa-trained-emos.ts`):** 56 özellikli Huber-IRLS Ridge omurgası + simetrik derinlik-3 L1 karar ağaçları + canlı MGM sensörü AR(2) sönümlemesi ile AIFS 6 saatlik testere dişi sapması ve akşam kentsel ısı adası (UHI) salınımı düzeltilir (+1s **0,53 °C** MAE, +6s **0,84 °C** MAE, Gün 1 **1,04 °C** MAE).
-- **3B Uludağ Dikey Fizik & Piksel Düzeyinde Radar Nowcast (`lib/vertical-physics.ts`, `lib/radar-nowcast.ts`):** Lodos adyabatik Fön ısınması, alt-bulut virga buharlaşması, fiziksel sis görüş mesafesi ve RainViewer PNG radar karolarından yarı-Lagrange optik akışla dakika bazlı yağış başlangıç/bitiş tespiti yapılır.
-- **Sıfır Son Dakika Savrulması — 4-Koşulu `dProg/dt` Histerezis Kilidi (`lib/run-consistency.ts`):** 4 ardışık model koşusunu karşılaştırarak tekil ara koşu (06Z/18Z) sapmalarını ve T+0..T+2s spin-up şoklarını sönümler; hatalı son dakika revizyonlarını **%1,35** seviyesine indirir.
+1. **Kanonik 8-Model + 212-Üye Ensemble Çekirdeği (`lib/model-registry.ts`, `lib/weather.ts`)**
+   - Deterministik NWP & AI: **ECMWF IFS HRES (9 km)**, **ECMWF AIFS v1 (`ecmwf_aifs025_single`)**, **DWD ICON-EU/D2**, **UKMO Unified**, **Météo-France AROME/ARPEGE**, **NOAA GFS**, **ECCC GEM** ve **JMA GSM**.
+   - 212 Üyeli Olasılıksal Havuz: ECMWF IFS-ENS (51) + ECMWF AIFS-ENS (51) + DWD ICON-EPS (40) + NOAA GEFS (31) + ECCC GEPS (21) + UKMO MOGREPS-G (18).
+2. **Bursa 19-İlçe MGM Mikroklima Ağı & 17.472 Saatlik L1-EMOS + GBDT (`lib/bursa-mesh.ts`, `lib/bursa-trained-emos.ts`, `lib/topographic-cressman.ts`)**
+   - WMO `17116` (Osmangazi Merkez, 100 m) 2 yıllık (17.472 saat) gerçek gözlem arşivi üzerinde 5-katlı 168s-arındırılmış çapraz doğrulamayla eğitilmiş ölçek-değişmez kalıntı L1-EMOS ve GBDT yağış sınıflandırıcısı.
+   - 3-katmanlı parçalı hidrostatik dikey lapse-rate (0–550 m ova tabanı, 550–1.300 m orta yamaç, 1.300–2.000 m Uludağ zirve) ve LTBR Yenişehir soğuk havza izolasyonu.
+   - Gün 4–7 cephe çatallanmalarında Ashman D / Otsu iki-modlu küme çözücüsü.
+3. **Zoom-8 Yarı-Lagranj Doppler Radar Nowcast (`lib/radar-nowcast.ts`)**
+   - Saf TypeScript PNG dBZ çözücü, çok-karolu Zoom-8 (~466 m/piksel) birleştirme, parabolik optik akış, d(dBZ)/dt büyüme/sönümleme ve canlı MGM 10-dakikalık plüvyometre G/R (Fulton-Brandes) kalibrasyonu.
+4. **Kalibre-Kalibre `dProg/dt` Koşu Tutarlılığı & Kalıcı Durum Defteri (`lib/run-consistency.ts`, `lib/state-ledger.ts`)**
+   - 96 saatlik istasyon geçmişini ve son 6 sinoptik döngünün (`R0..R-3`) kalibre tahminlerini saklayarak kanıtsız tekil koşu savrulmalarını sönümler.
+5. **1000 → 300 hPa Skew-T Log-P Radyosonda & Fırtına Tehdit Motoru (`lib/thermo-cape.ts`, `lib/storm-engine.ts`)**
+   - Bolton (1980) MUCAPE / SBCAPE / MLCAPE, Bunkers 0–3 km SRH, Süper Hücre SCP, DCAPE ve Stull (2011) ıslak termometre faz ayrımı (`rain`, `freezing_rain`, `sleet`, `snow`, `hail`).
+6. **Net İstemci / Sunucu Ayrımı (`lib/weather-client.ts` vs `lib/weather.ts`)**
+   - Tüm birim dönüştürme, sinoptik sinyal, astronomi ve `localStorage` (`atmos:v5:*`) yardımcıları saf `lib/weather-client.ts` modülünde izole edilmiştir; sunucu NWP ve EMOS ağaçları istemci paketine sızmaz.
 
-## Geliştirme & Doğruluk Denetimi Komutları
+## Kurulum ve Çalıştırma
 
 ```bash
+cp .env.example .env.local
 npm install
-npm run typecheck
-npm run test
-npm run benchmark:bursa
 npm run dev
+```
+
+Tarayıcıda `http://localhost:3006` adresini açın. Herhangi bir ücretli API anahtarı gerekmez.
+
+## Doğrulama ve Kıyaslama Komutları
+
+```bash
+npm run typecheck             # TypeScript sıkı tip denetimi
+npm test                      # Vitest birim ve entegrasyon test paketi
+npm run build                 # Next.js üretim derlemesi
+npm run verify:live           # 8-model canlı istasyon walk-forward doğruluk testi
+npm run benchmark:bursa       # 17.472 saatlik WMO 17116 Bursa 7-günlük CV kıyaslaması
 ```

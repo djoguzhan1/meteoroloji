@@ -1117,18 +1117,21 @@ export function renderCumulusArena(
   drawForkedLightning(ctx, state);
 
   // 12. Kıvılcım, Dolu Kristali & Yoğunlaşma Parçacıkları
+  ctx.save();
   for (const p of state.particles) {
     const alpha = Math.max(0, p.life / p.maxLife);
-    ctx.save();
-    ctx.globalAlpha = alpha;
+    const rad = p.size * (0.45 + 0.55 * alpha);
     ctx.fillStyle = p.color;
-    ctx.shadowColor = p.color;
-    ctx.shadowBlur = 7;
+    ctx.globalAlpha = alpha * 0.24;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size * (0.45 + 0.55 * alpha), 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, rad * 2.1, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
+    ctx.fill();
   }
+  ctx.restore();
 
   // 13. Uçuşan Evrim / Olay Bildirimleri
   for (const c of state.callouts) {
@@ -1137,8 +1140,10 @@ export function renderCumulusArena(
     ctx.globalAlpha = alpha;
     ctx.font = "700 12.5px ui-monospace, SFMono-Regular, Menlo, monospace";
     ctx.textAlign = "center";
-    ctx.shadowColor = "rgba(0, 0, 0, 0.95)";
-    ctx.shadowBlur = 10;
+    ctx.lineWidth = 3.2;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(2, 6, 16, 0.88)";
+    ctx.strokeText(c.text, c.x, c.y);
     ctx.fillStyle = c.color;
     ctx.fillText(c.text, c.x, c.y);
     ctx.restore();
@@ -1399,12 +1404,16 @@ function drawSupplyLines(
       const t = (timeSec * 0.48 + i / 4) % 1;
       const dx = src.x + (dst.x - src.x) * t;
       const dy = src.y + (dst.y - src.y) * t;
+      const pulseA = 0.92 * Math.sin(t * Math.PI);
       ctx.beginPath();
-      ctx.arc(dx, dy, 3.6, 0, Math.PI * 2);
+      ctx.arc(dx, dy, 6.8, 0, Math.PI * 2);
+      ctx.fillStyle = meta.primary;
+      ctx.globalAlpha = pulseA * 0.28;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(dx, dy, 3.5, 0, Math.PI * 2);
       ctx.fillStyle = "#ffffff";
-      ctx.shadowColor = meta.primary;
-      ctx.shadowBlur = 10;
-      ctx.globalAlpha = 0.92 * Math.sin(t * Math.PI);
+      ctx.globalAlpha = pulseA;
       ctx.fill();
     }
     ctx.restore();
@@ -1418,11 +1427,13 @@ function drawShockwaves(ctx: CanvasRenderingContext2D, state: CumulusGameState) 
     ctx.save();
     ctx.beginPath();
     ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = meta.primary;
+    ctx.globalAlpha = alpha * 0.32;
+    ctx.lineWidth = 13 * alpha + 4;
+    ctx.stroke();
     ctx.strokeStyle = "#ffffff";
-    ctx.shadowColor = meta.primary;
-    ctx.shadowBlur = 20;
     ctx.globalAlpha = alpha * 0.94;
-    ctx.lineWidth = 5 * alpha + 1.5;
+    ctx.lineWidth = 4.5 * alpha + 1.5;
     ctx.stroke();
 
     const grad = ctx.createRadialGradient(
@@ -1493,9 +1504,7 @@ function drawAimPreview(
     ctx.moveTo(src.x, src.y);
     ctx.lineTo(tx, ty);
     ctx.strokeStyle = lineColor;
-    ctx.shadowColor = lineColor;
-    ctx.shadowBlur = 12;
-    ctx.globalAlpha = 0.88;
+    ctx.globalAlpha = 0.9;
     ctx.lineWidth = 2.6;
     ctx.setLineDash([8, 6]);
     ctx.lineDashOffset = -timeSec * 58;
@@ -1512,12 +1521,12 @@ function drawAimPreview(
     ctx.beginPath();
     ctx.arc(hovered.x, hovered.y, r + 18, 0, Math.PI * 2);
     ctx.strokeStyle = lineColor;
-    ctx.shadowColor = lineColor;
-    ctx.shadowBlur = 14;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 7.5;
+    ctx.globalAlpha = 0.22;
+    ctx.stroke();
+    ctx.lineWidth = 2.4;
     ctx.globalAlpha = 0.94;
     ctx.stroke();
-    ctx.shadowBlur = 0;
 
     const label = isSupply
       ? isReinforce
@@ -1585,16 +1594,19 @@ function drawCloudlets(
 
     if (cl.isCharged) {
       const flicker = 0.65 + 0.35 * Math.sin(timeSec * 34 + cl.id);
-      ctx.fillStyle = `rgba(255, 255, 255, ${flicker})`;
-      ctx.shadowColor = meta.primary;
-      ctx.shadowBlur = 11;
+      ctx.fillStyle = meta.primary;
+      ctx.globalAlpha = flicker * 0.32;
+      ctx.beginPath();
+      ctx.arc(cl.x, cl.y, 5.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = flicker;
+      ctx.fillStyle = "#ffffff";
       ctx.beginPath();
       ctx.arc(cl.x, cl.y, 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
 
     if (cl.isHail) {
-      ctx.shadowBlur = 0;
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 1.3;
       const hr = size * 0.34;
@@ -1820,13 +1832,14 @@ function drawVolumetricCloudNode(
     const pulse = 0.5 + 0.5 * Math.sin(timeSec * 6.5);
     ctx.beginPath();
     ctx.arc(cloud.x, cloud.y, visualR + 7 + pulse * 4, 0, Math.PI * 2);
-    ctx.strokeStyle = "#ffffff";
-    ctx.shadowColor = meta.primary;
-    ctx.shadowBlur = 16;
-    ctx.globalAlpha = 0.7 + pulse * 0.3;
-    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = meta.primary;
+    ctx.globalAlpha = 0.28 + pulse * 0.14;
+    ctx.lineWidth = 8.5;
     ctx.stroke();
-    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "#ffffff";
+    ctx.globalAlpha = 0.72 + pulse * 0.28;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
     ctx.globalAlpha = 1;
   }
 
@@ -1837,11 +1850,14 @@ function drawVolumetricCloudNode(
     ctx.rotate(timeSec * 0.95);
     ctx.beginPath();
     ctx.arc(0, 0, visualR + 9, 0, Math.PI * 2);
-    ctx.strokeStyle = "#ffffff";
-    ctx.shadowColor = meta.primary;
-    ctx.shadowBlur = 14;
-    ctx.lineWidth = 2.4;
     ctx.setLineDash([10, 7]);
+    ctx.strokeStyle = meta.primary;
+    ctx.globalAlpha = 0.3;
+    ctx.lineWidth = 7.2;
+    ctx.stroke();
+    ctx.globalAlpha = 0.96;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2.4;
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
@@ -1943,16 +1959,18 @@ function drawForkedLightning(ctx: CanvasRenderingContext2D, state: CumulusGameSt
       else ctx.lineTo(p.x, p.y);
     });
     ctx.strokeStyle = meta.primary;
-    ctx.globalAlpha = alpha * 0.92;
-    ctx.lineWidth = 7.5;
-    ctx.shadowColor = meta.primary;
-    ctx.shadowBlur = 22;
+    ctx.globalAlpha = alpha * 0.26;
+    ctx.lineWidth = 18;
+    ctx.stroke();
+
+    ctx.strokeStyle = meta.light;
+    ctx.globalAlpha = alpha * 0.72;
+    ctx.lineWidth = 6.5;
     ctx.stroke();
 
     ctx.strokeStyle = "#ffffff";
     ctx.globalAlpha = alpha;
-    ctx.lineWidth = 2.3;
-    ctx.shadowBlur = 5;
+    ctx.lineWidth = 2.2;
     ctx.stroke();
 
     if (bolt.points.length >= 4) {
@@ -2024,8 +2042,10 @@ function drawCornerWindCompass(
   ctx.font = `700 ${Math.max(9, Math.round(9.5 * scale))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   ctx.fillStyle = "#e2e8f0";
   ctx.textAlign = "center";
-  ctx.shadowColor = "rgba(0,0,0,0.8)";
-  ctx.shadowBlur = 4;
+  ctx.lineWidth = 2.6;
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(2, 6, 16, 0.85)";
+  ctx.strokeText(`${Math.round(windKmh)} km/s`, cx, cy + 32 * scale);
   ctx.fillText(`${Math.round(windKmh)} km/s`, cx, cy + 32 * scale);
   ctx.restore();
 }

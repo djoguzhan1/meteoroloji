@@ -20,7 +20,8 @@ import {
   Wind,
   Zap
 } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
+import { useWeatherData } from "@/context/WeatherContext";
+import { ATMOS_STORAGE_KEYS, readMigratedStorageItem } from "@/lib/weather-client";
 import {
   ARENA_HEIGHT,
   ARENA_WIDTH,
@@ -74,7 +75,7 @@ type CareerStorage = {
   totalSupercells: number;
 };
 
-const CAREER_STORAGE_KEY = "atmos:cumulus:career:v1";
+const CAREER_STORAGE_KEY = ATMOS_STORAGE_KEYS.cumulusCareer;
 
 const COMPASS_TR = ["K", "KD", "D", "GD", "G", "GB", "B", "KB"] as const;
 
@@ -175,7 +176,7 @@ function findCloudAt(clouds: CloudNode[], x: number, y: number, pad = 12): Cloud
 }
 
 export default function CumulusGameView() {
-  const { bundle, activeLocation } = useWeather();
+  const { bundle, activeLocation } = useWeatherData();
 
   const liveWindKmh = bundle?.current.windSpeed;
   const liveWindDirDeg = bundle?.current.windDirection;
@@ -255,7 +256,7 @@ export default function CumulusGameView() {
     queueMicrotask(() => {
       if (!active) return;
       try {
-        const raw = window.localStorage.getItem(CAREER_STORAGE_KEY);
+        const raw = readMigratedStorageItem("cumulusCareer", window.localStorage);
         if (!raw) return;
         const parsed = JSON.parse(raw) as CareerStorage;
         if (parsed && typeof parsed === "object" && parsed.stages) {
@@ -411,13 +412,69 @@ export default function CumulusGameView() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [fireShockwave, resetGame]);
 
-  // 60 FPS Simülasyon + Sinematik Volümetrik FBM Bulut Render Döngüsü
+  // 60 FPS Simülasyon + 2D Arena Döngüsü (CumulusIntro3D açıkken tamamen durur; çift tuval çarpışması 0!)
   useEffect(() => {
+    const canvas = canvasRef.current;
+    let cssW = canvas?.clientWidth || 960;
+    let cssH = canvas?.clientHeight || 580;
+
+    const paintArenaOnce = (nowMs: number, dtSec: number) => {
+      const c = canvasRef.current;
+      if (!c) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const targetW = Math.max(320, Math.round(cssW * dpr));
+      const targetH = Math.max(200, Math.round(cssH * dpr));
+      if (c.width !== targetW || c.height !== targetH) {
+        c.width = targetW;
+        c.height = targetH;
+      }
+      const ctx = c.getContext("2d");
+      if (ctx) {
+        renderCumulusArena(
+          ctx,
+          targetW,
+          targetH,
+          gameRef.current,
+          interactionRef.current,
+          atmosRef.current,
+          toolModeRef.current,
+          launchRatioRef.current,
+          nowMs / 1000,
+          dtSec
+        );
+      }
+    };
+
+    const ro = canvas
+      ? new ResizeObserver((entries) => {
+          const r = entries[0]?.contentRect;
+          if (r && r.width > 0 && r.height > 0) {
+            cssW = r.width;
+            cssH = r.height;
+          }
+        })
+      : null;
+    if (canvas && ro) ro.observe(canvas);
+
+    // 3D Intro sahnesi tam ekranda aktifken arkadaki 2D oyun döngüsünü ve setHud'u çalıştırma!
+    if (showIntro && !arenaLockIn) {
+      paintArenaOnce(performance.now(), 0);
+      return () => {
+        ro?.disconnect();
+      };
+    }
+
     let rafId = 0;
     let lastTs = performance.now();
     let hudTimer = 0;
 
     const drawFrame = (now: number) => {
+      if (document.visibilityState === "hidden") {
+        lastTs = now;
+        rafId = window.requestAnimationFrame(drawFrame);
+        return;
+      }
+
       const rawDt = Math.min(0.05, Math.max(0.001, (now - lastTs) / 1000));
       lastTs = now;
 
@@ -444,46 +501,24 @@ export default function CumulusGameView() {
         });
       }
 
-      hudTimer += rawDt;
-      if (hudTimer >= 0.14) {
-        hudTimer = 0;
-        setHud(extractHud(state));
-      }
-
-      const canvas = canvasRef.current;
-      const shouldRender2D = !showIntroRef.current || hudTimer === 0;
-      if (canvas && shouldRender2D) {
-        const rect = canvas.getBoundingClientRect();
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const targetW = Math.max(320, Math.round(rect.width * dpr));
-        const targetH = Math.max(200, Math.round(rect.height * dpr));
-        if (canvas.width !== targetW || canvas.height !== targetH) {
-          canvas.width = targetW;
-          canvas.height = targetH;
-        }
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          renderCumulusArena(
-            ctx,
-            targetW,
-            targetH,
-            state,
-            interactionRef.current,
-            atmosRef.current,
-            toolModeRef.current,
-            launchRatioRef.current,
-            now / 1000,
-            pausedRef.current ? 0 : rawDt
-          );
+      if (!showIntroRef.current) {
+        hudTimer += rawDt;
+        if (hudTimer >= 0.18) {
+          hudTimer = 0;
+          setHud(extractHud(state));
         }
       }
 
+      paintArenaOnce(now, pausedRef.current || showIntroRef.current ? 0 : rawDt);
       rafId = window.requestAnimationFrame(drawFrame);
     };
 
     rafId = window.requestAnimationFrame(drawFrame);
-    return () => window.cancelAnimationFrame(rafId);
-  }, [dispatchGameEvents, persistVictory]);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      ro?.disconnect();
+    };
+  }, [arenaLockIn, dispatchGameEvents, persistVictory, showIntro]);
 
   const clientToArena = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -845,7 +880,7 @@ export default function CumulusGameView() {
 
             {/* Zafer / Yenilgi Ekranı */}
             {hud.status !== "playing" && (
-              <div className="absolute inset-0 flex items-center justify-center bg-[#040914]/80 p-4 backdrop-blur-md">
+              <div className="absolute inset-0 flex items-center justify-center bg-[#040914]/80 p-4">
                 <div className="w-full max-w-md rounded-2xl border border-white/15 bg-[#081020]/95 p-6 text-center shadow-2xl">
                   <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-400/35 bg-sky-500/15 text-sky-300">
                     {hud.status === "victory" ? (

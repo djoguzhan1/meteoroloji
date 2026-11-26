@@ -16,10 +16,6 @@
 import { integratePiecewiseVerticalDeltaC, type LiveVerticalProfile } from "./bursa-mesh";
 import type { HybridModelSnapshot } from "./weather-types";
 
-export interface ExtendedModelSnapshot extends HybridModelSnapshot {
-  jma?: number | null;
-}
-
 interface ObliviousTree {
   s: Array<[number, number]>;
   l: number[];
@@ -6214,8 +6210,8 @@ export interface BursaEmosTempInput {
   leadHours: number;
   utcDate: Date;
   localHourTrt: number;
-  tempSnapshot: ExtendedModelSnapshot;
-  precipSnapshot: ExtendedModelSnapshot;
+  tempSnapshot: HybridModelSnapshot;
+  precipSnapshot: HybridModelSnapshot;
   neighborMedians: {
     minus3h: number;
     minus2h?: number;
@@ -6675,7 +6671,7 @@ export function resolveBimodalEnsembleCluster(params: {
  */
 export function predictBursaTrainedPrecip(params: {
   leadHours: number;
-  precipSnapshot: ExtendedModelSnapshot;
+  precipSnapshot: HybridModelSnapshot;
   ensemblePopPct?: number | null;
   windowPrecipMediansMm?: number[];
   windowMaxWetFrac?: number;

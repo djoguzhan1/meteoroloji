@@ -12,7 +12,8 @@ import {
   predictBursaTrainedTempC,
   resolveBimodalEnsembleCluster
 } from "../lib/bursa-trained-emos";
-import { ATMOS_V4_MODEL_REGISTRY, fusePrecipitationPmqm } from "../lib/emos-precip-fusion";
+import { CORE_MODEL_META } from "../lib/model-registry";
+import { fusePrecipitationPmqm } from "../lib/precip-engine";
 import { trainKalmanMos } from "../lib/kalman-mos";
 import {
   decodePngBufferToRgba,
@@ -90,7 +91,7 @@ describe("ATMOS v5.0 — Bursa Zero-Drift 12-Point Root-Cause Verification Suite
   it("Fix #1: Calibrated-vs-Calibrated dProg/dt preserves 100% of EMOS UHI calibration on cold start while blocking real noisy jumps", () => {
     // Raw models have ZERO run-to-run shift (R0 = 10.0°C, R-1 = 10.0°C, R-2 = 10.1°C),
     // while Bursa EMOS calibrates 10.0°C -> 11.8°C (+1.8°C evening UHI correction).
-    // Old v4.5 bug damped 11.8°C down to 10.5°C! v5.0 MUST preserve 11.8°C untouched!
+    // Legacy raw-run mismatch damped 11.8°C down to 10.5°C! v5.0 MUST preserve 11.8°C untouched!
     const preserved = evaluateHourlyRunConsistency({
       leadHours: 18,
       validTimeIso: "2026-11-27T18:00",
@@ -474,8 +475,8 @@ describe("ATMOS v5.0 — Bursa Zero-Drift 12-Point Root-Cause Verification Suite
 
   it("Fix #7, #8, #9: 17,472h 8-Horizon (d0..d7) Bursa EMOS+GBDT, AIFS model ID fix, Day-6 ICON/UKMO trees & 212-Member Bimodal Cluster Solver", () => {
     // Verify AIFS deterministic Open-Meteo ID fix & JMA registry entry
-    expect(ATMOS_V4_MODEL_REGISTRY.ecmwfAifs.openMeteoModelId).toBe("ecmwf_aifs025_single");
-    expect(ATMOS_V4_MODEL_REGISTRY.jmaGlobal.openMeteoModelId).toBe("jma_seamless");
+    expect(CORE_MODEL_META.ecmwfAifs.apiModel).toBe("ecmwf_aifs025_single");
+    expect(CORE_MODEL_META.jma.apiModel).toBe("jma_seamless");
 
     // Verify Day 6 (156h = 7th forecast day) uses ICON + UKMO + JMA + physical predictors!
     const day6Temp = predictBursaTrainedTempC({

@@ -2,7 +2,13 @@ export type UnitSystem = "metric" | "imperial";
 
 export type PrecipType = "none" | "rain" | "snow";
 
-export type PrecipPhase = "none" | "rain" | "sleet" | "snow" | "hail";
+export type PrecipPhase =
+  | "none"
+  | "rain"
+  | "freezing_rain"
+  | "sleet"
+  | "snow"
+  | "hail";
 
 export type PressureTrend =
   | "hızlı yükseliyor"
@@ -11,17 +17,42 @@ export type PressureTrend =
   | "düşüyor"
   | "hızlı düşüyor";
 
-export type SevenModelKey =
+export type CoreModelKey =
   | "ecmwfIfs"
   | "ecmwfAifs"
   | "icon"
   | "ukmo"
-  | "gfs"
   | "meteofrance"
-  | "gem";
+  | "gfs"
+  | "gem"
+  | "jma";
 
-/** Geriye dönük uyumluluk için takma ad */
-export type FiveModelKey = SevenModelKey;
+export type FreshnessStatus = "live" | "degraded" | "stale";
+
+export type FreshnessSourceTier =
+  | "live"
+  | "memory-stale"
+  | "disk-stale"
+  | "client-cache";
+
+export type ForecastHorizonTier = "exact" | "synoptic" | "subseasonal";
+
+export type DataFreshnessMeta = {
+  status: FreshnessStatus;
+  sourceTier: FreshnessSourceTier;
+  /** Gerçek model/veri çekim zamanı (ISO 8601 UTC) */
+  fetchedAt: string;
+  /** Önbelleğe yazıldığı Unix milisaniye zaman damgası */
+  cachedAtMs: number;
+  /** Şu anki zamana göre veri yaşı (saniye) */
+  ageSeconds: number;
+  /** Bayat veya kısmi mod açıklaması */
+  staleReason?: string;
+  /** Kısmi kesintiye uğrayan alt veri akışları */
+  degradedStreams?: string[];
+  /** Başarıyla yanıt veren çekirdek NWP/AI model sayısı */
+  modelsRespondedCount?: number;
+};
 
 export type GeoLocation = {
   id: string;
@@ -153,6 +184,7 @@ export type CurrentWeather = {
   precipConsensus: PrecipitationConsensus;
   precipType: PrecipType;
   precipPhase?: PrecipPhase;
+  snowLineElevationM?: number | null;
   weatherCode: number;
   condition: string;
   isStorm: boolean;
@@ -189,6 +221,7 @@ export type HourlyPoint = {
   precipConsensus: PrecipitationConsensus;
   precipType: PrecipType;
   precipPhase?: PrecipPhase;
+  snowLineElevationM?: number | null;
   rainAccum: number;
   snowAccum: number;
   weatherCode: number;
@@ -206,15 +239,29 @@ export type HourlyPoint = {
   stabilityGrade?: "LOCKED" | "CONVERGING" | "WATCH";
 };
 
+export type DailyBimodalSplit = {
+  coldModeC: number;
+  warmModeC: number;
+  winningMode: "cold" | "warm";
+  winningWeightPct: number;
+  separationC: number;
+};
+
 export type DailyPoint = {
   date: string;
   dayName: string;
+  horizonTier?: ForecastHorizonTier;
   tempMax: number;
   tempMin: number;
   tempMaxP10?: number;
   tempMaxP90?: number;
   tempMinP10?: number;
   tempMinP90?: number;
+  tempNormalMax?: number;
+  tempNormalMin?: number;
+  tempAnomalyC?: number;
+  daytimeTempC?: number;
+  nighttimeTempC?: number;
   weatherCode: number;
   condition: string;
   precipSum: number;
@@ -223,11 +270,64 @@ export type DailyPoint = {
   precipPhase?: PrecipPhase;
   windSpeedMax: number;
   windGustMax?: number;
+  dominantWindCompass?: string;
   stormScoreMax?: number;
   uvIndexMax: number;
   sunrise: string;
   sunset: string;
+  confidencePct?: number;
+  activeModelCount?: number;
+  ensembleMemberCount?: number;
+  bimodalSplit?: DailyBimodalSplit | null;
   stabilityGrade?: "LOCKED" | "CONVERGING" | "WATCH";
+};
+
+export type SubseasonalDayPoint = {
+  date: string;
+  dayLabel: string;
+  weekIndex: 3 | 4;
+  tempMaxP10: number;
+  tempMaxP25: number;
+  tempMaxP50: number;
+  tempMaxP75: number;
+  tempMaxP90: number;
+  tempMinP25: number;
+  tempMinP50: number;
+  tempMinP75: number;
+  tempNormalMax: number;
+  tempNormalMin: number;
+  anomalyC: number;
+  wetProbPct: number;
+  precipP50Mm: number;
+  precipP90Mm: number;
+  confidencePct: number;
+  ensembleMembers: number;
+  weatherCode: number;
+  regimeTagTr: string;
+};
+
+export type SubseasonalWeekSummary = {
+  weekIndex: 3 | 4;
+  titleTr: string;
+  dateRangeTr: string;
+  meanAnomalyC: number;
+  tempMaxRangeC: [number, number];
+  tempMinRangeC: [number, number];
+  wetDaysExpected: number;
+  meanWetProbPct: number;
+  confidencePct: number;
+  dominantRegimeTr: string;
+  summaryNoteTr: string;
+};
+
+export type SubseasonalOutlookBundle = {
+  fetchedAt: string;
+  ensembleMembers: number;
+  modelsLabel: string;
+  biasShiftMaxC: number;
+  biasShiftMinC: number;
+  weeks: SubseasonalWeekSummary[];
+  days: SubseasonalDayPoint[];
 };
 
 export type SoundingLevel = {
@@ -297,7 +397,7 @@ export type MetarObservation = {
 };
 
 export type ModelVerificationRow = {
-  modelKey: SevenModelKey;
+  modelKey: CoreModelKey;
   label: string;
   resolution: string;
   tempRmseC: number | null;
@@ -328,22 +428,28 @@ export type KalmanCalibrationSummary = {
   meanTempBiasRemovedC: number;
 };
 
+export type LiveVerificationMode =
+  | "live-mgm-mesh"
+  | "live-station-48h"
+  | "live-station-24h"
+  | "wmo-prior";
+
 export type LiveVerificationReport = {
-  mode: "live-metar-48h" | "live-metar-24h" | "wmo-prior";
+  mode: LiveVerificationMode;
   station: MetarObservation | null;
   stations?: MetarObservation[];
   matchedHours: number;
   winners: {
-    temperature: SevenModelKey | null;
-    pressure: SevenModelKey | null;
-    wind: SevenModelKey | null;
-    precipitation?: SevenModelKey | null;
+    temperature: CoreModelKey | null;
+    pressure: CoreModelKey | null;
+    wind: CoreModelKey | null;
+    precipitation?: CoreModelKey | null;
   };
   calibration?: KalmanCalibrationSummary;
   rows: ModelVerificationRow[];
 };
 
-export type AtmosV4Meta = {
+export type AtmosEngineMeta = {
   activeRegime: string;
   activeRegimeLabel: string;
   verticalMechanism: string;
@@ -381,7 +487,7 @@ export type HybridMeta = {
   };
   verification: LiveVerificationReport;
   attributions: HybridSourceAttribution[];
-  atmosV4?: AtmosV4Meta;
+  engineMeta?: AtmosEngineMeta;
 };
 
 export type WeatherBundle = {
@@ -390,11 +496,13 @@ export type WeatherBundle = {
   fetchedAt: string;
   timezone: string;
   utcOffsetSeconds: number;
+  freshness?: DataFreshnessMeta;
   current: CurrentWeather;
   airQuality: AirQualityDetail;
   hourly: HourlyPoint[];
   minutely15?: Minutely15Point[];
   daily: DailyPoint[];
+  subseasonal?: SubseasonalOutlookBundle | null;
   sounding: SoundingLevel[];
   hourlySoundings: SoundingLevel[][];
   nativeConvective: NativeConvective;
@@ -411,23 +519,27 @@ export type ModelSeriesPoint = {
   icon: number | null;
   ukmo: number | null;
   gfs: number | null;
-  meteofrance?: number | null;
-  gem?: number | null;
-  jma?: number | null;
+  meteofrance: number | null;
+  gem: number | null;
+  jma: number | null;
 };
 
 export type MultiModelBundle = {
   fetchedAt: string;
   lat: number;
   lon: number;
+  utcOffsetSeconds?: number;
+  freshness?: DataFreshnessMeta;
   temp2m: ModelSeriesPoint[];
   temp850: ModelSeriesPoint[];
   precip: ModelSeriesPoint[];
   wind10m: ModelSeriesPoint[];
   summary: {
-    precip72h: Record<SevenModelKey, number>;
+    precip72h: Record<CoreModelKey, number>;
+    precip168h: Record<CoreModelKey, number>;
+    precip360h?: Record<CoreModelKey, number>;
     maxSpreadTemp2m: number;
-    min850hPa: Record<SevenModelKey, number | null>;
+    min850hPa: Record<CoreModelKey, number | null>;
   };
 };
 
@@ -440,6 +552,7 @@ export type RadarMetadata = {
   host: string;
   generated: number;
   frames: RadarFrame[];
+  freshness?: DataFreshnessMeta;
 };
 
 export type WindGridBundle = {
@@ -454,6 +567,7 @@ export type WindGridBundle = {
   speedKmh: number[];
   maxSpeedKmh: number;
   fetchedAt: string;
+  freshness?: DataFreshnessMeta;
 };
 
 export type SynopticSignal = {

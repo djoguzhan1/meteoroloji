@@ -378,19 +378,6 @@ export function getPriorCalibratedRunsFromLedger(
 }
 
 /**
- * Retrieves the locked forecast from the CURRENT active cycle if already generated,
- * preventing micro-jitter between 5-minute API cache refreshes.
- */
-export function getCurrentCycleLockedRun(
-  locKey: string,
-  activeCycleId: string
-): LedgerCalibratedRun | null {
-  const ledger = loadLedger();
-  const runs = ledger.calibratedRuns[locKey] ?? [];
-  return runs.find((r) => r.cycleId === activeCycleId) ?? null;
-}
-
-/**
  * Saves or updates the calibrated 168-hour trajectory for `activeCycleId`.
  */
 export function saveCalibratedRunToLedger(

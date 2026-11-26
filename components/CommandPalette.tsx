@@ -18,8 +18,8 @@ import {
   VolumeX,
   X
 } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
-import { GLOBE_CITIES } from "@/lib/weather";
+import { useWeatherData } from "@/context/WeatherContext";
+import { GLOBE_CITIES } from "@/lib/weather-client";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import type { GeoLocation } from "@/lib/weather-types";
 
@@ -29,10 +29,10 @@ type PaletteItem =
   | { kind: "action"; id: string; label: string; sub: string; action: "unit" | "audio" | "gps" };
 
 const ROUTE_ITEMS: PaletteItem[] = [
-  { kind: "route", id: "r-home", label: "Hava Durumu", sub: "Canlı atmosfer, 24/48s akış & METAR", href: "/" },
+  { kind: "route", id: "r-home", label: "Hava Durumu", sub: "Canlı atmosfer, saatlik akış & istasyon doğrulaması", href: "/" },
   { kind: "route", id: "r-world", label: "Radar & 3D Küre", sub: "Doppler yağış, rüzgar akımı & dünya", href: "/world" },
   { kind: "route", id: "r-dash", label: "İstasyonlar", sub: "Çoklu şehir takibi & izleme eşikleri", href: "/dashboard" },
-  { kind: "route", id: "r-lab", label: "Modeller & Sondaj", sub: "7-Model 72s karşılaştırma & Skew-T", href: "/lab" },
+  { kind: "route", id: "r-lab", label: "Modeller & Sondaj", sub: "8-Model 72/168s karşılaştırma & 72s Skew-T", href: "/lab" },
   { kind: "route", id: "r-play", label: "CUMULUS · Bulut Savaşı", sub: "3D Süper Hücre & taktik fırtına oyunu", href: "/play" }
 ];
 
@@ -58,7 +58,7 @@ export default function CommandPalette({
     setUnit,
     audioEnabled,
     setAudioEnabled
-  } = useWeather();
+  } = useWeatherData();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");

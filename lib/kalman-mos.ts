@@ -1,22 +1,22 @@
 import { isWithinBursaDomain } from "./bursa-mesh";
-import type { LedgerStationPoint } from "./state-ledger";
-import { computeRuralBasinToUrbanOffsetC } from "./topographic-cressman";
+import { parseMetarWxTokens, type MetarNetworkStation } from "./metar-verify";
 import {
   computeInverseRmseWeights,
-  MEDIUM_RANGE_PRIOR_WEIGHTS,
-  parseMetarWxTokens,
-  SEVEN_MODEL_KEYS,
-  SEVEN_MODEL_META,
-  WMO_PRIOR_WEIGHTS,
+  CORE_MODEL_KEYS,
+  CORE_MODEL_META,
   type DynamicHybridWeights,
-  type MetarNetworkStation
-} from "./metar-verify";
+  MEDIUM_RANGE_PRIOR_WEIGHTS,
+  WMO_PRIOR_WEIGHTS
+} from "./model-registry";
+import type { LedgerStationPoint } from "./state-ledger";
+import { computeRuralBasinToUrbanOffsetC } from "./topographic-cressman";
 import type {
+  CoreModelKey,
   HybridModelSnapshot,
   KalmanCalibrationSummary,
+  LiveVerificationMode,
   LiveVerificationReport,
-  ModelVerificationRow,
-  SevenModelKey
+  ModelVerificationRow
 } from "./weather-types";
 
 export type CressmanHourlyObs = {
@@ -26,16 +26,16 @@ export type CressmanHourlyObs = {
   dewPointC: number | null;
   pressureHpa: number | null;
   windSpeedKmh: number | null;
-  hasPrecip: boolean | null; // null -> bilgi yok; true/false -> yakın istasyon wxString kanıtı
+  hasPrecip: boolean | null;
   isThunderstorm: boolean;
   stationCount: number;
 };
 
 export type ModelBiasProfile = {
-  tempPersistentBiasC: number; // 48s kalıcı topoğrafik/mikroklima sapması (τ = 60s)
-  tempTransientBiasC: number; // son ~8-12s hava kütlesi/bulutluluk sapması (τ = 10s)
-  tempKalmanBiasC: number; // toplam t=0 Kalman sapması (geriye dönük uyumluluk & raporlama)
-  tempDiurnalBiasC: [number, number, number, number]; // 00-06, 06-12, 12-18, 18-24 yerel saat dilimleri
+  tempPersistentBiasC: number;
+  tempTransientBiasC: number;
+  tempKalmanBiasC: number;
+  tempDiurnalBiasC: [number, number, number, number];
   dewKalmanBiasC: number;
   pressKalmanBiasHpa: number;
   windKalmanBiasKmh: number;
@@ -68,7 +68,7 @@ export type KalmanMosModel = {
   active: boolean;
   shortRangeWeights: DynamicHybridWeights;
   mediumRangeWeights: DynamicHybridWeights;
-  biases: Record<SevenModelKey, ModelBiasProfile>;
+  biases: Record<CoreModelKey, ModelBiasProfile>;
   anchor: NowcastSensorAnchor;
   report: LiveVerificationReport;
   summary: KalmanCalibrationSummary;
@@ -147,7 +147,6 @@ export function buildCressmanMetarTimeline(
   const bucket = new Map<string, Map<string, StationSample>>();
   const hasLedgerBursa = Boolean(ledgerStationHistory && ledgerStationHistory.length >= 6);
 
-  // 1. Assimilate persistent Tier-1/2 Bursa MGM 19-district hourly ledger points when available!
   if (ledgerStationHistory && cityLat !== undefined && cityLon !== undefined) {
     for (const pt of ledgerStationHistory) {
       const distKm = Math.max(0.5, haversineKmLocal(cityLat, cityLon, pt.lat, pt.lon));
@@ -160,7 +159,7 @@ export function buildCressmanMetarTimeline(
         Math.max(-0.0028, Math.min(0.0015, safeLapse * 0.35)) * elevDiffToCity;
       const elevPenalty = 1 + Math.abs(elevDiffToCity) / 220;
       const isEastBasin = isBursaOvaTarget && pt.lon >= 29.38;
-      const barrierFactor = isEastBasin ? 0.18 : 3.2; // Official in-basin MGM dominates distant airports!
+      const barrierFactor = isEastBasin ? 0.18 : 3.2;
       const stationWeight = barrierFactor / ((distKm * distKm + 8 * 8) * elevPenalty);
 
       const perStation = bucket.get(pt.utcHourKey) ?? new Map<string, StationSample>();
@@ -178,7 +177,6 @@ export function buildCressmanMetarTimeline(
     }
   }
 
-  // 2. Assimilate regional METAR history (with LTBR frost-basin quarantine when targeting Bursa Ova)
   for (const net of network) {
     const elevDiffToCity = cityElevationM - net.station.elevationM;
     const tempElevDelta = safeLapse * elevDiffToCity;
@@ -232,8 +230,8 @@ export function buildCressmanMetarTimeline(
       const press =
         typeof ob.slp === "number" && Number.isFinite(ob.slp)
           ? ob.slp
-          : typeof ob.altim === "number" && Number.isFinite(ob.altim)
-            ? ob.altim
+          : typeof ob.altim === "number" && Number.isFinite(latestOrNull(ob.altim))
+            ? ob.altim!
             : null;
       const windKmh =
         typeof ob.wspd === "number" && Number.isFinite(ob.wspd)
@@ -311,6 +309,10 @@ export function buildCressmanMetarTimeline(
   return out;
 }
 
+function latestOrNull(v: number | null | undefined): number {
+  return typeof v === "number" ? v : NaN;
+}
+
 function emptyBiasProfile(): ModelBiasProfile {
   return {
     tempPersistentBiasC: 0,
@@ -333,8 +335,8 @@ function emptyBiasProfile(): ModelBiasProfile {
 }
 
 /**
- * ATMOS-Core v5.0 Kalman + Diurnal-Phase MOS Eğitim Motoru:
- * - Son 48-72 saatlik Bursa MGM Defteri + çoklu-istasyon METAR ağına karşı 7 modelin bias & UBRMSE'sini çıkarır.
+ * ATMOS v5.0 — 8-Model Kalman + Diurnal-Phase MOS Eğitim Motoru:
+ * - Son 48-72 saatlik Bursa MGM 19-İlçe Defteri + çoklu-istasyon METAR ağına karşı 8 modelin bias & UBRMSE'sini çıkarır.
  * - Ağırlıkları ham RMSE değil, bias temizlendikten sonraki rastgele hata (UBRMSE²) ile belirler.
  * - Yağış Brier skoruyla yağış ağırlıklarını da canlı kalibre eder.
  */
@@ -373,7 +375,6 @@ export function trainKalmanMos({
     ledgerStationHistory
   );
 
-  // Note: when Bursa hybridUrl is locked to WMO 17116 (100m), align observation timeline to model grid elevation if specified
   const isBursaWmo100mGrid =
     cityLat !== undefined &&
     cityLon !== undefined &&
@@ -382,17 +383,17 @@ export function trainKalmanMos({
     cityElevationM <= 750;
   const modelGridElevAdjustC = isBursaWmo100mGrid ? safeLapse * (100 - cityElevationM) : 0;
 
-  const biases = {} as Record<SevenModelKey, ModelBiasProfile>;
-  for (const k of SEVEN_MODEL_KEYS) biases[k] = emptyBiasProfile();
+  const biases = {} as Record<CoreModelKey, ModelBiasProfile>;
+  for (const k of CORE_MODEL_KEYS) biases[k] = emptyBiasProfile();
 
   type Sample = { err: number; ageHours: number; bin: number };
-  const tSamples = {} as Record<SevenModelKey, Sample[]>;
-  const tdSamples = {} as Record<SevenModelKey, Sample[]>;
-  const pSamples = {} as Record<SevenModelKey, Sample[]>;
-  const wSamples = {} as Record<SevenModelKey, Sample[]>;
-  const precipBrierAcc = {} as Record<SevenModelKey, { sq: number; n: number }>;
+  const tSamples = {} as Record<CoreModelKey, Sample[]>;
+  const tdSamples = {} as Record<CoreModelKey, Sample[]>;
+  const pSamples = {} as Record<CoreModelKey, Sample[]>;
+  const wSamples = {} as Record<CoreModelKey, Sample[]>;
+  const precipBrierAcc = {} as Record<CoreModelKey, { sq: number; n: number }>;
 
-  for (const k of SEVEN_MODEL_KEYS) {
+  for (const k of CORE_MODEL_KEYS) {
     tSamples[k] = [];
     tdSamples[k] = [];
     pSamples[k] = [];
@@ -420,8 +421,8 @@ export function trainKalmanMos({
       const obsTempForModel =
         obs.tempC !== null ? obs.tempC + modelGridElevAdjustC : null;
 
-      for (const mKey of SEVEN_MODEL_KEYS) {
-        const apiId = SEVEN_MODEL_META[mKey].apiModel;
+      for (const mKey of CORE_MODEL_KEYS) {
+        const apiId = CORE_MODEL_META[mKey].apiModel;
         const mTemp = modelHourlyUtc[`temperature_2m_${apiId}`]?.[idx];
         const mDew = modelHourlyUtc[`dew_point_2m_${apiId}`]?.[idx];
         const mPress = modelHourlyUtc[`pressure_msl_${apiId}`]?.[idx];
@@ -471,15 +472,19 @@ export function trainKalmanMos({
     }
   }
 
+  const uniqueLedgerStations = Array.from(
+    new Set((ledgerStationHistory ?? []).map((p) => p.stationId))
+  );
+  const hasMgmMeshCalibration = uniqueLedgerStations.length > 0 && matchedHours >= 6;
   const hasLiveCalibration =
-    (network.length > 0 || (ledgerStationHistory?.length ?? 0) > 0) && matchedHours >= 6;
+    (network.length > 0 || uniqueLedgerStations.length > 0) && matchedHours >= 6;
 
-  const tempUbRmses: Partial<Record<SevenModelKey, number | null>> = {};
-  const tempRmses: Partial<Record<SevenModelKey, number | null>> = {};
-  const pressUbRmses: Partial<Record<SevenModelKey, number | null>> = {};
-  const pressRmses: Partial<Record<SevenModelKey, number | null>> = {};
-  const windRmses: Partial<Record<SevenModelKey, number | null>> = {};
-  const precipBriers: Partial<Record<SevenModelKey, number | null>> = {};
+  const tempUbRmses: Partial<Record<CoreModelKey, number | null>> = {};
+  const tempRmses: Partial<Record<CoreModelKey, number | null>> = {};
+  const pressUbRmses: Partial<Record<CoreModelKey, number | null>> = {};
+  const pressRmses: Partial<Record<CoreModelKey, number | null>> = {};
+  const windRmses: Partial<Record<CoreModelKey, number | null>> = {};
+  const precipBriers: Partial<Record<CoreModelKey, number | null>> = {};
 
   const computeEwmaBias = (
     samples: Sample[],
@@ -507,7 +512,7 @@ export function trainKalmanMos({
   let biasSumForAvg = 0;
   let biasCountForAvg = 0;
 
-  for (const k of SEVEN_MODEL_KEYS) {
+  for (const k of CORE_MODEL_KEYS) {
     const ts = filterRobustErrors(tSamples[k], 6.5);
     const tds = filterRobustErrors(tdSamples[k], 7.0);
     const ps = filterRobustErrors(pSamples[k], 7.5);
@@ -605,13 +610,13 @@ export function trainKalmanMos({
         precipitation: usePrecipBrier
           ? computeInverseRmseWeights(
               Object.fromEntries(
-                SEVEN_MODEL_KEYS.map((k) => [
+                CORE_MODEL_KEYS.map((k) => [
                   k,
                   precipBriers[k] !== null && precipBriers[k] !== undefined
                     ? Math.sqrt(Math.max(0, precipBriers[k]!))
                     : null
                 ])
-              ) as Partial<Record<SevenModelKey, number | null>>,
+              ) as Partial<Record<CoreModelKey, number | null>>,
               WMO_PRIOR_WEIGHTS.precipitation,
               0.22
             )
@@ -691,11 +696,11 @@ export function trainKalmanMos({
   }
 
   const findWinner = (
-    map: Partial<Record<SevenModelKey, number | null>>
-  ): SevenModelKey | null => {
-    let bestKey: SevenModelKey | null = null;
+    map: Partial<Record<CoreModelKey, number | null>>
+  ): CoreModelKey | null => {
+    let bestKey: CoreModelKey | null = null;
     let bestVal = Infinity;
-    for (const k of SEVEN_MODEL_KEYS) {
+    for (const k of CORE_MODEL_KEYS) {
       const v = map[k];
       if (typeof v === "number" && Number.isFinite(v) && v < bestVal) {
         bestVal = v;
@@ -705,12 +710,12 @@ export function trainKalmanMos({
     return bestKey;
   };
 
-  const rows: ModelVerificationRow[] = SEVEN_MODEL_KEYS.map((k) => {
+  const rows: ModelVerificationRow[] = CORE_MODEL_KEYS.map((k) => {
     const p = biases[k];
     return {
       modelKey: k,
-      label: SEVEN_MODEL_META[k].label,
-      resolution: SEVEN_MODEL_META[k].resolution,
+      label: CORE_MODEL_META[k].label,
+      resolution: CORE_MODEL_META[k].resolution,
       tempRmseC: p.tempRmseC,
       tempUbRmseC: p.tempUbRmseC,
       tempBiasC: p.tempMeanBiasC,
@@ -729,10 +734,14 @@ export function trainKalmanMos({
     };
   });
 
+  const combinedStationIds = Array.from(
+    new Set([...uniqueLedgerStations, ...network.map((n) => n.station.icaoId)])
+  );
+
   const summary: KalmanCalibrationSummary = {
     active: hasLiveCalibration || anchor.active,
-    stationCount: network.length,
-    stationIds: network.map((n) => n.station.icaoId),
+    stationCount: combinedStationIds.length,
+    stationIds: combinedStationIds,
     envLapseRateCPerKm: Number((safeLapse * 1000).toFixed(2)),
     nowcastTempDeltaC: 0,
     nowcastKalmanGain: anchor.tempKalmanGain,
@@ -743,12 +752,16 @@ export function trainKalmanMos({
         : 0
   };
 
-  const report: LiveVerificationReport = {
-    mode: hasLiveCalibration
+  const mode: LiveVerificationMode = hasMgmMeshCalibration
+    ? "live-mgm-mesh"
+    : hasLiveCalibration
       ? matchedHours >= 26
-        ? "live-metar-48h"
-        : "live-metar-24h"
-      : "wmo-prior",
+        ? "live-station-48h"
+        : "live-station-24h"
+      : "wmo-prior";
+
+  const report: LiveVerificationReport = {
+    mode,
     station: primary,
     stations: network.map((n) => n.station),
     matchedHours,
@@ -774,21 +787,21 @@ export function trainKalmanMos({
 }
 
 export function getLeadTimeWeights(
-  shortW: Record<SevenModelKey, number>,
-  mediumW: Record<SevenModelKey, number>,
+  shortW: Record<CoreModelKey, number>,
+  mediumW: Record<CoreModelKey, number>,
   leadHour: number
-): Record<SevenModelKey, number> {
+): Record<CoreModelKey, number> {
   const alpha = clamp((leadHour - 18) / 60, 0, 1);
   if (alpha <= 0) return shortW;
-  const out = {} as Record<SevenModelKey, number>;
+  const out = {} as Record<CoreModelKey, number>;
   let sum = 0;
-  for (const k of SEVEN_MODEL_KEYS) {
+  for (const k of CORE_MODEL_KEYS) {
     const v = shortW[k] * (1 - alpha) + mediumW[k] * alpha;
     out[k] = v;
     sum += v;
   }
   if (sum > 0) {
-    for (const k of SEVEN_MODEL_KEYS) out[k] /= sum;
+    for (const k of CORE_MODEL_KEYS) out[k] /= sum;
   }
   return out;
 }
@@ -825,7 +838,7 @@ export function blendKalmanCorrectedScalar({
 
   const candidates: Array<{ corr: number; raw: number; w: number }> = [];
 
-  for (const k of SEVEN_MODEL_KEYS) {
+  for (const k of CORE_MODEL_KEYS) {
     const rawVal = snapshot[k];
     const w = weights[k];
     if (rawVal === null || rawVal === undefined || !Number.isFinite(rawVal) || w <= 0) {
@@ -870,7 +883,6 @@ export function blendKalmanCorrectedScalar({
   let fused = den > 0 ? num / den : fallback;
   const meanKalmanShift = den > 0 ? fused - rawNum / den : 0;
 
-  // Orta-uzun vadede (24–168s) 212-üyeli gerçek ensemble medyanıyla faz kilitleme (Kalman sapması korunarak!)
   if (
     ensembleP50 !== null &&
     Number.isFinite(ensembleP50) &&
@@ -882,7 +894,6 @@ export function blendKalmanCorrectedScalar({
     fused = fused * (1 - ensWeight) + biasAlignedEnsP50 * ensWeight;
   }
 
-  // 0–6 saatlik Fiziksel Sensör Asimilasyonu (Kalman Gain Anchor)
   if (mos.anchor.active && leadHour >= 0 && leadHour <= 6) {
     const anchorDecay = Math.exp(-leadHour / 2.4);
     if (param === "temperature" && mos.anchor.tempObsCityC !== null) {

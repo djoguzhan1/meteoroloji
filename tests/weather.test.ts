@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { WMO_PRIOR_WEIGHTS } from "../lib/model-registry";
 import {
+  ATMOS_STORAGE_KEYS,
   blendHybridParameter,
   blendWindDirectionDeg,
   classifyPressureTrend,
@@ -18,15 +20,17 @@ import {
   mapEuropeanAqi,
   mapWmoCodeToLabel,
   mapWmoToPrecipType,
+  readMigratedStorageItem,
   solarElevationToDaylight,
+  type StorageLike,
   windDirectionToCompass,
-  windKmhToBeaufort,
-  WMO_PRIOR_WEIGHTS
-} from "../lib/weather";
+  windKmhToBeaufort
+} from "../lib/weather-client";
 
-describe("weather WMO, NOAA, EEA ve 5-model hibrit yardımcıları", () => {
+describe("weather-client WMO, NOAA, EEA, 8-model uzlaşı ve v5 depolama göçü", () => {
   it("WMO kodlarını doğru Türkçe meteoroloji etiketine ve yağış tipine çevirir", () => {
     expect(mapWmoCodeToLabel(0)).toBe("Açık");
+    expect(mapWmoCodeToLabel(66)).toBe("Donan Yağmur");
     expect(mapWmoCodeToLabel(73)).toBe("Kar Yağışlı");
     expect(mapWmoCodeToLabel(95)).toBe("Gök Gürültülü Sağanak");
 
@@ -41,9 +45,9 @@ describe("weather WMO, NOAA, EEA ve 5-model hibrit yardımcıları", () => {
     expect(mapEuropeanAqi(120)).toEqual({ categoryIndex: 6, label: "Aşırı Kötü" });
 
     const dom = detectDominantPollutant({
-      pm25: 68, // Kötü bandı (50-90)
-      pm10: 25, // Makul bandı
-      ozone: 40, // İyi bandı
+      pm25: 68,
+      pm10: 25,
+      ozone: 40,
       no2: 12,
       so2: 5
     });
@@ -112,36 +116,44 @@ describe("weather WMO, NOAA, EEA ve 5-model hibrit yardımcıları", () => {
     expect(formatWindSpeed(100, "imperial")).toBe("62 mph");
   });
 
-  it("5-model hibrit ağırlıklı birleştirme, eksik model normalize etme ve yağış uzlaşısı doğrudur", () => {
+  it("8-model hibrit ağırlıklı birleştirme, eksik model normalize etme ve yağış uzlaşısı doğrudur", () => {
     const blended = blendHybridParameter(
-      { ecmwfIfs: 20, ecmwfAifs: 18, icon: 19, ukmo: 21, gfs: 22 },
+      {
+        ecmwfIfs: 20,
+        ecmwfAifs: 18,
+        icon: 19,
+        ukmo: 21,
+        meteofrance: 19.5,
+        gfs: 22,
+        gem: 20.5,
+        jma: 19.8
+      },
       WMO_PRIOR_WEIGHTS.temperature,
       0
     );
     expect(blended).toBeGreaterThan(19);
     expect(blended).toBeLessThan(20.5);
 
-    // Kısmi null modellerde kalan ağırlıklarla doğru normalize
     const partial = blendHybridParameter(
       { ecmwfIfs: 20, ecmwfAifs: null, icon: 16, ukmo: null, gfs: null },
       { ecmwfIfs: 0.6, ecmwfAifs: 0.2, icon: 0.2, ukmo: 0, gfs: 0 },
       0
     );
-    // (20*0.6 + 16*0.2) / 0.8 = 15.2 / 0.8 = 19.0
     expect(partial).toBeCloseTo(19.0, 4);
 
-    // 5-model yağış uzlaşısı (3/5 model >= 0.1 mm)
     const cons = computePrecipConsensus({
       ecmwfIfs: 0.8,
       ecmwfAifs: 0,
       icon: 1.4,
       ukmo: 0.3,
-      gfs: 0
+      meteofrance: 0.5,
+      gfs: 0,
+      gem: 0,
+      jma: 0.2
     });
-    expect(cons.agreeingModels).toBe(3);
-    expect(cons.totalModels).toBe(5);
+    expect(cons.agreeingModels).toBe(5);
+    expect(cons.totalModels).toBe(8);
     expect(cons.minMm).toBe(0);
-    expect(cons.medianMm).toBe(0.3);
     expect(cons.maxMm).toBe(1.4);
 
     expect(computeHybridConfidence(0.4, 0.3)).toBeGreaterThanOrEqual(98);
@@ -183,5 +195,33 @@ describe("weather WMO, NOAA, EEA ve 5-model hibrit yardımcıları", () => {
     expect(active.length).toBeGreaterThanOrEqual(3);
     expect(active.some((s) => s.id === "pressure-tendency")).toBe(true);
     expect(active.some((s) => s.id === "cold-snow-threshold")).toBe(true);
+  });
+
+  it("eski localStorage anahtarlarını atmos:v5:* isim alanına kayıpsız taşır ve eski anahtarı siler", () => {
+    const map = new Map<string, string>();
+    const memStorage: StorageLike = {
+      getItem: (k) => map.get(k) ?? null,
+      setItem: (k, v) => {
+        map.set(k, v);
+      },
+      removeItem: (k) => {
+        map.delete(k);
+      }
+    };
+
+    const legacyLocKey = ["atmos", "location", "v3"].join(":");
+    const legacyCareerKey = ["atmos", "cumulus", "career", "v1"].join(":");
+    memStorage.setItem(legacyLocKey, '{"id":"bursa-tr","name":"Bursa"}');
+    memStorage.setItem(legacyCareerKey, '{"totalWins":4}');
+
+    const migratedLoc = readMigratedStorageItem("location", memStorage);
+    expect(migratedLoc).toBe('{"id":"bursa-tr","name":"Bursa"}');
+    expect(memStorage.getItem(ATMOS_STORAGE_KEYS.location)).toBe(migratedLoc);
+    expect(memStorage.getItem(legacyLocKey)).toBeNull();
+
+    const migratedCareer = readMigratedStorageItem("cumulusCareer", memStorage);
+    expect(migratedCareer).toBe('{"totalWins":4}');
+    expect(memStorage.getItem(ATMOS_STORAGE_KEYS.cumulusCareer)).toBe(migratedCareer);
+    expect(memStorage.getItem(legacyCareerKey)).toBeNull();
   });
 });

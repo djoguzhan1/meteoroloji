@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GLOBE_CITIES } from "@/lib/weather";
+import { GLOBE_CITIES } from "@/lib/weather-client";
 import type { GeoLocation } from "@/lib/weather-types";
 
 export const dynamic = "force-dynamic";
 
-type CacheItem = { results: GeoLocation[]; expiresAt: number };
+type CacheItem = { results: GeoLocation[]; expiresAt: number; staleUntil: number };
 const geoCache = new Map<string, CacheItem>();
 const GEO_TTL_MS = 60 * 60 * 1000;
+const GEO_STALE_MS = 48 * 60 * 60 * 1000;
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -64,9 +65,17 @@ export async function GET(request: NextRequest) {
       })
     );
 
-    geoCache.set(key, { results, expiresAt: Date.now() + GEO_TTL_MS });
+    const nowMs = Date.now();
+    geoCache.set(key, {
+      results,
+      expiresAt: nowMs + GEO_TTL_MS,
+      staleUntil: nowMs + GEO_STALE_MS
+    });
     return NextResponse.json({ results });
   } catch {
+    if (cached && cached.staleUntil > Date.now()) {
+      return NextResponse.json({ results: cached.results });
+    }
     const localMatches = GLOBE_CITIES.filter(
       (c) =>
         c.name.toLowerCase().includes(key) || c.country.toLowerCase().includes(key)

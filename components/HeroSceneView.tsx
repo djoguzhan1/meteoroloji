@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
@@ -27,7 +27,8 @@ import {
   Sunset,
   Wind
 } from "lucide-react";
-import { useWeather } from "@/context/WeatherContext";
+import { useWeatherData, useWeatherRetryCountdown, useWeatherScrub, useWeatherStatus } from "@/context/WeatherContext";
+import { formatClockTr, formatFreshnessAgeTr } from "@/lib/forecast-resilience";
 import {
   classifyPressureTrend,
   classifyUvIndex,
@@ -38,26 +39,42 @@ import {
   formatWindSpeed,
   windDirectionToCompass,
   windKmhToBeaufort
-} from "@/lib/weather";
-import { SEVEN_MODEL_META } from "@/lib/metar-verify";
+} from "@/lib/weather-client";
+import { CORE_MODEL_META } from "@/lib/model-registry";
 import { analyzeConvectiveProfile } from "@/lib/thermo-cape";
 import { atmosUiSfx } from "@/lib/ui-sfx";
-import type { WeatherBundle } from "@/lib/weather-types";
+import type { PrecipPhase, WeatherBundle } from "@/lib/weather-types";
 import TimeScrubber from "./TimeScrubber";
-import HourlyCharts from "./HourlyCharts";
+import HourlyForecastStrip from "./HourlyForecastStrip";
+import ExtendedDailyForecastPanel from "./ExtendedDailyForecastPanel";
 import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
 function WeatherGlyph({
   code,
   isNight = false,
+  precipPhase,
+  intensityMm = 0,
+  phaseSeed = 0,
   className = "h-5 w-5"
 }: {
   code: number;
   isNight?: boolean;
+  precipPhase?: PrecipPhase;
+  intensityMm?: number;
+  phaseSeed?: number;
   className?: string;
 }) {
-  return <AnimatedWeatherIcon code={code} isNight={isNight} className={className} />;
+  return (
+    <AnimatedWeatherIcon
+      code={code}
+      isNight={isNight}
+      precipPhase={precipPhase}
+      intensityMm={intensityMm}
+      phaseSeed={phaseSeed}
+      className={className}
+    />
+  );
 }
 
 function WindCompassMini({ deg, beaufort = 2 }: { deg: number; beaufort?: number }) {
@@ -171,7 +188,7 @@ function BarometerDialMini({
   );
 }
 
-function SunAndUvCard({
+const SunAndUvCard = memo(function SunAndUvCard({
   sunrise,
   sunset,
   solarElevationDeg,
@@ -305,6 +322,19 @@ function SunAndUvCard({
       </div>
     </div>
   );
+});
+
+function EmptyHeroRetryStatus({ isOffline }: { isOffline: boolean }) {
+  const retryCountdownSec = useWeatherRetryCountdown();
+  return (
+    <p className="font-mono text-xs text-ink-muted tabular">
+      {isOffline
+        ? "İnternet bağlantısı geldiği an otomatik olarak yüklenecek."
+        : retryCountdownSec !== null && retryCountdownSec > 0
+          ? `${retryCountdownSec} sn içinde otomatik olarak yeniden yoklanacak.`
+          : "Arka planda canlı akış bekleniyor."}
+    </p>
+  );
 }
 
 function computeLiveSounding(b: WeatherBundle | null) {
@@ -346,7 +376,10 @@ function computeHeroDisplay(b: WeatherBundle | null, frameIndex: number) {
       temp850hPa: activeHour.temp850hPa,
       freezingLevelM: activeHour.freezingLevelM,
       precipConsensus: activeHour.precipConsensus,
+      precipPhase: activeHour.precipPhase,
+      precipitation: activeHour.precipitation,
       wetBulbC: activeHour.wetBulbC,
+      snowLineElevationM: activeHour.snowLineElevationM ?? null,
       stormScore: activeHour.stormScore ?? 0,
       solarElevationDeg: activeHour.solarElevationDeg,
       timeLabel: `${activeHour.dayLabel} · ${activeHour.hourLabel}`
@@ -375,7 +408,10 @@ function computeHeroDisplay(b: WeatherBundle | null, frameIndex: number) {
     temp850hPa: obs.temp850hPa,
     freezingLevelM: b.nativeConvective.freezingLevelM,
     precipConsensus: obs.precipConsensus,
+    precipPhase: obs.precipPhase,
+    precipitation: obs.precipitation,
     wetBulbC: obs.wetBulbC,
+    snowLineElevationM: obs.snowLineElevationM ?? null,
     stormScore: b.storm?.score ?? obs.stormScore ?? 0,
     solarElevationDeg: obs.solarElevationDeg,
     timeLabel: `Gözlem · ${obs.time.slice(11, 16)}`
@@ -385,17 +421,22 @@ function computeHeroDisplay(b: WeatherBundle | null, frameIndex: number) {
 export default function HeroSceneView() {
   const {
     bundle,
-    loading,
-    error,
-    refreshWeather,
     activeLocation,
     isFavorite,
     addFavorite,
     removeFavorite,
-    unit,
-    frameIndex,
-    setFrameIndex
-  } = useWeather();
+    unit
+  } = useWeatherData();
+  const { frameIndex, setFrameIndex } = useWeatherScrub();
+  const {
+    loading,
+    isRevalidating,
+    error,
+    isStale,
+    isDegraded,
+    isOffline,
+    refreshWeather
+  } = useWeatherStatus();
 
   const [copiedLink, setCopiedLink] = useState(false);
   const [showMethodology, setShowMethodology] = useState(false);
@@ -424,22 +465,39 @@ export default function HeroSceneView() {
   }, [bundle, display, liveSoundingSummary]);
 
   if (!bundle || !display) {
+    if (loading && !error) {
+      return (
+        <div className="mx-auto max-w-xl px-4 py-24 text-center space-y-4">
+          <div className="surface-panel p-8 space-y-3">
+            <RefreshCw className="mx-auto h-6 w-6 animate-spin text-[var(--atmos-accent)]" />
+            <h1 className="font-display text-xl font-semibold text-ink-primary">
+              {activeLocation.name} Verileri Hazırlanıyor
+            </h1>
+            <p className="text-sm text-ink-secondary">
+              Çoklu model ve atmosferik kalibrasyon akışı yükleniyor...
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="mx-auto max-w-xl px-4 py-24 text-center space-y-4">
         <div className="surface-panel p-8 space-y-4">
           <h1 className="font-display text-xl font-semibold text-ink-primary">
-            Canlı Veri Alınamadı
+            {activeLocation.name} İçin Kayıtlı Tahmin Bulunamadı
           </h1>
           <p className="text-sm text-ink-secondary">
-            {error ?? "Meteoroloji veri servisi yanıt vermedi."}
+            {error ?? "Bu konum için daha önce kaydedilmiş bir önbellek yok ve canlı model servisine şu an ulaşılamıyor."}
           </p>
+          <EmptyHeroRetryStatus isOffline={isOffline} />
           <button
             type="button"
             onClick={() => void refreshWeather()}
             className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-ink-primary hover:bg-white/15"
           >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            Yeniden Dene
+            <RefreshCw className={`h-4 w-4 ${loading || isRevalidating ? "animate-spin" : ""}`} />
+            Şimdi Yeniden Dene
           </button>
         </div>
       </div>
@@ -452,9 +510,10 @@ export default function HeroSceneView() {
   const metarStations =
     bundle.hybrid?.verification?.stations ?? (metarStation ? [metarStation] : []);
   const calInfo = bundle.hybrid?.verification?.calibration;
-  const isLiveMetar =
-    bundle.hybrid?.verification?.mode === "live-metar-48h" ||
-    bundle.hybrid?.verification?.mode === "live-metar-24h";
+  const verificationMode = bundle.hybrid?.verification?.mode ?? "wmo-prior";
+  const isMgmMesh = verificationMode === "live-mgm-mesh";
+  const isLiveStation =
+    verificationMode === "live-station-48h" || verificationMode === "live-station-24h";
   const has15MinPrecip = Boolean(
     bundle.minutely15?.some((pt) => pt.precipitation >= 0.05)
   );
@@ -481,18 +540,28 @@ export default function HeroSceneView() {
   };
 
   const fav = isFavorite(activeLocation);
-  const weekMin = Math.min(...bundle.daily.map((d) => d.tempMin));
-  const weekMax = Math.max(...bundle.daily.map((d) => d.tempMax));
-  const weekSpan = Math.max(1, weekMax - weekMin);
+
+  const isArchiveMode = isStale || isOffline;
+  const statusPillBorder = isArchiveMode
+    ? "border-signal-amber/40 bg-[#171107]/80 text-amber-100"
+    : isDegraded
+      ? "border-signal-sky/35 bg-[#081322]/80 text-sky-100"
+      : "border-white/15 bg-[#080d18]/88 text-ink-primary";
+  const statusBeaconColor = isArchiveMode
+    ? "#f59e0b"
+    : isDegraded
+      ? "#38bdf8"
+      : "var(--atmos-accent)";
+  const statusTimeText = isArchiveMode
+    ? frameIndex === 0
+      ? `Arşiv · ${formatClockTr(bundle.fetchedAt, bundle.timezone)} (${formatFreshnessAgeTr(bundle.fetchedAt)})`
+      : `${display.timeLabel} · Arşiv`
+    : isDegraded
+      ? `${display.timeLabel} · Kısmi Akış`
+      : display.timeLabel;
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-8">
-      {error && (
-        <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
-          {error}
-        </div>
-      )}
-
       {/* BÖLÜM 1: SADE, FERAH ANLIK GÖZLEM & ÖLÇÜMLER */}
       <section className="flex min-h-[calc(100vh-7.5rem)] flex-col justify-between gap-7 py-3">
         <div className="grid gap-7 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-end">
@@ -500,34 +569,40 @@ export default function HeroSceneView() {
           <div className="atmos-enter-1 space-y-4">
             {/* Tek Satır Kompakt Durum & Aksiyon Şeridi */}
             <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
-              <span className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-obsidian-900/65 px-2.5 py-1 font-mono text-ink-primary backdrop-blur-md tabular">
+              <span className={`inline-flex items-center gap-2 rounded-lg border px-2.5 py-1 font-mono tabular ${statusPillBorder}`}>
                 <span className="relative flex h-2 w-2">
-                  <span
-                    className="atmos-beacon-ring absolute inline-flex h-full w-full rounded-full"
-                    style={{ backgroundColor: "var(--atmos-accent)" }}
-                  />
+                  {!isArchiveMode && (
+                    <span
+                      className="atmos-beacon-ring absolute inline-flex h-full w-full rounded-full"
+                      style={{ backgroundColor: statusBeaconColor }}
+                    />
+                  )}
                   <span
                     className="relative inline-flex h-2 w-2 rounded-full"
-                    style={{ backgroundColor: "var(--atmos-accent)" }}
+                    style={{ backgroundColor: statusBeaconColor }}
                   />
                 </span>
                 <span>
-                  {display.timeLabel}
+                  {statusTimeText}
                   {bundle.location.elevation !== undefined ? ` · ${bundle.location.elevation} m` : ""}
                 </span>
               </span>
               {bundle.hybrid && (
                 <a
                   href="#hibrit"
-                  className="atmos-btn inline-flex items-center gap-1.5 rounded-lg border border-[rgba(var(--atmos-accent-rgb),0.36)] bg-[rgba(var(--atmos-accent-rgb),0.11)] px-2.5 py-1 font-mono text-[var(--atmos-accent)] backdrop-blur-md tabular"
+                  className="atmos-btn inline-flex items-center gap-1.5 rounded-lg border border-[rgba(var(--atmos-accent-rgb),0.36)] bg-[rgba(var(--atmos-accent-rgb),0.11)] px-2.5 py-1 font-mono text-[var(--atmos-accent)] tabular"
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
                   <span>
-                    {isLiveMetar
-                      ? `ATMOS v5 · ${metarStation?.icaoId}${
-                          metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
+                    {isMgmMesh
+                      ? `ATMOS v5 · MGM ${metarStation?.stationName ?? "Bursa"}${
+                          metarStations.length > 1 ? ` +${metarStations.length - 1}` : ""
                         } · %${bundle.hybrid.confidencePct}`
-                      : `7-Model · %${bundle.hybrid.confidencePct}`}
+                      : isLiveStation
+                        ? `ATMOS v5 · ${metarStation?.icaoId}${
+                            metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
+                          } · %${bundle.hybrid.confidencePct}`
+                        : `8-Model · %${bundle.hybrid.confidencePct}`}
                   </span>
                 </a>
               )}
@@ -541,10 +616,10 @@ export default function HeroSceneView() {
                   }}
                   title={fav ? "İstasyonlardan çıkar" : "İstasyonlara kaydet"}
                   aria-label={fav ? "İstasyonlardan çıkar" : "İstasyonlara kaydet"}
-                  className={`atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border backdrop-blur-md ${
+                  className={`atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border ${
                     fav
                       ? "border-signal-amber/45 bg-signal-amber/15 text-amber-200"
-                      : "border-white/10 bg-obsidian-900/55 text-ink-secondary hover:text-ink-primary"
+                      : "border-white/10 bg-[#080d18]/86 text-ink-secondary hover:text-ink-primary"
                   }`}
                 >
                   <Star className={`h-3.5 w-3.5 transition-transform ${fav ? "fill-amber-300 text-amber-300 scale-110" : ""}`} />
@@ -557,9 +632,9 @@ export default function HeroSceneView() {
                   }}
                   title="Verileri güncelle"
                   aria-label="Verileri güncelle"
-                  className="atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-obsidian-900/55 text-ink-secondary hover:text-ink-primary backdrop-blur-md"
+                  className="atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-[#080d18]/86 text-ink-secondary hover:text-ink-primary"
                 >
-                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading || isRevalidating ? "animate-spin" : ""}`} />
                 </button>
                 <button
                   type="button"
@@ -569,10 +644,10 @@ export default function HeroSceneView() {
                   }}
                   title={copiedLink ? "Bağlantı kopyalandı" : "İstasyon bağlantısını paylaş"}
                   aria-label="İstasyon bağlantısını paylaş"
-                  className={`atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border backdrop-blur-md ${
+                  className={`atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border ${
                     copiedLink
                       ? "border-signal-emerald/45 bg-signal-emerald/15 text-signal-emerald"
-                      : "border-white/10 bg-obsidian-900/55 text-ink-secondary hover:text-ink-primary"
+                      : "border-white/10 bg-[#080d18]/86 text-ink-secondary hover:text-ink-primary"
                   }`}
                 >
                   {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
@@ -605,6 +680,9 @@ export default function HeroSceneView() {
                     <WeatherGlyph
                       code={display.weatherCode}
                       isNight={display.solarElevationDeg < -3}
+                      precipPhase={display.precipPhase}
+                      intensityMm={display.precipitation}
+                      phaseSeed={frameIndex}
                       className="h-8 w-8"
                     />
                     <span>{display.condition}</span>
@@ -629,7 +707,7 @@ export default function HeroSceneView() {
               {bundle.storm && (
                 <a
                   href="#hibrit"
-                  className="atmos-btn rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md"
+                  className="atmos-btn rounded-lg border border-white/10 bg-[#080d18]/86 px-3 py-1.5"
                 >
                   Fırtına:{" "}
                   <strong style={{ color: bundle.storm.color }}>
@@ -639,7 +717,7 @@ export default function HeroSceneView() {
                 </a>
               )}
               {display.precipConsensus && display.precipConsensus.totalModels > 0 && (
-                <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
+                <span className="rounded-lg border border-white/10 bg-[#080d18]/86 px-3 py-1.5">
                   Yağış:{" "}
                   <strong
                     className={
@@ -660,7 +738,7 @@ export default function HeroSceneView() {
               )}
               <Link
                 href="/lab"
-                className="atmos-btn rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 text-ink-secondary hover:text-ink-primary backdrop-blur-md"
+                className="atmos-btn rounded-lg border border-white/10 bg-[#080d18]/86 px-3 py-1.5 text-ink-secondary hover:text-ink-primary"
               >
                 {display.temp850hPa !== null ? `850 hPa ${display.temp850hPa}°C` : "Sondaj"}
                 {display.wetBulbC !== undefined ? ` · Tw ${display.wetBulbC}°C` : ""} →
@@ -673,12 +751,12 @@ export default function HeroSceneView() {
                 {synopticSignals.map((sig) => (
                   <div
                     key={sig.id}
-                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs backdrop-blur-md tabular ${
+                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs tabular ${
                       sig.severity === "warning"
                         ? "border-signal-amber/40 bg-signal-amber/15 text-amber-100"
                         : sig.severity === "caution"
                           ? "border-signal-sky/35 bg-signal-sky/10 text-sky-100"
-                          : "border-white/15 bg-obsidian-900/70 text-ink-primary"
+                          : "border-white/15 bg-[#080d18]/90 text-ink-primary"
                     }`}
                   >
                     <AlertTriangle
@@ -821,7 +899,7 @@ export default function HeroSceneView() {
           </div>
         </div>
 
-        {/* 24/48 Saatlik Zaman Kaydırıcısı */}
+        {/* 168 Saatlik Zaman Kaydırıcısı */}
         <div className="atmos-enter-3 space-y-2.5">
           <TimeScrubber
             hourly={bundle.hourly}
@@ -836,14 +914,14 @@ export default function HeroSceneView() {
               className="inline-flex items-center gap-1.5 hover:text-white transition-colors"
             >
               <ArrowDown className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
-              <span>Saatlik grafik, 7 günlük tahmin & doğrulama</span>
+              <span>Saatlik meteogram, 7–30 günlük tahmin & doğrulama</span>
             </a>
             <div className="hidden sm:flex items-center gap-5">
               <Link href="/world" className="hover:text-white transition-colors">
                 Canlı Radar & Küre →
               </Link>
               <Link href="/lab" className="hover:text-white transition-colors">
-                7-Model & Skew-T →
+                8-Model & Skew-T →
               </Link>
             </div>
           </div>
@@ -945,12 +1023,14 @@ export default function HeroSceneView() {
         </section>
       )}
 
-      {/* BÖLÜM 2: SENKRONİZE SAATLİK GRAFİK */}
-      <section id="saatlik" className="scroll-mt-20">
-        <HourlyCharts
+      {/* BÖLÜM 2: BİRLEŞİK SİNOPTİK SAATLİK METEOGRAM & İKON ŞERİDİ */}
+      <section id="saatlik" className="scroll-mt-20 atmos-cv-auto">
+        <HourlyForecastStrip
           hourly={bundle.hourly}
+          daily={bundle.daily}
+          minutely15={bundle.minutely15}
           unit={unit}
-          selectedIndex={Math.min(frameIndex, 23)}
+          selectedIndex={frameIndex}
           onSelectIndex={setFrameIndex}
         />
       </section>
@@ -958,64 +1038,16 @@ export default function HeroSceneView() {
       {/* BÖLÜM 3: 7 GÜNLÜK KALİBRE TAHMİN + GÜNEŞ/UV & HAVA KALİTESİ */}
       <section
         id="haftalik"
-        className="scroll-mt-20 grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]"
+        className="scroll-mt-20 atmos-cv-auto grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]"
       >
-        <div className="surface-panel p-5 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-base font-semibold text-ink-primary">
-              7 Günlük Tahmin
-            </h2>
-            <span className="font-mono text-[11px] text-ink-muted">
-              10-Model + {bundle.hybrid.ensembleMembers ?? 212}-Üye Kalibre
-            </span>
-          </div>
-
-          <div className="divide-y divide-white/[0.07] tabular">
-            {bundle.daily.map((d) => {
-              const leftPct = ((d.tempMin - weekMin) / weekSpan) * 100;
-              const widthPct = Math.max(8, ((d.tempMax - d.tempMin) / weekSpan) * 100);
-              const rangeTitle =
-                d.tempMaxP10 !== undefined && d.tempMaxP90 !== undefined
-                  ? `${bundle.hybrid.ensembleMembers ?? 212}-üye P10–P90 Maks: ${d.tempMaxP10}°–${d.tempMaxP90}°`
-                  : undefined;
-              return (
-                <div
-                  key={d.date}
-                  title={rangeTitle}
-                  className="-mx-2 grid grid-cols-[64px_30px_46px_1fr_72px] items-center gap-3 rounded-xl px-2 py-3 text-sm transition-colors hover:bg-white/[0.04]"
-                >
-                  <span className="font-medium text-ink-primary">{d.dayName}</span>
-                  <WeatherGlyph code={d.weatherCode} className="h-5 w-5" />
-                  <span className="font-mono text-xs text-[var(--atmos-accent)]">
-                    %{d.precipProbabilityMax}
-                  </span>
-
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-8 text-right font-mono text-xs text-ink-muted">
-                      {formatTemperature(d.tempMin, unit)}
-                    </span>
-                    <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.08]">
-                      <div
-                        className="absolute top-0 bottom-0 rounded-full bg-gradient-to-r from-signal-sky via-cyan-300 to-signal-amber shadow-[0_0_10px_rgba(56,189,248,0.4)] transition-all duration-500"
-                        style={{
-                          left: `${leftPct}%`,
-                          width: `${widthPct}%`
-                        }}
-                      />
-                    </div>
-                    <span className="w-8 font-mono text-xs font-medium text-ink-primary">
-                      {formatTemperature(d.tempMax, unit)}
-                    </span>
-                  </div>
-
-                  <span className="text-right font-mono text-xs text-ink-muted">
-                    {formatWindSpeed(d.windSpeedMax, unit)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <ExtendedDailyForecastPanel
+          daily={bundle.daily}
+          subseasonal={bundle.subseasonal}
+          hourly={bundle.hourly}
+          ensembleMembers={bundle.hybrid.ensembleMembers}
+          unit={unit}
+          onJumpToHourIndex={setFrameIndex}
+        />
 
         <div className="flex flex-col gap-5">
           <SunAndUvCard
@@ -1065,9 +1097,9 @@ export default function HeroSceneView() {
         </div>
       </section>
 
-      {/* BÖLÜM 4: ATMOS-CORE v3.0 — SADELEŞTİRİLMİŞ CANLI DOĞRULAMA & 7-MODEL SKOR KARTI */}
+      {/* BÖLÜM 4: ATMOS-CORE v5.0 — CANLI İSTASYON DOĞRULAMASI & 8-MODEL SKOR KARTI */}
       {bundle.hybrid && (
-        <section id="hibrit" className="scroll-mt-20 surface-panel p-5 sm:p-6 space-y-4">
+        <section id="hibrit" className="scroll-mt-20 atmos-cv-auto surface-panel p-5 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3.5">
             <div>
               <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-signal-sky">
@@ -1076,7 +1108,11 @@ export default function HeroSceneView() {
                 {bundle.hybrid.ensembleMembers ? ` + ${bundle.hybrid.ensembleMembers} EPS` : ""}
               </p>
               <h2 className="mt-0.5 font-display text-base font-semibold text-ink-primary">
-                Canlı METAR Kalibrasyonu & Model Doğruluk Tablosu
+                {isMgmMesh
+                  ? "MGM 19-İlçe Canlı Kalibrasyonu & 8-Model Doğruluk Tablosu"
+                  : isLiveStation
+                    ? "Canlı İstasyon Kalibrasyonu & 8-Model Doğruluk Tablosu"
+                    : "WMO Öncül Ağırlıklandırma & 8-Model Uzlaşı Tablosu"}
               </h2>
             </div>
 
@@ -1089,38 +1125,45 @@ export default function HeroSceneView() {
                 href="/lab"
                 className="rounded-lg border border-white/15 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
               >
-                7-Model 72s →
+                8-Model 72s / 15g →
               </Link>
             </div>
           </div>
 
-          {bundle.hybrid.atmosV4 && (
+          {bundle.hybrid.engineMeta && (
             <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-signal-sky/25 bg-signal-sky/[0.06] px-4 py-2.5 font-mono text-xs tabular">
               <div className="flex flex-wrap items-center gap-2">
                 <ShieldCheck className="h-4 w-4 text-signal-sky shrink-0" />
                 <span className="font-semibold text-signal-sky">
-                  {bundle.hybrid.atmosV4.activeRegimeLabel}
+                  {bundle.hybrid.engineMeta.activeRegimeLabel}
                 </span>
                 <span className="text-ink-secondary">
-                  · dProg/dt Kararlılık %{bundle.hybrid.atmosV4.stabilityPct} ({Math.round(bundle.hybrid.atmosV4.meanRunLockCount)} koşu kilitli)
+                  · dProg/dt Kararlılık %{bundle.hybrid.engineMeta.stabilityPct} ({Math.round(bundle.hybrid.engineMeta.meanRunLockCount)} koşu kilitli)
                 </span>
-                {bundle.hybrid.atmosV4.ltbrIsolated && (
+                {bundle.hybrid.engineMeta.ltbrIsolated && (
                   <span className="rounded bg-signal-emerald/15 px-1.5 py-0.5 text-[10px] text-signal-emerald">
-                    {bundle.hybrid.atmosV4.bursaTier1Online} Bursa MGM Sensörü Aktif · LTBR İzole
+                    {bundle.hybrid.engineMeta.bursaTier1Online} Bursa MGM Sensörü Aktif · LTBR İzole
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-ink-muted">
-                {bundle.hybrid.atmosV4.nextRainOnsetMin !== null && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+                {display.snowLineElevationM !== null &&
+                  display.snowLineElevationM !== undefined &&
+                  display.temperature <= 9 && (
+                    <span className="text-sky-200">
+                      Kar Sınırı: {display.snowLineElevationM} m
+                    </span>
+                  )}
+                {bundle.hybrid.engineMeta.nextRainOnsetMin !== null && (
                   <span className="text-signal-amber font-semibold">
-                    Radar Yağış Başlangıcı: +{bundle.hybrid.atmosV4.nextRainOnsetMin} dk
+                    Radar Yağış Başlangıcı: +{bundle.hybrid.engineMeta.nextRainOnsetMin} dk
                   </span>
                 )}
-                {bundle.hybrid.atmosV4.radarSummaryCode === "VIRGA_ALOFT" && (
+                {bundle.hybrid.engineMeta.radarSummaryCode === "VIRGA_ALOFT" && (
                   <span className="text-amber-200">Alt Seviye Virga Bastırıldı</span>
                 )}
-                {bundle.hybrid.atmosV4.blockedFlipFlops > 0 && (
-                  <span>Engellenen Sapma: {bundle.hybrid.atmosV4.blockedFlipFlops}s</span>
+                {bundle.hybrid.engineMeta.blockedFlipFlops > 0 && (
+                  <span>Engellenen Sapma: {bundle.hybrid.engineMeta.blockedFlipFlops}s</span>
                 )}
               </div>
             </div>
@@ -1166,7 +1209,7 @@ export default function HeroSceneView() {
             </div>
           )}
 
-          {/* Temiz 6-Sütunlu 7-Model Skor Tablosu */}
+          {/* Temiz 6-Sütunlu 8-Model Skor Tablosu */}
           <div className="overflow-x-auto rounded-xl border border-white/[0.08] bg-obsidian-950/55">
             <table className="w-full min-w-[640px] text-left font-mono text-xs tabular">
               <thead>
@@ -1183,7 +1226,7 @@ export default function HeroSceneView() {
               </thead>
               <tbody className="divide-y divide-white/[0.06]">
                 {bundle.hybrid.verification.rows.map((row) => {
-                  const meta = SEVEN_MODEL_META[row.modelKey];
+                  const meta = CORE_MODEL_META[row.modelKey];
                   const tNow = bundle.hybrid.currentBreakdown.temperature[row.modelKey] ?? null;
                   const winT = bundle.hybrid.verification.winners.temperature === row.modelKey;
                   const winY = bundle.hybrid.verification.winners.precipitation === row.modelKey;

@@ -17,11 +17,6 @@ export function saturationVaporPressure(tempC: number): number {
   return 6.112 * Math.exp((17.67 * tempC) / (tempC + 243.5));
 }
 
-export function vaporPressureFromRH(tempC: number, rhPercent: number): number {
-  const rh = Math.max(1, Math.min(100, rhPercent));
-  return saturationVaporPressure(tempC) * (rh / 100);
-}
-
 /**
  * Bolton (1980) Eq. 10 tam tersi: sıcaklık ve bağıl nemden çiy noktası [°C].
  */

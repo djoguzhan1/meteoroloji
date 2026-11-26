@@ -1,14 +1,12 @@
 /**
- * ATMOS v5.0 — Anisotropic Topographic Cressman-Barnes, Intra-Bursa District Microclimate Solver & Regime Huber-Kalman MOS
+ * ATMOS v5.0 — Anisotropic Topographic Cressman-Barnes, Intra-Bursa District Microclimate Solver & Synoptic Regime Classifier
  * File: lib/topographic-cressman.ts
  *
- * Replaces isotropic flat-Earth station interpolation and single-point 17116 extrapolation with:
+ * Provides:
  *  1. 3-Layer Piecewise Hydrostatic + Anisotropic Ridge-Barrier Cressman-Barnes Surface Solver
- *  2. Intra-Bursa District Microclimate Differential Solver (`computeBursaDistrictMicroclimateOffsetC`):
- *     captures Nilüfer plain cooling (-1.4°C night), Kestel/Gürsu katabatic drainage (-2.4°C night),
- *     Mudanya/Gemlik Marmara SST thermal buffering, and official MGM district forecast differentials!
+ *  2. Intra-Bursa District Microclimate Differential Solver (`computeBursaDistrictMicroclimateOffsetC`)
  *  3. Physical LTBR (Yenişehir Rural Basin) -> Bursa Urban/Foothill Transfer Unbiaser
- *  4. 6-Regime Synoptic Classifier & 2-State [Bias, DiurnalCosine] Huber-Robust Kalman MOS
+ *  4. 6-Regime Bursa/Marmara Synoptic Classifier
  */
 
 import {
@@ -180,13 +178,7 @@ export function inferBursaTargetZone(lat: number, lon: number, elevationM: numbe
 
 /**
  * Computes the horizontal microclimate temperature offset (°C) relative to WMO 17116 (Osmangazi 100 m)
- * AFTER standard elevation transport has already been applied!
- *
- * Verified against live 19-district MGM Bursa telemetry:
- *  - Nilüfer (105 m): -0.8°C to -1.5°C cooler than Osmangazi (100 m) on clear/calm evenings & nights
- *  - Kestel / Gürsu (124-230 m): -1.0°C to -2.0°C extra katabatic valley drainage cooling beyond elevation lapse
- *  - Mudanya / Gemlik coast (4-85 m): moderated toward Marmara SST (cooler summer afternoons, warmer winter nights)
- *  - Official MGM District Forecast (`mgmDistrictDay`): blends seamlessly with MGM's ALARO/forecaster delta!
+ * AFTER standard elevation transport has already been applied.
  */
 export function computeBursaDistrictMicroclimateOffsetC(params: {
   targetLat: number;
@@ -201,14 +193,12 @@ export function computeBursaDistrictMicroclimateOffsetC(params: {
   marmaraSstC?: number | null;
   mgmDistrictDay?: MgmDailyDistrictDay | null;
 }): number {
-  // Exact 17116 Osmangazi reference neighborhood -> zero horizontal offset
   const distFrom17116Km = haversineKm(params.targetLat, params.targetLon, 40.2308, 29.0133);
   if (distFrom17116Km <= 3.5 && Math.abs(params.targetElevationM - 100) <= 65) {
     return 0;
   }
 
   const h = ((params.localHour % 24) + 24) % 24;
-  // Diurnal radiative cooling weight: 1.0 at night/pre-dawn (20:00..07:00), 0.0 at peak mixing (12:00..16:00)
   const nightCoolingFactor =
     h >= 21 || h <= 6
       ? 1.0
@@ -226,38 +216,29 @@ export function computeBursaDistrictMicroclimateOffsetC(params: {
 
   let physOffsetC = 0;
 
-  // 1. Coastal Marmara (Mudanya / Gemlik / Orhangazi): SST thermal inertia buffer
   if (params.targetLat >= 40.33 && params.targetElevationM <= 105) {
     const sst = params.marmaraSstC ?? 14.0;
     const airSeaDiff = sst - params.base17116TempC;
     const onshoreBoost =
       params.windDirDeg >= 300 || params.windDirDeg <= 65 ? 0.34 : 0.18;
     physOffsetC = Math.max(-3.2, Math.min(2.8, onshoreBoost * airSeaDiff));
-  }
-  // 2. Eastern Bursa Ova Katabatic Drainage (Kestel / Gürsu / Barakfakih: lon >= 29.16)
-  else if (params.targetLon >= 29.16 && params.targetLon < 29.38 && params.targetElevationM <= 350) {
+  } else if (params.targetLon >= 29.16 && params.targetLon < 29.38 && params.targetElevationM <= 350) {
     const eastness = Math.min(1, (params.targetLon - 29.14) / 0.08);
     physOffsetC = -1.65 * eastness * nightCoolingFactor * clearSkyFactor * calmFactor;
-  }
-  // 3. Western Nilüfer / Görükle Plain (lon < 28.95, lower UHI than Osmangazi core)
-  else if (params.targetLon < 28.95 && params.targetLon >= 28.70 && params.targetElevationM <= 220) {
+  } else if (params.targetLon < 28.95 && params.targetLon >= 28.70 && params.targetElevationM <= 220) {
     const westness = Math.min(1, (28.96 - params.targetLon) / 0.10);
     physOffsetC = -1.25 * westness * nightCoolingFactor * clearSkyFactor * calmFactor;
-  }
-  // 4. Closed Eastern Rural Basin (Yenişehir / İnegöl: lon >= 29.38)
-  else if (params.targetLon >= 29.38 && params.targetElevationM <= 420) {
+  } else if (params.targetLon >= 29.38 && params.targetElevationM <= 420) {
     physOffsetC =
       -3.4 * nightCoolingFactor * clearSkyFactor * calmFactor +
       0.45 * afternoonFactor * clearSkyFactor;
   }
 
-  // Blend physical horizontal offset with Official MGM District Forecast differential (Days 0..5) when available!
   if (params.mgmDistrictDay) {
-    // Subtract already-applied standard elevation lapse (~ -6°C/km) from MGM's raw district delta so we never double-count elevation!
     const expectedElevDeltaC = -6.0 * ((params.targetElevationM - 100) / 1000);
     const residualMinDelta = params.mgmDistrictDay.deltaMinVs17116C - expectedElevDeltaC;
     const residualMaxDelta = params.mgmDistrictDay.deltaMaxVs17116C - expectedElevDeltaC;
-    const diurnalMix = 0.5 * (1 - Math.cos(((h - 5) * Math.PI) / 12)); // 0 at 05:00 min, 1 at 17:00 max
+    const diurnalMix = 0.5 * (1 - Math.cos(((h - 5) * Math.PI) / 12));
     const mgmHorizDelta = (1 - diurnalMix) * residualMinDelta + diurnalMix * residualMaxDelta;
     const clampedMgmDelta = Math.max(-3.8, Math.min(3.2, mgmHorizDelta));
     return Number((0.55 * physOffsetC + 0.45 * clampedMgmDelta).toFixed(2));
@@ -385,7 +366,6 @@ export function interpolateTopographicSurface(
       }
     }
 
-    // 3-Layer Piecewise Hydrostatic vertical transport!
     let transportedTempC =
       (s.tempC as number) +
       integratePiecewiseVerticalDeltaC(s.station.elevationM, target.elevationM, verticalProfile);
@@ -436,7 +416,6 @@ export function interpolateTopographicSurface(
     tempFirstPass += (n.weight / sumW) * n.transportedTempC;
   }
 
-  // Second-pass Barnes fine-scale correction (sharpens local station lock within 8 km to <0.1°C)
   let fineResidualNum = 0;
   let fineResidualDen = 0;
   for (const n of nodes) {
@@ -624,207 +603,4 @@ export function classifyBursaSynopticRegime(f: HourlySynopticFeatures): BursaSyn
   }
 
   return 'SYNOPTIC_TRANSITION';
-}
-
-export interface KalmanRegimeState2D {
-  biasC: number;
-  diurnalAmpC: number;
-  cov: [number, number, number, number];
-  sampleCount: number;
-  huberLossEma: number;
-}
-
-export interface TrainingVerificationPair<ModelKey extends string = string> {
-  timestampIso: string;
-  observedTempC: number;
-  obsUncertaintyC?: number;
-  features: HourlySynopticFeatures;
-  modelTempsC: Record<ModelKey, number | null>;
-}
-
-export interface ForecastTargetStep<ModelKey extends string = string> {
-  leadHours: number;
-  features: HourlySynopticFeatures;
-  modelTempsC: Record<ModelKey, number | null>;
-}
-
-export interface CalibratedStepResult<ModelKey extends string = string> {
-  leadHours: number;
-  regime: BursaSynopticRegime;
-  fusedTempC: number;
-  rawWeightedTempC: number;
-  appliedBiasCorrectionC: number;
-  uncertaintyC: number;
-  weights: Record<ModelKey, number>;
-}
-
-const BURSA_PHYSICAL_REGIME_PRIORS_C: Record<BursaSynopticRegime, number> = {
-  LODOS_FOEHN: 1.15,
-  OVA_INVERSION_CALM: -0.65,
-  POYRAZ_KARAYEL_ADV: -0.25,
-  MARMARA_SEA_BREEZE: -0.35,
-  CONVECTIVE_UNSTABLE: 0.0,
-  SYNOPTIC_TRANSITION: 0.0,
-};
-
-function initKalmanState(): KalmanRegimeState2D {
-  return {
-    biasC: 0,
-    diurnalAmpC: 0,
-    cov: [1.8, 0, 0, 0.9],
-    sampleCount: 0,
-    huberLossEma: 1.25,
-  };
-}
-
-function diurnalBasis(localHour: number): number {
-  return Math.cos(((localHour - 15) * Math.PI) / 12);
-}
-
-function huberClip(innovation: number, delta = 2.4): number {
-  if (Math.abs(innovation) <= delta) return innovation;
-  return delta * Math.sign(innovation);
-}
-
-export function evaluateRegimeKalmanMos<ModelKey extends string>(
-  modelKeys: readonly ModelKey[],
-  history: TrainingVerificationPair<ModelKey>[],
-  forecastSteps: ForecastTargetStep<ModelKey>[],
-  horizonPriors?: Partial<Record<ModelKey, { shortRangePrior: number; mediumRangePrior: number }>>,
-): CalibratedStepResult<ModelKey>[] {
-  const states = new Map<string, KalmanRegimeState2D>();
-  const getKey = (m: ModelKey, r: BursaSynopticRegime) => `${m}::${r}`;
-
-  for (const m of modelKeys) {
-    for (const r of Object.keys(BURSA_PHYSICAL_REGIME_PRIORS_C) as BursaSynopticRegime[]) {
-      states.set(getKey(m, r), initKalmanState());
-    }
-  }
-
-  const q00 = 0.035;
-  const q11 = 0.015;
-
-  for (const pair of history) {
-    const regime = classifyBursaSynopticRegime(pair.features);
-    const h1 = diurnalBasis(pair.features.localHour);
-    const rObsVar = Math.max(0.25, (pair.obsUncertaintyC ?? 0.45) ** 2 + 0.35);
-
-    for (const m of modelKeys) {
-      const mVal = pair.modelTempsC[m];
-      if (mVal === null || mVal === undefined || !Number.isFinite(mVal)) continue;
-
-      const st = states.get(getKey(m, regime))!;
-      const p00 = st.cov[0] + q00;
-      const p01 = st.cov[1];
-      const p10 = st.cov[2];
-      const p11 = st.cov[3] + q11;
-
-      const rawErr = mVal - pair.observedTempC;
-      const predErr = st.biasC + h1 * st.diurnalAmpC;
-      const innovation = huberClip(rawErr - predErr, 2.6);
-
-      const ph0 = p00 + p01 * h1;
-      const ph1 = p10 + p11 * h1;
-      const sVar = ph0 + h1 * ph1 + rObsVar;
-
-      const k0 = ph0 / sVar;
-      const k1 = ph1 / sVar;
-
-      st.biasC += k0 * innovation;
-      st.diurnalAmpC += k1 * innovation;
-
-      st.cov = [
-        Math.max(0.04, (1 - k0) * p00 - k0 * h1 * p10),
-        (1 - k0) * p01 - k0 * h1 * p11,
-        -k1 * p00 + (1 - k1 * h1) * p10,
-        Math.max(0.02, -k1 * p01 + (1 - k1 * h1) * p11),
-      ];
-      st.sampleCount += 1;
-
-      const postCalibratedErr = Math.abs(rawErr - (st.biasC + h1 * st.diurnalAmpC));
-      const huberLoss =
-        postCalibratedErr <= 1.5
-          ? 0.5 * postCalibratedErr * postCalibratedErr
-          : 1.5 * (postCalibratedErr - 0.75);
-      const alpha = Math.min(0.18, 2 / (st.sampleCount + 6));
-      st.huberLossEma = (1 - alpha) * st.huberLossEma + alpha * Math.max(0.12, huberLoss);
-    }
-  }
-
-  return forecastSteps.map((step) => {
-    const regime = classifyBursaSynopticRegime(step.features);
-    const h1 = diurnalBasis(step.features.localHour);
-    const mediumBlend = Math.max(0, Math.min(1, (step.leadHours - 24) / 72));
-    const biasLeadDecay = Math.exp(-Math.max(0, step.leadHours) / 132);
-
-    const rawWeights = {} as Record<ModelKey, number>;
-    const correctedModelVal = {} as Record<ModelKey, number>;
-    const rawModelVal = {} as Record<ModelKey, number>;
-    let totalW = 0;
-
-    for (const m of modelKeys) {
-      const mTemp = step.modelTempsC[m];
-      if (mTemp === null || mTemp === undefined || !Number.isFinite(mTemp)) {
-        rawWeights[m] = 0;
-        continue;
-      }
-
-      const st = states.get(getKey(m, regime))!;
-      const empiricalConfidence = st.sampleCount / (st.sampleCount + 8);
-      const physicalPriorAdj = BURSA_PHYSICAL_REGIME_PRIORS_C[regime] * (1 - empiricalConfidence);
-
-      const estimatedModelBias = empiricalConfidence * (st.biasC + h1 * st.diurnalAmpC);
-      const corrected = mTemp - biasLeadDecay * estimatedModelBias + biasLeadDecay * physicalPriorAdj;
-
-      const hp = horizonPriors?.[m] ?? { shortRangePrior: 1 / modelKeys.length, mediumRangePrior: 1 / modelKeys.length };
-      const priorW = (1 - mediumBlend) * hp.shortRangePrior + mediumBlend * hp.mediumRangePrior;
-
-      const invLossSkill = 1 / Math.max(0.15, st.huberLossEma);
-      const w = priorW * ((1 - empiricalConfidence) * 1.0 + empiricalConfidence * invLossSkill);
-
-      rawWeights[m] = w;
-      correctedModelVal[m] = corrected;
-      rawModelVal[m] = mTemp;
-      totalW += w;
-    }
-
-    const normWeights = {} as Record<ModelKey, number>;
-    let fusedTempC = 0;
-    let rawWeightedTempC = 0;
-
-    if (totalW > 0) {
-      for (const m of modelKeys) {
-        const wn = (rawWeights[m] || 0) / totalW;
-        normWeights[m] = Number(wn.toFixed(4));
-        if (wn > 0) {
-          fusedTempC += wn * correctedModelVal[m];
-          rawWeightedTempC += wn * rawModelVal[m];
-        }
-      }
-    } else {
-      for (const m of modelKeys) normWeights[m] = 0;
-    }
-
-    let modelSpreadVar = 0;
-    if (totalW > 0) {
-      for (const m of modelKeys) {
-        const wn = normWeights[m];
-        if (wn > 0) {
-          modelSpreadVar += wn * (correctedModelVal[m] - fusedTempC) ** 2;
-        }
-      }
-    }
-    const baseHorizonVar = 0.20 + 0.0065 * step.leadHours;
-    const uncertaintyC = Math.sqrt(modelSpreadVar + baseHorizonVar);
-
-    return {
-      leadHours: step.leadHours,
-      regime,
-      fusedTempC: Number(fusedTempC.toFixed(2)),
-      rawWeightedTempC: Number(rawWeightedTempC.toFixed(2)),
-      appliedBiasCorrectionC: Number((fusedTempC - rawWeightedTempC).toFixed(2)),
-      uncertaintyC: Number(uncertaintyC.toFixed(2)),
-      weights: normWeights,
-    };
-  });
 }

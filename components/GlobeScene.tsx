@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
-import { computeSubsolarPoint } from "@/lib/weather";
+import { computeSubsolarPoint } from "@/lib/weather-client";
 import type { GeoLocation } from "@/lib/weather-types";
 
 const GLOBE_RADIUS = 1.68;
@@ -125,6 +125,21 @@ const MAJOR_URBAN_LIGHTS: Array<[number, number, number]> = [
   [28.05, -26.2, 9],
   [3.38, 6.52, 9]
 ];
+
+let cachedBaseEarthTex: { dayMap: THREE.CanvasTexture; nightMap: THREE.CanvasTexture } | null = null;
+let cachedLandEarthTex: { dayMap: THREE.CanvasTexture; nightMap: THREE.CanvasTexture } | null = null;
+
+function getOrCreateEarthTextures(land: GeoJsonLand | null): {
+  dayMap: THREE.CanvasTexture;
+  nightMap: THREE.CanvasTexture;
+} {
+  if (land) {
+    if (!cachedLandEarthTex) cachedLandEarthTex = createEarthTextures(land);
+    return cachedLandEarthTex;
+  }
+  if (!cachedBaseEarthTex) cachedBaseEarthTex = createEarthTextures(null);
+  return cachedBaseEarthTex;
+}
 
 function createEarthTextures(land: GeoJsonLand | null): {
   dayMap: THREE.CanvasTexture;
@@ -604,14 +619,7 @@ function EarthMesh({
     };
   }, []);
 
-  const textures = useMemo(() => createEarthTextures(land), [land]);
-
-  useEffect(() => {
-    return () => {
-      textures.dayMap.dispose();
-      textures.nightMap.dispose();
-    };
-  }, [textures]);
+  const textures = useMemo(() => getOrCreateEarthTextures(land), [land]);
 
   const earthUniforms = useMemo(
     () => ({
@@ -799,7 +807,7 @@ function EarthMesh({
   );
 }
 
-export default function GlobeScene({
+function GlobeSceneBase({
   selectedLat,
   selectedLon,
   homeLat,
@@ -817,6 +825,13 @@ export default function GlobeScene({
   onPickCity: (city: GeoLocation) => void;
 }) {
   const [subsolar, setSubsolar] = useState(() => computeSubsolarPoint(new Date()));
+  const [tabHidden, setTabHidden] = useState(false);
+
+  useEffect(() => {
+    const onVis = () => setTabHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -840,7 +855,8 @@ export default function GlobeScene({
   return (
     <div className="relative h-full w-full bg-[#05080f]">
       <Canvas
-        dpr={[1, 1.75]}
+        dpr={[1, 1.4]}
+        frameloop={tabHidden ? "never" : "always"}
         className="h-full w-full cursor-grab active:cursor-grabbing"
         gl={{ antialias: true, powerPreference: "high-performance" }}
       >
@@ -863,7 +879,7 @@ export default function GlobeScene({
       </Canvas>
 
       {/* Üst Sol: Gerçek Güneş Altı Noktası */}
-      <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary backdrop-blur-md tabular">
+      <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary tabular">
         <span className="font-semibold text-ink-primary">GERÇEK GECE-GÜNDÜZ SINIRI</span>
         <span className="mx-1.5 text-ink-muted">·</span>
         <span>
@@ -872,9 +888,12 @@ export default function GlobeScene({
       </div>
 
       {/* Alt İpucu */}
-      <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 text-[11px] text-ink-muted backdrop-blur-md">
+      <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-white/10 bg-obsidian-950/85 px-2.5 py-1.5 text-[11px] text-ink-muted">
         Sürükle: Döndür · Tekerlek: Yakınlaştır · Tıkla: Koordinat Ölç · Natural Earth 110m
       </div>
     </div>
   );
 }
+
+const GlobeScene = memo(GlobeSceneBase);
+export default GlobeScene;
