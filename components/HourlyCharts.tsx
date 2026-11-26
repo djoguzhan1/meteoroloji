@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatTemperature, formatWindSpeed } from "@/lib/weather";
+import { atmosUiSfx } from "@/lib/ui-sfx";
 import type { HourlyPoint, UnitSystem } from "@/lib/weather-types";
 
 type ChartMode = "temp" | "precip" | "wind" | "pressure";
@@ -23,22 +24,37 @@ function toDisplayWind(kmh: number, unit: UnitSystem): number {
 
 export default function HourlyCharts({
   hourly,
-  unit
+  unit,
+  selectedIndex,
+  onSelectIndex
 }: {
   hourly: HourlyPoint[];
   unit: UnitSystem;
+  selectedIndex?: number;
+  onSelectIndex?: (idx: number) => void;
 }) {
   const [mode, setMode] = useState<ChartMode>("temp");
-  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [localIdx, setLocalIdx] = useState(0);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   const data = hourly.slice(0, 24);
   if (data.length < 2) return null;
 
-  const clampedSelIdx = Math.min(selectedIdx, data.length - 1);
-  const selected = data[clampedSelIdx];
+  const lockedIdx = selectedIndex !== undefined ? selectedIndex : localIdx;
+  const clampedLocked = Math.max(0, Math.min(lockedIdx, data.length - 1));
+  const clampedDisplayIdx =
+    hoverIdx !== null ? Math.max(0, Math.min(hoverIdx, data.length - 1)) : clampedLocked;
+
+  const setSelectedIdx = (idx: number) => {
+    atmosUiSfx.playScrubTick(idx / Math.max(1, data.length - 1));
+    setLocalIdx(idx);
+    onSelectIndex?.(idx);
+  };
+
+  const selected = data[clampedDisplayIdx];
 
   const width = 760;
-  const height = 216;
+  const height = 220;
   const padLeft = 38;
   const padRight = mode === "pressure" ? 38 : 22;
   const padTop = 20;
@@ -76,7 +92,6 @@ export default function HourlyCharts({
   const yOf = (val: number) =>
     padTop + innerH - ((val - minVal) / span) * innerH;
 
-  // Basınç & Nem modunda sağ eksende bağımsız %0–100 bağıl nem ölçeği
   const yOfHumidity = (rh: number) =>
     padTop + innerH - (Math.max(0, Math.min(100, rh)) / 100) * innerH;
 
@@ -95,7 +110,7 @@ export default function HourlyCharts({
     mode === "temp"
       ? "#f3f6fb"
       : mode === "wind"
-        ? "#38bdf8"
+        ? "var(--atmos-accent)"
         : "#cbd5e1";
 
   const yUnitSuffix =
@@ -107,6 +122,8 @@ export default function HourlyCharts({
         ? "%"
         : "";
 
+  const activeX = padLeft + clampedDisplayIdx * stepX;
+
   return (
     <div className="surface-panel p-5 sm:p-6 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -115,7 +132,7 @@ export default function HourlyCharts({
             Saatlik Değişim Grafiği (24s)
           </h3>
           <p className="text-xs text-ink-muted">
-            Saat seçmek için grafikteki noktalara tıkla
+            Gezinerek önizle, saati sahneye kilitlemek için tıkla
           </p>
         </div>
 
@@ -124,11 +141,14 @@ export default function HourlyCharts({
             <button
               key={t.key}
               type="button"
-              onClick={() => setMode(t.key)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+              onClick={() => {
+                atmosUiSfx.playNavTick();
+                setMode(t.key);
+              }}
+              className={`atmos-btn rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
                 mode === t.key
-                  ? "bg-white/[0.12] text-ink-primary"
-                  : "text-ink-secondary hover:text-ink-primary"
+                  ? "border border-[rgba(var(--atmos-rim-rgb),0.3)] bg-white/[0.12] text-white shadow-[0_0_16px_-6px_rgba(var(--atmos-accent-rgb),0.55)]"
+                  : "border border-transparent text-ink-secondary hover:text-ink-primary"
               }`}
             >
               {t.label}
@@ -137,10 +157,17 @@ export default function HourlyCharts({
         </div>
       </div>
 
-      {/* Seçili saat satırı */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.03] px-4 py-2.5 text-xs tabular">
+      {/* Seçili / Taranan Saat Telemetri Bandı */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-xs tabular">
         <div className="flex flex-wrap items-center gap-4">
-          <span className="font-mono font-semibold text-ink-primary">
+          <span className="inline-flex items-center gap-1.5 font-mono font-semibold text-ink-primary">
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor: "var(--atmos-accent)",
+                boxShadow: "0 0 8px var(--atmos-accent)"
+              }}
+            />
             {selected.dayLabel} · {selected.hourLabel}
           </span>
           {mode === "temp" && (
@@ -153,7 +180,7 @@ export default function HourlyCharts({
               </span>
               <span className="text-ink-secondary">
                 Hissedilen:{" "}
-                <strong className="font-mono text-signal-sky">
+                <strong className="font-mono text-[var(--atmos-accent)]">
                   {formatTemperature(selected.apparentTemperature, unit)}
                 </strong>
               </span>
@@ -177,7 +204,7 @@ export default function HourlyCharts({
             <>
               <span className="text-ink-secondary">
                 Olasılık:{" "}
-                <strong className="font-mono text-signal-sky">
+                <strong className="font-mono text-[var(--atmos-accent)]">
                   %{selected.precipProbability}
                 </strong>
               </span>
@@ -205,7 +232,7 @@ export default function HourlyCharts({
             <>
               <span className="text-ink-secondary">
                 Ortalama:{" "}
-                <strong className="font-mono text-signal-sky">
+                <strong className="font-mono text-[var(--atmos-accent)]">
                   {formatWindSpeed(selected.windSpeed, unit)}
                 </strong>
               </span>
@@ -233,7 +260,7 @@ export default function HourlyCharts({
               </span>
               <span className="text-ink-secondary">
                 Bağıl Nem:{" "}
-                <strong className="font-mono text-signal-sky">
+                <strong className="font-mono text-[var(--atmos-accent)]">
                   %{selected.humidity}
                 </strong>
               </span>
@@ -265,7 +292,7 @@ export default function HourlyCharts({
               <span
                 className="h-0.5 w-3 border-t border-dashed"
                 style={{
-                  borderColor: mode === "wind" ? "#f59e0b" : "#38bdf8"
+                  borderColor: mode === "wind" ? "#f59e0b" : "var(--atmos-accent)"
                 }}
               />
               {mode === "temp"
@@ -284,11 +311,12 @@ export default function HourlyCharts({
           className="h-52 w-full min-w-[540px]"
           role="img"
           aria-label="24 saatlik meteoroloji grafiği"
+          onMouseLeave={() => setHoverIdx(null)}
         >
           <defs>
             <linearGradient id="meteoArea" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="rgba(243,246,251,0.16)" />
-              <stop offset="100%" stopColor="rgba(243,246,251,0.0)" />
+              <stop offset="0%" stopColor="var(--atmos-accent)" stopOpacity="0.24" />
+              <stop offset="100%" stopColor="var(--atmos-accent)" stopOpacity="0" />
             </linearGradient>
           </defs>
 
@@ -331,10 +359,23 @@ export default function HourlyCharts({
             );
           })}
 
+          {/* Canlı Dikey Lazer Tarama Çizgisi */}
+          <line
+            x1={activeX}
+            y1={padTop}
+            x2={activeX}
+            y2={padTop + innerH}
+            stroke="var(--atmos-accent)"
+            strokeOpacity="0.45"
+            strokeDasharray="3 3"
+            strokeWidth={1.2}
+          />
+
           {mode === "precip" ? (
             data.map((h, i) => {
               const x = padLeft + i * stepX;
               const barH = (h.precipProbability / 100) * innerH;
+              const isFocus = i === clampedDisplayIdx;
               return (
                 <rect
                   key={h.time}
@@ -343,32 +384,30 @@ export default function HourlyCharts({
                   width={18}
                   height={Math.max(2, barH)}
                   rx={4}
-                  fill={
-                    i === clampedSelIdx
-                      ? "#38bdf8"
-                      : "rgba(56, 189, 248, 0.38)"
-                  }
-                  className="cursor-pointer"
+                  fill={isFocus ? "var(--atmos-accent)" : "rgba(56, 189, 248, 0.34)"}
+                  className="cursor-pointer transition-all duration-200"
+                  onMouseEnter={() => setHoverIdx(i)}
                   onClick={() => setSelectedIdx(i)}
                 />
               );
             })
           ) : (
-            <>
+            <g key={mode}>
               <path d={areaPath} fill="url(#meteoArea)" />
               <path
                 d={primaryPath}
                 fill="none"
                 stroke={primaryStroke}
-                strokeWidth={2.2}
+                strokeWidth={2.4}
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                className="atmos-line-draw"
               />
               {(mode === "temp" || mode === "wind") && (
                 <path
                   d={linePath(secondarySeries)}
                   fill="none"
-                  stroke={mode === "wind" ? "#f59e0b" : "#38bdf8"}
+                  stroke={mode === "wind" ? "#f59e0b" : "var(--atmos-accent)"}
                   strokeWidth={1.6}
                   strokeDasharray="4 4"
                 />
@@ -377,22 +416,24 @@ export default function HourlyCharts({
                 <path
                   d={linePath(secondarySeries, yOfHumidity)}
                   fill="none"
-                  stroke="#38bdf8"
+                  stroke="var(--atmos-accent)"
                   strokeWidth={1.7}
                   strokeDasharray="4 4"
                 />
               )}
-            </>
+            </g>
           )}
 
           {data.map((h, i) => {
             const x = padLeft + i * stepX;
             const y = yOf(primarySeries[i]);
-            const isSel = i === clampedSelIdx;
+            const isSel = i === clampedDisplayIdx;
+            const isLocked = i === clampedLocked;
             return (
               <g
                 key={h.time}
                 className="cursor-pointer"
+                onMouseEnter={() => setHoverIdx(i)}
                 onClick={() => setSelectedIdx(i)}
               >
                 <rect
@@ -402,11 +443,20 @@ export default function HourlyCharts({
                   height={innerH}
                   fill="transparent"
                 />
+                {isSel && (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={10}
+                    fill="var(--atmos-accent)"
+                    fillOpacity={0.22}
+                  />
+                )}
                 <circle
                   cx={x}
                   cy={y}
-                  r={isSel ? 5 : 2.5}
-                  fill={isSel ? "#38bdf8" : "#f3f6fb"}
+                  r={isSel ? 5.2 : isLocked ? 4 : 2.4}
+                  fill={isSel || isLocked ? "var(--atmos-accent)" : "#f3f6fb"}
                   stroke={isSel ? "#090d16" : "transparent"}
                   strokeWidth={2}
                 />
@@ -415,7 +465,7 @@ export default function HourlyCharts({
                     x={x}
                     y={height - 6}
                     textAnchor="middle"
-                    fill="rgba(167,180,200,0.68)"
+                    fill={isSel ? "#f3f6fb" : "rgba(167,180,200,0.68)"}
                     fontSize="11"
                     fontFamily="monospace"
                   >

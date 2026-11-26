@@ -10,10 +10,9 @@ import {
   ArrowRight,
   ArrowUpRight,
   Check,
+  ChevronDown,
+  ChevronUp,
   Cloud,
-  CloudLightning,
-  CloudRain,
-  CloudSnow,
   Compass,
   Droplets,
   Eye,
@@ -24,7 +23,6 @@ import {
   Share2,
   ShieldCheck,
   Star,
-  Sun,
   Sunrise,
   Sunset,
   Wind
@@ -41,123 +39,150 @@ import {
   windDirectionToCompass,
   windKmhToBeaufort
 } from "@/lib/weather";
-import { FIVE_MODEL_META } from "@/lib/metar-verify";
+import { SEVEN_MODEL_META } from "@/lib/metar-verify";
 import { analyzeConvectiveProfile } from "@/lib/thermo-cape";
+import { atmosUiSfx } from "@/lib/ui-sfx";
+import type { WeatherBundle } from "@/lib/weather-types";
 import TimeScrubber from "./TimeScrubber";
 import HourlyCharts from "./HourlyCharts";
+import AnimatedNumber from "./AnimatedNumber";
+import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
 function WeatherGlyph({
   code,
+  isNight = false,
   className = "h-5 w-5"
 }: {
   code: number;
+  isNight?: boolean;
   className?: string;
 }) {
-  if (code >= 95) return <CloudLightning className={`${className} text-signal-amber`} />;
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) {
-    return <CloudSnow className={`${className} text-slate-200`} />;
-  }
-  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-    return <CloudRain className={`${className} text-signal-sky`} />;
-  }
-  if (code === 0 || code === 1) return <Sun className={`${className} text-signal-amber`} />;
-  return <Cloud className={`${className} text-ink-secondary`} />;
+  return <AnimatedWeatherIcon code={code} isNight={isNight} className={className} />;
 }
 
-function WindCompassMini({ deg }: { deg: number }) {
+function WindCompassMini({ deg, beaufort = 2 }: { deg: number; beaufort?: number }) {
+  const arcLen = Math.min(100, Math.max(12, (beaufort / 10) * 100));
   return (
-    <svg
-      viewBox="0 0 40 40"
-      className="h-9 w-9 shrink-0"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 42 42" className="h-10 w-10 shrink-0" aria-hidden="true">
       <circle
-        cx="20"
-        cy="20"
-        r="17"
+        cx="21"
+        cy="21"
+        r="17.5"
         fill="none"
-        stroke="rgba(255,255,255,0.12)"
-        strokeWidth="1.2"
+        stroke="rgba(255,255,255,0.10)"
+        strokeWidth="1.4"
       />
-      <text x="20" y="8" textAnchor="middle" fill="rgba(167,180,200,0.75)" fontSize="6" fontFamily="monospace">
+      <circle
+        cx="21"
+        cy="21"
+        r="17.5"
+        fill="none"
+        stroke="var(--atmos-accent)"
+        strokeOpacity="0.45"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeDasharray={`${arcLen * 1.1} 120`}
+        transform="rotate(-90 21 21)"
+      />
+      <text x="21" y="8.5" textAnchor="middle" fill="rgba(186,210,235,0.8)" fontSize="5.8" fontFamily="monospace">
         K
       </text>
-      <text x="34" y="22" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.5" fontFamily="monospace">
+      <text x="34.5" y="23" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.2" fontFamily="monospace">
         D
       </text>
-      <text x="20" y="36" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.5" fontFamily="monospace">
+      <text x="21" y="36.8" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.2" fontFamily="monospace">
         G
       </text>
-      <text x="6" y="22" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.5" fontFamily="monospace">
+      <text x="7.2" y="23" textAnchor="middle" fill="rgba(167,180,200,0.45)" fontSize="5.2" fontFamily="monospace">
         B
       </text>
-      <g transform={`rotate(${deg} 20 20)`}>
+      <g
+        style={{
+          transformOrigin: "21px 21px",
+          transform: `rotate(${deg}deg)`,
+          transition: "transform 680ms cubic-bezier(0.22, 1, 0.36, 1)"
+        }}
+      >
         <line
-          x1="20"
-          y1="27"
-          x2="20"
-          y2="11"
-          stroke="#38bdf8"
-          strokeWidth="1.8"
+          x1="21"
+          y1="28.5"
+          x2="21"
+          y2="11.5"
+          stroke="var(--atmos-accent)"
+          strokeWidth="1.9"
           strokeLinecap="round"
         />
-        <polygon points="20,9 17.2,14.5 22.8,14.5" fill="#38bdf8" />
+        <polygon points="21,8.5 18,14.5 24,14.5" fill="var(--atmos-accent)" />
+        <circle cx="21" cy="21" r="2.1" fill="#090d16" stroke="var(--atmos-accent)" strokeWidth="1.3" />
       </g>
     </svg>
   );
 }
 
-function BarometerDialMini({ pressure }: { pressure: number }) {
-  // 980 hPa -> -115°, 1040 hPa -> +115°
+function BarometerDialMini({
+  pressure,
+  delta3h = 0
+}: {
+  pressure: number;
+  delta3h?: number;
+}) {
   const clamped = Math.max(980, Math.min(1040, pressure));
   const frac = (clamped - 980) / 60;
   const angleDeg = -115 + frac * 230;
+  const trendColor =
+    delta3h >= 0.8 ? "#10b981" : delta3h <= -0.8 ? "#f59e0b" : "var(--atmos-accent)";
+
   return (
-    <svg
-      viewBox="0 0 44 36"
-      className="h-9 w-10 shrink-0"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 46 38" className="h-9 w-11 shrink-0" aria-hidden="true">
       <path
-        d="M 7 29 A 16 16 0 1 1 37 29"
+        d="M 7.5 30 A 16.5 16.5 0 1 1 38.5 30"
         fill="none"
-        stroke="rgba(255,255,255,0.14)"
-        strokeWidth="2.4"
+        stroke="rgba(255,255,255,0.12)"
+        strokeWidth="2.5"
         strokeLinecap="round"
       />
       <path
-        d="M 15 10 A 16 16 0 0 1 29 10"
+        d="M 15.5 10.5 A 16.5 16.5 0 0 1 30.5 10.5"
         fill="none"
-        stroke="rgba(56,189,248,0.45)"
-        strokeWidth="2.4"
+        stroke={trendColor}
+        strokeOpacity="0.65"
+        strokeWidth="2.5"
         strokeLinecap="round"
       />
-      <g transform={`rotate(${angleDeg} 22 21)`}>
+      <g
+        style={{
+          transformOrigin: "23px 22px",
+          transform: `rotate(${angleDeg}deg)`,
+          transition: "transform 680ms cubic-bezier(0.22, 1, 0.36, 1)"
+        }}
+      >
         <line
-          x1="22"
-          y1="21"
-          x2="22"
-          y2="8"
+          x1="23"
+          y1="22"
+          x2="23"
+          y2="8.5"
           stroke="#f3f6fb"
-          strokeWidth="1.7"
+          strokeWidth="1.8"
           strokeLinecap="round"
         />
       </g>
-      <circle cx="22" cy="21" r="2.2" fill="#38bdf8" />
+      <circle cx="23" cy="22" r="2.6" fill={trendColor} />
     </svg>
   );
 }
 
-function SunCycleCard({
+function SunAndUvCard({
   sunrise,
   sunset,
   solarElevationDeg,
-  timezone
+  timezone,
+  uvMax
 }: {
   sunrise: string;
   sunset: string;
   solarElevationDeg: number;
   timezone: string;
+  uvMax: number;
 }) {
   const srTime = sunrise ? sunrise.slice(11, 16) : "--:--";
   const ssTime = sunset ? sunset.slice(11, 16) : "--:--";
@@ -167,7 +192,6 @@ function SunCycleCard({
     return (h || 0) * 60 + (m || 0);
   };
 
-  // Seçili şehrin gerçek yerel saatini hesapla (tarayıcı saat dilimine değil şehir saat dilimine göre!)
   let nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   try {
     const parts = new Intl.DateTimeFormat("en-GB", {
@@ -195,60 +219,167 @@ function SunCycleCard({
   const angle = Math.PI * (1 - progress);
   const cx = 110 + Math.cos(angle) * 84;
   const cy = 90 - Math.sin(angle) * 72;
-
   const dayDur = Math.max(0, ssMin - srMin);
   const durH = Math.floor(dayDur / 60);
   const durM = dayDur % 60;
+  const isUp = solarElevationDeg > 0;
+  const arcTotal = 250;
 
   return (
-    <div className="surface-panel p-5 flex flex-col justify-between">
+    <div className="surface-panel p-5 flex flex-col justify-between gap-4">
       <div className="flex items-center justify-between">
         <span className="font-display text-sm font-semibold text-ink-primary">
-          Güneş Döngüsü
+          Güneş & UV
         </span>
         <span className="font-mono text-xs text-ink-muted tabular">
-          Açı {solarElevationDeg > 0 ? `+${solarElevationDeg}°` : `${solarElevationDeg}°`} · {durH}s {durM}dk
+          {solarElevationDeg > 0 ? `+${solarElevationDeg}°` : `${solarElevationDeg}°`} · {durH}s {durM}dk
         </span>
       </div>
 
-      <svg viewBox="0 0 220 104" className="my-2 h-24 w-full" aria-hidden="true">
+      <svg viewBox="0 0 220 102" className="h-24 w-full overflow-visible" aria-hidden="true">
+        <defs>
+          <linearGradient id="solarArcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#fb923c" />
+            <stop offset="50%" stopColor="#fcd34d" />
+            <stop offset="100%" stopColor="#f59e0b" />
+          </linearGradient>
+          <radialGradient id="sunCorona" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor={isUp ? "rgba(251,191,36,0.75)" : "rgba(147,197,253,0.5)"} />
+            <stop offset="100%" stopColor="rgba(251,191,36,0)" />
+          </radialGradient>
+        </defs>
         <line
           x1="14"
           y1="90"
           x2="206"
           y2="90"
-          stroke="rgba(255,255,255,0.12)"
+          stroke="rgba(255,255,255,0.14)"
           strokeDasharray="3 3"
         />
         <path
           d="M 26 90 A 84 72 0 0 1 194 90"
           fill="none"
-          stroke="rgba(245, 158, 11, 0.45)"
+          stroke="rgba(255, 255, 255, 0.12)"
           strokeWidth="2"
           strokeDasharray="4 4"
         />
+        <path
+          d="M 26 90 A 84 72 0 0 1 194 90"
+          fill="none"
+          stroke="url(#solarArcGrad)"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeDasharray={`${(progress * arcTotal).toFixed(1)} ${arcTotal}`}
+        />
+        <circle cx={cx} cy={cy} r="16" fill="url(#sunCorona)" />
         <circle
           cx={cx}
           cy={cy}
-          r="6"
-          fill={solarElevationDeg > 0 ? "#f59e0b" : "#94a3b8"}
-          stroke="#f3f6fb"
-          strokeWidth="1.5"
+          r="5.8"
+          fill={isUp ? "#fbbf24" : "#93c5fd"}
+          stroke="#f8fbff"
+          strokeWidth="1.6"
         />
       </svg>
 
-      <div className="flex items-center justify-between text-xs tabular">
-        <span className="flex items-center gap-1.5 text-ink-secondary">
-          <Sunrise className="h-3.5 w-3.5 text-signal-amber" />
-          <span className="font-mono text-ink-primary">{srTime}</span>
-        </span>
-        <span className="flex items-center gap-1.5 text-ink-secondary">
-          <Sunset className="h-3.5 w-3.5 text-signal-amber" />
-          <span className="font-mono text-ink-primary">{ssTime}</span>
-        </span>
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between text-xs tabular">
+          <span className="flex items-center gap-1.5 text-ink-secondary">
+            <Sunrise className="h-3.5 w-3.5 text-signal-amber" />
+            <span className="font-mono text-ink-primary">{srTime}</span>
+          </span>
+          <span className="font-mono text-[11px] text-ink-secondary">
+            Maks UV <strong className="text-ink-primary">{uvMax.toFixed(1)}</strong> ({classifyUvIndex(uvMax)})
+          </span>
+          <span className="flex items-center gap-1.5 text-ink-secondary">
+            <Sunset className="h-3.5 w-3.5 text-signal-amber" />
+            <span className="font-mono text-ink-primary">{ssTime}</span>
+          </span>
+        </div>
+        <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500">
+          <div
+            className="h-full w-2 rounded-full bg-white shadow-[0_0_8px_#fff] transition-all duration-500"
+            style={{ marginLeft: `${Math.min(94, (uvMax / 11) * 100)}%` }}
+          />
+        </div>
       </div>
     </div>
   );
+}
+
+function computeLiveSounding(b: WeatherBundle | null) {
+  if (!b || b.sounding.length === 0) return null;
+  const obs = b.current;
+  return analyzeConvectiveProfile({
+    surfaceTempC: obs.temperature,
+    surfaceHumidity: obs.humidity,
+    surfacePressureHpa: obs.pressure,
+    levels: b.sounding
+  });
+}
+
+function computeHeroDisplay(b: WeatherBundle | null, frameIndex: number) {
+  if (!b) return null;
+  const activeHour = frameIndex > 0 ? b.hourly[frameIndex] ?? null : null;
+  if (activeHour) {
+    const prevP = b.hourly[Math.max(0, frameIndex - 3)]?.pressure ?? activeHour.pressure;
+    const activeDelta3h = Number((activeHour.pressure - prevP).toFixed(1));
+    return {
+      temperature: activeHour.temperature,
+      apparentTemperature: activeHour.apparentTemperature,
+      windSpeed: activeHour.windSpeed,
+      windGusts: activeHour.windGusts,
+      windDirection: activeHour.windDirection,
+      cloudCover: activeHour.cloudCover,
+      humidity: activeHour.humidity,
+      dewPoint: activeHour.dewPoint,
+      pressure: activeHour.pressure,
+      pressureDelta3h: activeDelta3h,
+      pressureTrend: classifyPressureTrend(activeDelta3h),
+      pressureTrendDetail: describePressureTrendDetail(activeDelta3h),
+      visibilityKm: activeHour.visibilityKm,
+      uvIndex: activeHour.uvIndex,
+      condition: activeHour.condition,
+      weatherCode: activeHour.weatherCode,
+      isStorm: activeHour.isStorm,
+      cape: activeHour.cape,
+      temp850hPa: activeHour.temp850hPa,
+      freezingLevelM: activeHour.freezingLevelM,
+      precipConsensus: activeHour.precipConsensus,
+      wetBulbC: activeHour.wetBulbC,
+      stormScore: activeHour.stormScore ?? 0,
+      solarElevationDeg: activeHour.solarElevationDeg,
+      timeLabel: `${activeHour.dayLabel} · ${activeHour.hourLabel}`
+    };
+  }
+  const obs = b.current;
+  return {
+    temperature: obs.temperature,
+    apparentTemperature: obs.apparentTemperature,
+    windSpeed: obs.windSpeed,
+    windGusts: obs.windGusts,
+    windDirection: obs.windDirection,
+    cloudCover: obs.cloudCover,
+    humidity: obs.humidity,
+    dewPoint: obs.dewPoint,
+    pressure: obs.pressure,
+    pressureDelta3h: obs.pressureDelta3h,
+    pressureTrend: obs.pressureTrend,
+    pressureTrendDetail: obs.pressureTrendDetail,
+    visibilityKm: obs.visibilityKm,
+    uvIndex: obs.uvIndex,
+    condition: obs.condition,
+    weatherCode: obs.weatherCode,
+    isStorm: obs.isStorm,
+    cape: b.nativeConvective.cape,
+    temp850hPa: obs.temp850hPa,
+    freezingLevelM: b.nativeConvective.freezingLevelM,
+    precipConsensus: obs.precipConsensus,
+    wetBulbC: obs.wetBulbC,
+    stormScore: b.storm?.score ?? obs.stormScore ?? 0,
+    solarElevationDeg: obs.solarElevationDeg,
+    timeLabel: `Gözlem · ${obs.time.slice(11, 16)}`
+  };
 }
 
 export default function HeroSceneView() {
@@ -267,18 +398,32 @@ export default function HeroSceneView() {
   } = useWeather();
 
   const [copiedLink, setCopiedLink] = useState(false);
+  const [showMethodology, setShowMethodology] = useState(false);
 
-  const liveSoundingSummary = useMemo(() => {
-    if (!bundle || bundle.sounding.length === 0) return null;
-    return analyzeConvectiveProfile({
-      surfaceTempC: bundle.current.temperature,
-      surfaceHumidity: bundle.current.humidity,
-      surfacePressureHpa: bundle.current.pressure,
-      levels: bundle.sounding
+  const liveSoundingSummary = useMemo(() => computeLiveSounding(bundle), [bundle]);
+  const display = useMemo(() => computeHeroDisplay(bundle, frameIndex), [bundle, frameIndex]);
+
+  // Tüm Hook'lar erken dönüşten ÖNCE çağrılır (React Rules of Hooks güvencesi)
+  const synopticSignals = useMemo(() => {
+    if (!bundle || !display) return [];
+    return computeSynopticSignals({
+      pressureDelta3h: display.pressureDelta3h,
+      temp850hPa: display.temp850hPa,
+      thickness5001000Dam: liveSoundingSummary?.thickness5001000Dam ?? null,
+      windGustsKmh: display.windGusts,
+      cape: display.cape ?? liveSoundingSummary?.mucape ?? liveSoundingSummary?.cape ?? null,
+      isStorm: display.isStorm,
+      stormScore: display.stormScore,
+      scp: liveSoundingSummary?.scp,
+      europeanAqi: bundle.airQuality.europeanAqi,
+      dominantPollutant: bundle.airQuality.dominantPollutant,
+      uvIndex: display.uvIndex,
+      freezingLevelM: display.freezingLevelM,
+      temperatureC: display.temperature
     });
-  }, [bundle]);
+  }, [bundle, display, liveSoundingSummary]);
 
-  if (!bundle) {
+  if (!bundle || !display) {
     return (
       <div className="mx-auto max-w-xl px-4 py-24 text-center space-y-4">
         <div className="surface-panel p-8 space-y-4">
@@ -301,86 +446,21 @@ export default function HeroSceneView() {
     );
   }
 
-  const activeHour = frameIndex > 0 ? bundle.hourly[frameIndex] : null;
-  const activeDelta3h = activeHour
-    ? Number(
-        (
-          activeHour.pressure -
-          (bundle.hourly[Math.max(0, frameIndex - 3)]?.pressure ?? activeHour.pressure)
-        ).toFixed(1)
-      )
-    : bundle.current.pressureDelta3h;
-
-  const display = activeHour
-    ? {
-        temperature: activeHour.temperature,
-        apparentTemperature: activeHour.apparentTemperature,
-        windSpeed: activeHour.windSpeed,
-        windGusts: activeHour.windGusts,
-        windDirection: activeHour.windDirection,
-        cloudCover: activeHour.cloudCover,
-        humidity: activeHour.humidity,
-        dewPoint: activeHour.dewPoint,
-        pressure: activeHour.pressure,
-        pressureDelta3h: activeDelta3h,
-        pressureTrend: classifyPressureTrend(activeDelta3h),
-        pressureTrendDetail: describePressureTrendDetail(activeDelta3h),
-        visibilityKm: activeHour.visibilityKm,
-        uvIndex: activeHour.uvIndex,
-        condition: activeHour.condition,
-        weatherCode: activeHour.weatherCode,
-        isStorm: activeHour.isStorm,
-        cape: activeHour.cape,
-        temp850hPa: activeHour.temp850hPa,
-        freezingLevelM: activeHour.freezingLevelM,
-        precipConsensus: activeHour.precipConsensus,
-        timeLabel: `${activeHour.dayLabel} · ${activeHour.hourLabel}`
-      }
-    : {
-        temperature: bundle.current.temperature,
-        apparentTemperature: bundle.current.apparentTemperature,
-        windSpeed: bundle.current.windSpeed,
-        windGusts: bundle.current.windGusts,
-        windDirection: bundle.current.windDirection,
-        cloudCover: bundle.current.cloudCover,
-        humidity: bundle.current.humidity,
-        dewPoint: bundle.current.dewPoint,
-        pressure: bundle.current.pressure,
-        pressureDelta3h: bundle.current.pressureDelta3h,
-        pressureTrend: bundle.current.pressureTrend,
-        pressureTrendDetail: bundle.current.pressureTrendDetail,
-        visibilityKm: bundle.current.visibilityKm,
-        uvIndex: bundle.current.uvIndex,
-        condition: bundle.current.condition,
-        weatherCode: bundle.current.weatherCode,
-        isStorm: bundle.current.isStorm,
-        cape: bundle.nativeConvective.cape,
-        temp850hPa: bundle.current.temp850hPa,
-        freezingLevelM: bundle.nativeConvective.freezingLevelM,
-        precipConsensus: bundle.current.precipConsensus,
-        timeLabel: `Gözlem · ${bundle.current.time.slice(11, 16)}`
-      };
-
   const displayBeaufort = windKmhToBeaufort(display.windSpeed);
   const displayUvLabel = classifyUvIndex(display.uvIndex);
   const metarStation = bundle.hybrid?.verification?.station ?? null;
-
-  const synopticSignals = useMemo(
-    () =>
-      computeSynopticSignals({
-        pressureDelta3h: display.pressureDelta3h,
-        temp850hPa: display.temp850hPa,
-        thickness5001000Dam: liveSoundingSummary?.thickness5001000Dam ?? null,
-        windGustsKmh: display.windGusts,
-        cape: display.cape ?? liveSoundingSummary?.cape ?? null,
-        isStorm: display.isStorm,
-        europeanAqi: bundle.airQuality.europeanAqi,
-        dominantPollutant: bundle.airQuality.dominantPollutant,
-        uvIndex: display.uvIndex,
-        freezingLevelM: display.freezingLevelM,
-        temperatureC: display.temperature
-      }),
-    [display, liveSoundingSummary, bundle.airQuality]
+  const metarStations =
+    bundle.hybrid?.verification?.stations ?? (metarStation ? [metarStation] : []);
+  const calInfo = bundle.hybrid?.verification?.calibration;
+  const isLiveMetar =
+    bundle.hybrid?.verification?.mode === "live-metar-48h" ||
+    bundle.hybrid?.verification?.mode === "live-metar-24h";
+  const has15MinPrecip = Boolean(
+    bundle.minutely15?.some((pt) => pt.precipitation >= 0.05)
+  );
+  const showStormOrNowcastPanel = Boolean(
+    (bundle.storm && (bundle.storm.score >= 35 || bundle.storm.nextWindow)) ||
+      has15MinPrecip
   );
 
   const handleShareStation = async () => {
@@ -396,7 +476,7 @@ export default function HeroSceneView() {
       setCopiedLink(true);
       window.setTimeout(() => setCopiedLink(false), 2000);
     } catch {
-      // ignore clipboard restrictions
+      // clipboard restrictions
     }
   };
 
@@ -406,84 +486,103 @@ export default function HeroSceneView() {
   const weekSpan = Math.max(1, weekMax - weekMin);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-10">
+    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-8">
       {error && (
         <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
           {error}
         </div>
       )}
 
-      {/* BÖLÜM 1: ANLIK GÖZLEM & ÖLÇÜMLER */}
-      <section className="flex min-h-[calc(100vh-7rem)] flex-col justify-between gap-8 py-4">
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-end">
-          {/* Sol: Konum & Ana Sıcaklık */}
-          <div className="space-y-5">
+      {/* BÖLÜM 1: SADE, FERAH ANLIK GÖZLEM & ÖLÇÜMLER */}
+      <section className="flex min-h-[calc(100vh-7.5rem)] flex-col justify-between gap-7 py-3">
+        <div className="grid gap-7 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-end">
+          {/* Sol: Konum, Odometre Sıcaklık ve Temel Özet */}
+          <div className="atmos-enter-1 space-y-4">
+            {/* Tek Satır Kompakt Durum & Aksiyon Şeridi */}
             <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
-              <span className="rounded-lg border border-white/15 bg-obsidian-900/65 px-2.5 py-1 font-mono text-ink-primary backdrop-blur-md">
-                {display.timeLabel}
-              </span>
-              {bundle.location.elevation !== undefined && (
-                <span className="rounded-lg border border-white/10 bg-obsidian-900/50 px-2.5 py-1 font-mono backdrop-blur-md">
-                  Rakım {bundle.location.elevation} m
+              <span className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-obsidian-900/65 px-2.5 py-1 font-mono text-ink-primary backdrop-blur-md tabular">
+                <span className="relative flex h-2 w-2">
+                  <span
+                    className="atmos-beacon-ring absolute inline-flex h-full w-full rounded-full"
+                    style={{ backgroundColor: "var(--atmos-accent)" }}
+                  />
+                  <span
+                    className="relative inline-flex h-2 w-2 rounded-full"
+                    style={{ backgroundColor: "var(--atmos-accent)" }}
+                  />
                 </span>
-              )}
+                <span>
+                  {display.timeLabel}
+                  {bundle.location.elevation !== undefined ? ` · ${bundle.location.elevation} m` : ""}
+                </span>
+              </span>
               {bundle.hybrid && (
                 <a
                   href="#hibrit"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-signal-sky/30 bg-signal-sky/10 px-2.5 py-1 font-mono text-signal-sky hover:bg-signal-sky/15 transition-colors backdrop-blur-md tabular"
+                  className="atmos-btn inline-flex items-center gap-1.5 rounded-lg border border-[rgba(var(--atmos-accent-rgb),0.36)] bg-[rgba(var(--atmos-accent-rgb),0.11)] px-2.5 py-1 font-mono text-[var(--atmos-accent)] backdrop-blur-md tabular"
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
                   <span>
-                    {bundle.hybrid.verification.mode === "live-metar-24h"
-                      ? `METAR Doğrulamalı (${metarStation?.icaoId}) · %${bundle.hybrid.confidencePct}`
-                      : `5-Model Uzlaşı %${bundle.hybrid.confidencePct}`}
+                    {isLiveMetar
+                      ? `ATMOS v3 · ${metarStation?.icaoId}${
+                          metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
+                        } · %${bundle.hybrid.confidencePct}`
+                      : `7-Model · %${bundle.hybrid.confidencePct}`}
                   </span>
                 </a>
               )}
-              <button
-                type="button"
-                onClick={() =>
-                  fav
-                    ? removeFavorite(activeLocation.id)
-                    : addFavorite(activeLocation)
-                }
-                aria-label={fav ? "İstasyonlardan çıkar" : "İstasyonlara kaydet"}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 transition-colors backdrop-blur-md ${
-                  fav
-                    ? "border-signal-amber/45 bg-signal-amber/15 text-amber-200"
-                    : "border-white/10 bg-obsidian-900/50 text-ink-secondary hover:text-ink-primary"
-                }`}
-              >
-                <Star className={`h-3.5 w-3.5 ${fav ? "fill-amber-300 text-amber-300" : ""}`} />
-                {fav ? "Kayıtlı" : "Kaydet"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void refreshWeather()}
-                aria-label="Verileri güncelle"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-obsidian-900/50 px-2.5 py-1 text-ink-secondary hover:text-ink-primary transition-colors backdrop-blur-md"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-                Güncelle
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleShareStation()}
-                aria-label="İstasyon bağlantısını paylaş"
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 transition-colors backdrop-blur-md ${
-                  copiedLink
-                    ? "border-signal-emerald/45 bg-signal-emerald/15 text-signal-emerald"
-                    : "border-white/10 bg-obsidian-900/50 text-ink-secondary hover:text-ink-primary"
-                }`}
-              >
-                {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
-                <span>{copiedLink ? "Kopyalandı" : "Paylaş"}</span>
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    atmosUiSfx.playChime(!fav);
+                    if (fav) removeFavorite(activeLocation.id);
+                    else addFavorite(activeLocation);
+                  }}
+                  title={fav ? "İstasyonlardan çıkar" : "İstasyonlara kaydet"}
+                  aria-label={fav ? "İstasyonlardan çıkar" : "İstasyonlara kaydet"}
+                  className={`atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border backdrop-blur-md ${
+                    fav
+                      ? "border-signal-amber/45 bg-signal-amber/15 text-amber-200"
+                      : "border-white/10 bg-obsidian-900/55 text-ink-secondary hover:text-ink-primary"
+                  }`}
+                >
+                  <Star className={`h-3.5 w-3.5 transition-transform ${fav ? "fill-amber-300 text-amber-300 scale-110" : ""}`} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    atmosUiSfx.playNavTick();
+                    void refreshWeather();
+                  }}
+                  title="Verileri güncelle"
+                  aria-label="Verileri güncelle"
+                  className="atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-obsidian-900/55 text-ink-secondary hover:text-ink-primary backdrop-blur-md"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    atmosUiSfx.playChime(true);
+                    void handleShareStation();
+                  }}
+                  title={copiedLink ? "Bağlantı kopyalandı" : "İstasyon bağlantısını paylaş"}
+                  aria-label="İstasyon bağlantısını paylaş"
+                  className={`atmos-btn flex h-7 w-7 items-center justify-center rounded-lg border backdrop-blur-md ${
+                    copiedLink
+                      ? "border-signal-emerald/45 bg-signal-emerald/15 text-signal-emerald"
+                      : "border-white/10 bg-obsidian-900/55 text-ink-secondary hover:text-ink-primary"
+                  }`}
+                >
+                  {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
+                </button>
+              </div>
             </div>
 
             <div>
               <div className="flex flex-wrap items-baseline gap-2.5">
-                <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl">
+                <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl drop-shadow-[0_2px_18px_rgba(0,0,0,0.5)]">
                   {activeLocation.name}
                   {activeLocation.country ? `, ${activeLocation.country}` : ""}
                 </h1>
@@ -492,22 +591,30 @@ export default function HeroSceneView() {
                 </span>
               </div>
 
-              <div className="mt-3 flex flex-wrap items-baseline gap-5">
-                <span className="font-display text-7xl font-bold tracking-tight text-ink-primary tabular sm:text-8xl lg:text-[7.5rem] leading-none">
-                  {formatTemperature(display.temperature, unit)}
+              <div className="mt-2.5 flex flex-wrap items-baseline gap-5">
+                <span
+                  className="font-display text-7xl font-bold tracking-tight text-ink-primary tabular sm:text-8xl lg:text-[7.25rem] leading-none"
+                  style={{
+                    textShadow: "0 10px 42px rgba(var(--atmos-accent-rgb), 0.22)"
+                  }}
+                >
+                  <AnimatedNumber value={formatTemperature(display.temperature, unit)} />
                 </span>
                 <div className="space-y-1.5">
-                  <p className="flex items-center gap-2 font-display text-xl font-medium text-ink-primary sm:text-2xl">
-                    <WeatherGlyph code={display.weatherCode} className="h-6 w-6" />
+                  <p className="flex items-center gap-2.5 font-display text-xl font-medium text-ink-primary sm:text-2xl">
+                    <WeatherGlyph
+                      code={display.weatherCode}
+                      isNight={display.solarElevationDeg < -3}
+                      className="h-8 w-8"
+                    />
                     <span>{display.condition}</span>
                   </p>
                   <p className="text-sm text-ink-secondary tabular">
                     Hissedilen{" "}
                     <strong className="font-mono font-medium text-ink-primary">
-                      {formatTemperature(display.apparentTemperature, unit)}
+                      <AnimatedNumber value={formatTemperature(display.apparentTemperature, unit)} />
                     </strong>
                     {" · "}
-                    Günlük{" "}
                     <span className="font-mono text-ink-primary">
                       {formatTemperature(bundle.daily[0]?.tempMax ?? display.temperature, unit)} /{" "}
                       {formatTemperature(bundle.daily[0]?.tempMin ?? display.temperature, unit)}
@@ -517,57 +624,52 @@ export default function HeroSceneView() {
               </div>
             </div>
 
-            {/* Gerçek Üst Atmosfer & Yağış Uzlaşısı Hızlı Satırı */}
+            {/* 3 Temel Özet Çipi (Fırtına · Yağış · Üst Atmosfer) */}
             <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-ink-secondary tabular">
-              {display.temp850hPa !== null && (
-                <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
-                  850 hPa:{" "}
-                  <strong className="text-ink-primary">{display.temp850hPa}°C</strong>
-                </span>
-              )}
-              {display.freezingLevelM !== null && (
-                <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
-                  0°C Seviyesi:{" "}
-                  <strong className="text-ink-primary">{display.freezingLevelM} m</strong>
-                </span>
+              {bundle.storm && (
+                <a
+                  href="#hibrit"
+                  className="atmos-btn rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md"
+                >
+                  Fırtına:{" "}
+                  <strong style={{ color: bundle.storm.color }}>
+                    <AnimatedNumber value={display.stormScore} />
+                    /100 · {bundle.storm.label}
+                  </strong>
+                </a>
               )}
               {display.precipConsensus && display.precipConsensus.totalModels > 0 && (
                 <span className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 backdrop-blur-md">
-                  Yağış Uzlaşısı:{" "}
+                  Yağış:{" "}
                   <strong
                     className={
                       display.precipConsensus.agreeingModels >= 3
-                        ? "text-signal-sky"
+                        ? "text-[var(--atmos-accent)]"
                         : "text-ink-primary"
                     }
                   >
                     {display.precipConsensus.agreeingModels}/{display.precipConsensus.totalModels} model
                   </strong>
-                  {display.precipConsensus.maxMm > 0 && (
+                  {(display.precipConsensus.p90Mm ?? display.precipConsensus.maxMm) > 0 && (
                     <span className="text-ink-muted">
                       {" "}
-                      ({display.precipConsensus.minMm}–{display.precipConsensus.maxMm} mm)
+                      (P90 {(display.precipConsensus.p90Mm ?? display.precipConsensus.maxMm).toFixed(1)} mm)
                     </span>
                   )}
                 </span>
               )}
-              {liveSoundingSummary && (
-                <Link
-                  href="/lab"
-                  className="rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 text-ink-secondary hover:border-white/25 hover:text-ink-primary transition-colors backdrop-blur-md"
-                >
-                  CAPE:{" "}
-                  <strong className="text-ink-primary">
-                    {bundle.nativeConvective.cape ?? liveSoundingSummary.cape} J/kg
-                  </strong>{" "}
-                  · 5-Model & Skew-T →
-                </Link>
-              )}
+              <Link
+                href="/lab"
+                className="atmos-btn rounded-lg border border-white/10 bg-obsidian-900/60 px-3 py-1.5 text-ink-secondary hover:text-ink-primary backdrop-blur-md"
+              >
+                {display.temp850hPa !== null ? `850 hPa ${display.temp850hPa}°C` : "Sondaj"}
+                {display.wetBulbC !== undefined ? ` · Tw ${display.wetBulbC}°C` : ""} →
+              </Link>
             </div>
 
-            {/* Gerçek Fiziksel Sinoptik Eşik Şeridi (yalnızca eşik aşıldığında görünür) */}
+            {/* Sinoptik Eşik Uyarıları (yalnızca aktif eşik aşıldığında) */}
             {synopticSignals.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              <div className="flex flex-wrap items-center gap-2">
                 {synopticSignals.map((sig) => (
                   <div
                     key={sig.id}
@@ -594,9 +696,9 @@ export default function HeroSceneView() {
             )}
           </div>
 
-          {/* Sağ: Meteorolojik Ölçüm Paneli */}
-          <div className="surface-panel p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+          {/* Sağ: 2x3 Anlık Ölçüm Kokpit Paneli */}
+          <div className="atmos-enter-2 surface-panel p-5 space-y-3.5">
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-2.5">
               <h2 className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-secondary">
                 Anlık Ölçümler
               </h2>
@@ -609,45 +711,45 @@ export default function HeroSceneView() {
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Rüzgar · Bft {displayBeaufort.scale}</span>
-                  <Wind className="h-3.5 w-3.5" />
+                  <Wind className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <p className="font-mono text-lg font-semibold text-ink-primary">
-                      {formatWindSpeed(display.windSpeed, unit)}
+                      <AnimatedNumber value={formatWindSpeed(display.windSpeed, unit)} />
                     </p>
                     <p className="flex items-center gap-1 text-[11px] text-ink-muted">
-                      <Compass className="h-3 w-3 text-signal-sky" />
+                      <Compass className="h-3 w-3 text-[var(--atmos-accent)]" />
                       {windDirectionToCompass(display.windDirection)} · Hamle{" "}
                       {formatWindSpeed(display.windGusts, unit)}
                     </p>
                   </div>
-                  <WindCompassMini deg={display.windDirection} />
+                  <WindCompassMini deg={display.windDirection} beaufort={displayBeaufort.scale} />
                 </div>
               </div>
 
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Nem & Çiy</span>
-                  <Droplets className="h-3.5 w-3.5" />
+                  <Droplets className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
                 </div>
                 <p className="font-mono text-lg font-semibold text-ink-primary">
-                  %{display.humidity}
+                  <AnimatedNumber value={`%${display.humidity}`} />
                 </p>
                 <p className="text-xs text-ink-muted">
-                  Çiy {formatTemperature(display.dewPoint, unit)} · Bolton
+                  Çiy {formatTemperature(display.dewPoint, unit)}
                 </p>
               </div>
 
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Basınç (MSL)</span>
-                  <Gauge className="h-3.5 w-3.5" />
+                  <Gauge className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
                 </div>
                 <div className="flex items-center justify-between gap-1.5">
                   <div>
                     <p className="font-mono text-lg font-semibold text-ink-primary">
-                      {Math.round(display.pressure)} hPa
+                      <AnimatedNumber value={`${Math.round(display.pressure)} hPa`} />
                     </p>
                     <p
                       className="flex items-center gap-1 text-[11px] text-ink-muted"
@@ -666,17 +768,20 @@ export default function HeroSceneView() {
                       hPa/3s
                     </p>
                   </div>
-                  <BarometerDialMini pressure={display.pressure} />
+                  <BarometerDialMini
+                    pressure={display.pressure}
+                    delta3h={display.pressureDelta3h}
+                  />
                 </div>
               </div>
 
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
-                  <span>Bulutluluk</span>
-                  <Cloud className="h-3.5 w-3.5" />
+                  <span>Bulut & UV</span>
+                  <Cloud className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
                 </div>
                 <p className="font-mono text-lg font-semibold text-ink-primary">
-                  %{display.cloudCover}
+                  <AnimatedNumber value={`%${display.cloudCover}`} />
                 </p>
                 <p className="text-xs text-ink-muted">
                   UV {display.uvIndex.toFixed(1)} · {displayUvLabel}
@@ -686,10 +791,10 @@ export default function HeroSceneView() {
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Görüş</span>
-                  <Eye className="h-3.5 w-3.5" />
+                  <Eye className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
                 </div>
                 <p className="font-mono text-lg font-semibold text-ink-primary">
-                  {display.visibilityKm} km
+                  <AnimatedNumber value={`${display.visibilityKm} km`} />
                 </p>
                 <p className="text-xs text-ink-muted">
                   {display.visibilityKm >= 10
@@ -703,21 +808,21 @@ export default function HeroSceneView() {
               <div className="surface-tile p-3 space-y-1">
                 <div className="flex items-center justify-between text-xs text-ink-muted">
                   <span>Hava Kalitesi</span>
-                  <Activity className="h-3.5 w-3.5" />
+                  <Activity className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
                 </div>
                 <p className="font-mono text-lg font-semibold text-ink-primary">
                   {bundle.airQuality.label}
                 </p>
                 <p className="text-[11px] text-ink-muted">
-                  Baskın: {bundle.airQuality.dominantPollutant} ({bundle.airQuality.dominantValueText})
+                  {bundle.airQuality.dominantPollutant} ({bundle.airQuality.dominantValueText})
                 </p>
               </div>
             </div>
           </div>
         </div>
 
-        {/* 24 Saatlik Akış & Alt Yönlendirme */}
-        <div className="space-y-3">
+        {/* 24/48 Saatlik Zaman Kaydırıcısı */}
+        <div className="atmos-enter-3 space-y-2.5">
           <TimeScrubber
             hourly={bundle.hourly}
             frameIndex={frameIndex}
@@ -725,314 +830,143 @@ export default function HeroSceneView() {
             unit={unit}
           />
 
-          <div className="flex items-center justify-between text-xs text-ink-muted">
+          <div className="flex items-center justify-between text-xs text-slate-200/85 drop-shadow-[0_1px_8px_rgba(0,0,0,0.85)]">
             <a
               href="#saatlik"
-              className="inline-flex items-center gap-1.5 hover:text-ink-primary transition-colors"
+              className="inline-flex items-center gap-1.5 hover:text-white transition-colors"
             >
-              <ArrowDown className="h-3.5 w-3.5" />
-              <span>Saatlik grafik & 7 günlük tahmin</span>
+              <ArrowDown className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
+              <span>Saatlik grafik, 7 günlük tahmin & doğrulama</span>
             </a>
             <div className="hidden sm:flex items-center gap-5">
-              <Link href="/world" className="hover:text-ink-primary transition-colors">
-                Canlı Yağış Radarı & Rüzgar Akışı →
+              <Link href="/world" className="hover:text-white transition-colors">
+                Canlı Radar & Küre →
               </Link>
-              <Link href="/lab" className="hover:text-ink-primary transition-colors">
-                5-Model & Skew-T →
+              <Link href="/lab" className="hover:text-white transition-colors">
+                7-Model & Skew-T →
               </Link>
             </div>
           </div>
         </div>
       </section>
 
-      {/* BÖLÜM 1.5: GERÇEK FİZİKSEL İSTASYON (METAR) & CANLI 24s DOĞRULAMA KANIT TABLOSU */}
-      {bundle.hybrid && (
-        <section id="hibrit" className="scroll-mt-20 surface-panel p-5 sm:p-6 space-y-5">
-          {/* Üst Başlık & Doğrulama Modu */}
-          <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.08] pb-4">
+      {/* AKTİF FIRTINA VEYA YAKIN 15 DK YAĞIŞ VARSA ÖNE ÇIKAN PANEL */}
+      {showStormOrNowcastPanel && (
+        <section className="surface-panel p-5 sm:p-6 space-y-4 border-signal-amber/25">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
             <div>
-              <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-signal-sky">
-                <Layers className="h-3.5 w-3.5" />
-                Canlı Kanıtlı 5-Model Hibrit Doğrulama Motoru
+              <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-signal-amber">
+                Şiddetli Hava & 15 Dakikalık Nowcast
               </p>
-              <h2 className="mt-1 font-display text-lg font-semibold text-ink-primary">
-                Fiziksel Yer İstasyonu (METAR) & 24 Saatlik Model RMSE Skor Kartı
+              <h2 className="mt-0.5 font-display text-lg font-semibold text-ink-primary">
+                {bundle.storm?.label ?? "Aktif Yağış İzleme"}
+                {bundle.storm && (
+                  <span className="ml-2 font-mono text-base" style={{ color: bundle.storm.color }}>
+                    {bundle.storm.score}/100
+                  </span>
+                )}
               </h2>
-              <p className="mt-0.5 text-xs text-ink-muted">
-                {bundle.hybrid.verification.mode === "live-metar-24h"
-                  ? `Ağırlıklar sabit tahminle değil, ${metarStation?.icaoId} istasyonundaki son 24 saatlik ${bundle.hybrid.verification.matchedHours} gerçek fiziksel ölçüme karşı Ters-RMSE² ile hesaplandı.`
-                  : "Bu koordinata 65 km içinde fiziksel ICAO METAR istasyonu bulunamadı; WMO LC-DNV ve ECMWF 2025 referans ağırlıkları şeffaf biçimde devrede."}
-              </p>
             </div>
 
-            <div className="flex items-center gap-4">
-              <div className="text-right font-mono tabular">
-                <span className="block text-[10px] uppercase tracking-wider text-ink-muted">
-                  5-Model Uzlaşısı
-                </span>
-                <span className="text-xl font-semibold text-signal-emerald">
-                  %{bundle.hybrid.confidencePct}
-                </span>
-                <span className="ml-2 text-xs text-ink-muted">
-                  ΔT {bundle.hybrid.tempSpreadC}°C · ΔP {bundle.hybrid.pressureSpreadHpa} hPa
-                </span>
+            {bundle.storm?.nextWindow && (
+              <div className="rounded-xl border border-signal-amber/30 bg-signal-amber/10 px-3.5 py-1.5 font-mono text-xs text-amber-100 tabular">
+                Pencere: <strong>{bundle.storm.nextWindow.startLabel}</strong> →{" "}
+                {bundle.storm.nextWindow.endLabel} (Zirve {bundle.storm.nextWindow.peakLabel})
               </div>
-              <Link
-                href="/lab"
-                className="rounded-xl border border-white/15 bg-white/[0.05] px-3 py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
-              >
-                5-Model 72s →
-              </Link>
-            </div>
+            )}
           </div>
 
-          {/* En Yakın Gerçek Fiziksel İstasyon (NOAA AviationWeather ICAO METAR) */}
-          {metarStation && (
-            <div className="rounded-xl border border-signal-emerald/25 bg-signal-emerald/[0.06] p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Radio className="h-4 w-4 text-signal-emerald" />
-                  <span className="font-mono text-xs font-semibold text-signal-emerald">
-                    GERÇEK FİZİKSEL SENSÖR · {metarStation.icaoId}
-                  </span>
-                  <span className="text-xs text-ink-primary font-medium">
-                    {metarStation.stationName}
-                  </span>
+          {bundle.storm && (
+            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4 font-mono text-xs tabular">
+              {[
+                { label: "Konvektif", val: bundle.storm.components.convective, sub: `Şimşek %${bundle.storm.lightningProbPct}` },
+                { label: "Rüzgar", val: bundle.storm.components.wind, sub: `Hamle ${bundle.storm.expectedPeakGustP50}–${bundle.storm.expectedPeakGustP90} km/s` },
+                { label: "Sağanak", val: bundle.storm.components.rainfall, sub: `Ani Sel: ${bundle.storm.flashFloodRisk}` },
+                { label: "Cephe / SCP", val: bundle.storm.components.synoptic, sub: `Dolu: ${bundle.storm.hailRisk}` }
+              ].map((c) => (
+                <div key={c.label} className="surface-tile p-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-ink-muted">{c.label}</span>
+                    <strong className="text-ink-primary">{c.val}/100</strong>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.max(4, c.val)}%`,
+                        backgroundColor:
+                          c.val >= 65 ? "#ef4444" : c.val >= 40 ? "#f97316" : c.val >= 20 ? "#eab308" : "#10b981"
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-ink-secondary">{c.sub}</p>
                 </div>
-                <span className="font-mono text-[11px] text-ink-secondary tabular">
-                  Mesafe {metarStation.distanceKm} km · Rakım {metarStation.elevationM} m ·{" "}
-                  {metarStation.ageMinutes} dk önce
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 font-mono text-xs tabular">
-                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
-                  <span className="text-[10px] text-ink-muted">Termometre</span>
-                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
-                    {metarStation.tempC !== null
-                      ? formatTemperature(metarStation.tempC, unit)
-                      : "—"}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
-                  <span className="text-[10px] text-ink-muted">Çiy Sensörü</span>
-                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
-                    {metarStation.dewPointC !== null
-                      ? formatTemperature(metarStation.dewPointC, unit)
-                      : "—"}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
-                  <span className="text-[10px] text-ink-muted">QNH Barometre</span>
-                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
-                    {metarStation.qnhHpa !== null ? `${metarStation.qnhHpa} hPa` : "—"}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2">
-                  <span className="text-[10px] text-ink-muted">Anemometre</span>
-                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
-                    {metarStation.windSpeedKmh !== null
-                      ? `${formatWindSpeed(metarStation.windSpeedKmh, unit)}${
-                          metarStation.windDirectionDeg !== null
-                            ? ` ${windDirectionToCompass(metarStation.windDirectionDeg)}`
-                            : ""
-                        }`
-                      : "—"}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-white/[0.08] bg-obsidian-950/60 px-3 py-2 col-span-2 sm:col-span-1">
-                  <span className="text-[10px] text-ink-muted">Görüş Sensörü</span>
-                  <p className="mt-0.5 text-sm font-semibold text-ink-primary">
-                    {metarStation.visibilityKm !== null
-                      ? `${metarStation.visibilityKm} km`
-                      : "—"}
-                  </p>
-                </div>
-              </div>
-
-              {metarStation.rawOb && (
-                <p className="truncate rounded-md bg-obsidian-950/75 px-2.5 py-1.5 font-mono text-[11px] text-ink-muted">
-                  {metarStation.rawOb}
-                </p>
-              )}
+              ))}
             </div>
           )}
 
-          {/* 5 Tier-1 Model Canlı 24s RMSE & Dinamik Ağırlık Kanıt Tablosu */}
-          <div className="overflow-x-auto rounded-xl border border-white/[0.08] bg-obsidian-950/55">
-            <table className="w-full min-w-[780px] text-left font-mono text-xs tabular">
-              <thead>
-                <tr className="border-b border-white/[0.08] text-[11px] text-ink-muted">
-                  <th className="px-3.5 py-2.5 font-medium">Model (Çözünürlük)</th>
-                  <th className="px-2.5 py-2.5 font-medium">Anlık T</th>
-                  <th className="px-2.5 py-2.5 font-medium">MSLP</th>
-                  <th className="px-2.5 py-2.5 font-medium">Rüzgar</th>
-                  <th className="px-2.5 py-2.5 font-medium">850 hPa</th>
-                  <th className="px-2.5 py-2.5 font-medium">24s T RMSE</th>
-                  <th className="px-2.5 py-2.5 font-medium">24s P RMSE</th>
-                  <th className="px-2.5 py-2.5 font-medium">24s W RMSE</th>
-                  <th className="px-3.5 py-2.5 font-medium text-right">
-                    Aktif Ağırlık (T / P / W)
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/[0.06]">
-                {bundle.hybrid.verification.rows.map((row) => {
-                  const meta = FIVE_MODEL_META[row.modelKey];
-                  const tNow = bundle.hybrid.currentBreakdown.temperature[row.modelKey];
-                  const pNowVal = bundle.hybrid.currentBreakdown.pressure[row.modelKey];
-                  const wNow = bundle.hybrid.currentBreakdown.windSpeed[row.modelKey];
-                  const t850Now = bundle.hybrid.currentBreakdown.temp850hPa[row.modelKey];
-                  const winT = bundle.hybrid.verification.winners.temperature === row.modelKey;
-                  const winP = bundle.hybrid.verification.winners.pressure === row.modelKey;
-                  const winW = bundle.hybrid.verification.winners.wind === row.modelKey;
-
+          {has15MinPrecip && bundle.minutely15 && (
+            <div className="rounded-xl border border-white/[0.07] bg-obsidian-950/60 p-3.5 space-y-2">
+              <div className="flex items-center justify-between font-mono text-[11px] text-ink-muted">
+                <span>15 Dakikalık Yağış Nowcast (6 Saat · mm/15dk)</span>
+                <span className="text-signal-sky">Canlı Akış</span>
+              </div>
+              <div className="flex items-end gap-1 h-14">
+                {bundle.minutely15.slice(0, 24).map((pt) => {
+                  const hPct = Math.min(100, Math.max(8, (pt.precipitation / 3.5) * 100));
                   return (
-                    <tr key={row.modelKey} className="hover:bg-white/[0.025]">
-                      <td className="px-3.5 py-2.5">
-                        <span className="flex items-center gap-2 font-semibold text-ink-primary">
-                          <span
-                            className="h-2 w-2 rounded-full shrink-0"
-                            style={{ backgroundColor: meta.color }}
-                          />
-                          <span>{row.label}</span>
-                          <span className="text-[10px] font-normal text-ink-muted">
-                            {row.resolution}
-                          </span>
-                        </span>
-                      </td>
-                      <td className="px-2.5 py-2.5 text-ink-primary">
-                        {tNow !== null ? formatTemperature(tNow, unit) : "—"}
-                      </td>
-                      <td className="px-2.5 py-2.5 text-ink-secondary">
-                        {pNowVal !== null ? `${pNowVal}` : "—"}
-                      </td>
-                      <td className="px-2.5 py-2.5 text-ink-secondary">
-                        {wNow !== null ? formatWindSpeed(wNow, unit) : "—"}
-                      </td>
-                      <td className="px-2.5 py-2.5 text-signal-sky">
-                        {t850Now !== null ? `${t850Now}°` : "—"}
-                      </td>
-                      <td
-                        className={`px-2.5 py-2.5 ${
-                          winT ? "font-semibold text-signal-emerald" : "text-ink-secondary"
+                    <div
+                      key={pt.time}
+                      title={`${pt.label} · ${pt.precipitation.toFixed(2)} mm · ${pt.temperature}°C`}
+                      className="flex-1 flex flex-col items-center justify-end h-full"
+                    >
+                      <div
+                        className={`w-full rounded-t ${
+                          pt.precipitation >= 1.5
+                            ? "bg-signal-amber"
+                            : pt.precipitation >= 0.1
+                              ? "bg-signal-sky"
+                              : "bg-white/10"
                         }`}
-                      >
-                        {row.tempRmseC !== null ? `${row.tempRmseC}°C` : "—"}
-                        {winT && <span className="ml-1 text-[10px]">#1</span>}
-                      </td>
-                      <td
-                        className={`px-2.5 py-2.5 ${
-                          winP ? "font-semibold text-signal-emerald" : "text-ink-secondary"
-                        }`}
-                      >
-                        {row.pressureRmseHpa !== null ? `${row.pressureRmseHpa} hPa` : "—"}
-                        {winP && <span className="ml-1 text-[10px]">#1</span>}
-                      </td>
-                      <td
-                        className={`px-2.5 py-2.5 ${
-                          winW ? "font-semibold text-signal-emerald" : "text-ink-secondary"
-                        }`}
-                      >
-                        {row.windRmseKmh !== null ? `${row.windRmseKmh} km/s` : "—"}
-                        {winW && <span className="ml-1 text-[10px]">#1</span>}
-                      </td>
-                      <td className="px-3.5 py-2.5 text-right text-ink-secondary">
-                        %{row.weightsPct.temperature} / %{row.weightsPct.pressure} / %
-                        {row.weightsPct.wind}
-                      </td>
-                    </tr>
+                        style={{ height: `${pt.precipitation > 0 ? hPct : 6}%` }}
+                      />
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Parametre Bazlı Bilimsel Kaynak & Standart Matrisi */}
-          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 text-xs">
-            {bundle.hybrid.attributions.map((item) => (
-              <div
-                key={item.parameter}
-                className="rounded-xl border border-white/[0.06] bg-obsidian-950/55 p-3 space-y-1"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-ink-primary">{item.parameter}</span>
-                  <span className="font-mono text-[10px] text-signal-sky">
-                    {item.primaryEngine}
-                  </span>
-                </div>
-                <p className="font-mono text-[10px] text-ink-secondary tabular">
-                  {item.weightsLabel}
-                </p>
-                <p className="font-mono text-[10px] text-signal-emerald/90">
-                  {item.standardRef}
-                </p>
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  {item.reason}
-                </p>
               </div>
-            ))}
-          </div>
+              <div className="flex justify-between font-mono text-[10px] text-ink-muted tabular">
+                <span>{bundle.minutely15[0]?.label}</span>
+                <span>{bundle.minutely15[7]?.label}</span>
+                <span>{bundle.minutely15[15]?.label}</span>
+                <span>{bundle.minutely15[23]?.label}</span>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
-      {/* BÖLÜM 2: SAATLİK ŞERİT & GRAFİKLER */}
-      <section id="saatlik" className="scroll-mt-20 space-y-5">
-        <div className="surface-panel p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-base font-semibold text-ink-primary">
-              Saatlik Tahmin (24s)
-            </h2>
-            <span className="text-xs text-ink-muted">
-              Herhangi bir saate tıklayarak gökyüzünü ve ölçümleri incele
-            </span>
-          </div>
-
-          <div className="flex gap-2.5 overflow-x-auto pb-1 tabular">
-            {bundle.hourly.slice(0, 24).map((h, i) => {
-              const isSelected = frameIndex === i;
-              return (
-                <button
-                  key={h.time}
-                  type="button"
-                  onClick={() => setFrameIndex(i)}
-                  className={`flex min-w-[84px] shrink-0 flex-col items-center gap-1.5 rounded-xl border px-3 py-3 text-center transition-colors ${
-                    isSelected
-                      ? "border-white/30 bg-white/[0.12] text-ink-primary"
-                      : "border-white/[0.07] bg-white/[0.03] text-ink-secondary hover:bg-white/[0.07]"
-                  }`}
-                >
-                  <span className="font-mono text-xs text-ink-muted">
-                    {i === 0 ? "Şimdi" : h.hourLabel}
-                  </span>
-                  <WeatherGlyph code={h.weatherCode} className="h-5 w-5" />
-                  <span className="font-mono text-sm font-semibold text-ink-primary">
-                    {formatTemperature(h.temperature, unit)}
-                  </span>
-                  <span className="font-mono text-xs text-signal-sky">
-                    %{h.precipProbability}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <HourlyCharts hourly={bundle.hourly} unit={unit} />
+      {/* BÖLÜM 2: SENKRONİZE SAATLİK GRAFİK */}
+      <section id="saatlik" className="scroll-mt-20">
+        <HourlyCharts
+          hourly={bundle.hourly}
+          unit={unit}
+          selectedIndex={Math.min(frameIndex, 23)}
+          onSelectIndex={setFrameIndex}
+        />
       </section>
 
-      {/* BÖLÜM 3: 7 GÜNLÜK TAHMİN & DETAY KARTLARI */}
+      {/* BÖLÜM 3: 7 GÜNLÜK KALİBRE TAHMİN + GÜNEŞ/UV & HAVA KALİTESİ */}
       <section
         id="haftalik"
-        className="scroll-mt-20 grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]"
+        className="scroll-mt-20 grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)]"
       >
         <div className="surface-panel p-5 sm:p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="font-display text-base font-semibold text-ink-primary">
               7 Günlük Tahmin
             </h2>
-            <span className="text-xs text-ink-muted">
-              Haftalık sıcaklık aralığı & yağış
+            <span className="font-mono text-[11px] text-ink-muted">
+              7-Model + 122-Üye Kalibre
             </span>
           </div>
 
@@ -1040,14 +974,19 @@ export default function HeroSceneView() {
             {bundle.daily.map((d) => {
               const leftPct = ((d.tempMin - weekMin) / weekSpan) * 100;
               const widthPct = Math.max(8, ((d.tempMax - d.tempMin) / weekSpan) * 100);
+              const rangeTitle =
+                d.tempMaxP10 !== undefined && d.tempMaxP90 !== undefined
+                  ? `122-üye P10–P90 Maks: ${d.tempMaxP10}°–${d.tempMaxP90}°`
+                  : undefined;
               return (
                 <div
                   key={d.date}
-                  className="grid grid-cols-[68px_32px_48px_1fr_78px] items-center gap-3 py-3 text-sm"
+                  title={rangeTitle}
+                  className="-mx-2 grid grid-cols-[64px_30px_46px_1fr_72px] items-center gap-3 rounded-xl px-2 py-3 text-sm transition-colors hover:bg-white/[0.04]"
                 >
                   <span className="font-medium text-ink-primary">{d.dayName}</span>
-                  <WeatherGlyph code={d.weatherCode} className="h-4 w-4" />
-                  <span className="font-mono text-xs text-signal-sky">
+                  <WeatherGlyph code={d.weatherCode} className="h-5 w-5" />
+                  <span className="font-mono text-xs text-[var(--atmos-accent)]">
                     %{d.precipProbabilityMax}
                   </span>
 
@@ -1057,7 +996,7 @@ export default function HeroSceneView() {
                     </span>
                     <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.08]">
                       <div
-                        className="absolute top-0 bottom-0 rounded-full bg-gradient-to-r from-signal-sky to-signal-amber"
+                        className="absolute top-0 bottom-0 rounded-full bg-gradient-to-r from-signal-sky via-cyan-300 to-signal-amber shadow-[0_0_10px_rgba(56,189,248,0.4)] transition-all duration-500"
                         style={{
                           left: `${leftPct}%`,
                           width: `${widthPct}%`
@@ -1078,49 +1017,19 @@ export default function HeroSceneView() {
           </div>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <SunCycleCard
+        <div className="flex flex-col gap-5">
+          <SunAndUvCard
             sunrise={bundle.current.sunrise}
             sunset={bundle.current.sunset}
             solarElevationDeg={bundle.current.solarElevationDeg}
             timezone={bundle.timezone}
+            uvMax={bundle.daily[0]?.uvIndexMax ?? 0}
           />
 
-          <div className="surface-panel p-5 flex flex-col justify-between space-y-3">
+          <div className="surface-panel flex-1 p-5 flex flex-col justify-between space-y-3 tabular">
             <div className="flex items-center justify-between">
               <span className="font-display text-sm font-semibold text-ink-primary">
-                UV Radyasyonu
-              </span>
-              <Sun className="h-4 w-4 text-signal-amber" />
-            </div>
-            <div>
-              <p className="font-mono text-3xl font-bold text-ink-primary tabular">
-                {bundle.daily[0]?.uvIndexMax.toFixed(1) ?? "0.0"}
-              </p>
-              <p className="mt-1 text-xs text-ink-muted">
-                {(bundle.daily[0]?.uvIndexMax ?? 0) >= 8
-                  ? "Çok yüksek — öğle saatlerinde korunma gerekli"
-                  : (bundle.daily[0]?.uvIndexMax ?? 0) >= 6
-                    ? "Yüksek — güneş koruması önerilir"
-                    : (bundle.daily[0]?.uvIndexMax ?? 0) >= 3
-                      ? "Orta düzey güneş ışınımı"
-                      : "Düşük UV indeksi"}
-              </p>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500">
-              <div
-                className="h-full w-1.5 rounded-full bg-white"
-                style={{
-                  marginLeft: `${Math.min(95, ((bundle.daily[0]?.uvIndexMax ?? 0) / 11) * 100)}%`
-                }}
-              />
-            </div>
-          </div>
-
-          <div className="surface-panel p-5 space-y-3 tabular">
-            <div className="flex items-center justify-between">
-              <span className="font-display text-sm font-semibold text-ink-primary">
-                Hava Kalitesi
+                Hava Kalitesi (CAMS)
               </span>
               <span className="font-mono text-xs text-ink-secondary">
                 EAQI {bundle.airQuality.europeanAqi} · {bundle.airQuality.label}
@@ -1153,47 +1062,209 @@ export default function HeroSceneView() {
               </div>
             </div>
           </div>
-
-          <div className="surface-panel p-5 flex flex-col justify-between space-y-3 tabular">
-            <div className="flex items-center justify-between">
-              <span className="font-display text-sm font-semibold text-ink-primary">
-                Üst Atmosfer
-              </span>
-              <Activity className="h-4 w-4 text-ink-secondary" />
-            </div>
-
-            {liveSoundingSummary && (
-              <div className="space-y-1.5 text-xs">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-ink-muted">CAPE</span>
-                  <span className="font-mono text-lg font-semibold text-ink-primary">
-                    {bundle.nativeConvective.cape ?? liveSoundingSummary.cape} J/kg
-                  </span>
-                </div>
-                <div className="flex justify-between text-ink-secondary">
-                  <span>0–6 km Kırılma</span>
-                  <span className="font-mono text-ink-primary">
-                    {liveSoundingSummary.bulkShear06Kt} kt
-                  </span>
-                </div>
-                <div className="flex justify-between text-ink-secondary">
-                  <span>700–500 Lapse Rate</span>
-                  <span className="font-mono text-ink-primary">
-                    {liveSoundingSummary.lapseRate700500} °C/km
-                  </span>
-                </div>
-              </div>
-            )}
-
-            <Link
-              href="/lab"
-              className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/[0.06] px-3 py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.12] transition-colors"
-            >
-              Sondaj & 5-Model →
-            </Link>
-          </div>
         </div>
       </section>
+
+      {/* BÖLÜM 4: ATMOS-CORE v3.0 — SADELEŞTİRİLMİŞ CANLI DOĞRULAMA & 7-MODEL SKOR KARTI */}
+      {bundle.hybrid && (
+        <section id="hibrit" className="scroll-mt-20 surface-panel p-5 sm:p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3.5">
+            <div>
+              <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-signal-sky">
+                <Layers className="h-3.5 w-3.5" />
+                {bundle.hybrid.engineVersion ?? "ATMOS-Core v3.0"} · 7-Model
+                {bundle.hybrid.ensembleMembers ? ` + ${bundle.hybrid.ensembleMembers} EPS` : ""}
+              </p>
+              <h2 className="mt-0.5 font-display text-base font-semibold text-ink-primary">
+                Canlı METAR Kalibrasyonu & Model Doğruluk Tablosu
+              </h2>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs text-ink-secondary tabular">
+                Uzlaşı <strong className="text-signal-emerald">%{bundle.hybrid.confidencePct}</strong> · ΔT{" "}
+                {bundle.hybrid.tempSpreadC}°C
+              </span>
+              <Link
+                href="/lab"
+                className="rounded-lg border border-white/15 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
+              >
+                7-Model 72s →
+              </Link>
+            </div>
+          </div>
+
+          {/* Kompakt Fiziksel İstasyon & Kalman Özet Şeridi */}
+          {metarStation && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-signal-emerald/30 bg-signal-emerald/[0.06] px-4 py-3 font-mono text-xs tabular shadow-[inset_0_1px_0_rgba(16,185,129,0.22)]">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="atmos-beacon-ring absolute inline-flex h-full w-full rounded-full bg-signal-emerald" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-signal-emerald" />
+                </span>
+                <Radio className="h-3.5 w-3.5 text-signal-emerald shrink-0" />
+                <span className="font-semibold text-signal-emerald">
+                  {metarStations.map((s) => s.icaoId).join(" + ")}
+                </span>
+                <span className="text-ink-primary">
+                  {metarStation.tempC !== null ? formatTemperature(metarStation.tempC, unit) : "—"} ·{" "}
+                  {metarStation.qnhHpa !== null ? `${metarStation.qnhHpa} hPa` : "—"} ·{" "}
+                  {metarStation.windSpeedKmh !== null
+                    ? formatWindSpeed(metarStation.windSpeedKmh, unit)
+                    : "—"}
+                </span>
+                <span className="text-ink-muted">
+                  ({metarStation.distanceKm} km · {metarStation.ageMinutes} dk önce)
+                </span>
+              </div>
+
+              {calInfo && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-secondary">
+                  <span>
+                    Kalman ΔT{" "}
+                    <strong className="text-signal-emerald">
+                      {calInfo.nowcastTempDeltaC > 0 ? "+" : ""}
+                      {calInfo.nowcastTempDeltaC}°C
+                    </strong>
+                  </span>
+                  <span>· K %{Math.round(calInfo.nowcastKalmanGain * 100)}</span>
+                  <span>· Γ {calInfo.envLapseRateCPerKm}°/km</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Temiz 6-Sütunlu 7-Model Skor Tablosu */}
+          <div className="overflow-x-auto rounded-xl border border-white/[0.08] bg-obsidian-950/55">
+            <table className="w-full min-w-[640px] text-left font-mono text-xs tabular">
+              <thead>
+                <tr className="border-b border-white/[0.08] text-[11px] text-ink-muted">
+                  <th className="px-3.5 py-2.5 font-medium">Model</th>
+                  <th className="px-2.5 py-2.5 font-medium">Anlık T</th>
+                  <th className="px-2.5 py-2.5 font-medium">48s Bias</th>
+                  <th className="px-2.5 py-2.5 font-medium">UBRMSE</th>
+                  <th className="px-2.5 py-2.5 font-medium">Yağış BS</th>
+                  <th className="px-3.5 py-2.5 font-medium text-right">
+                    Ağırlık (T / P / W / Y)
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.06]">
+                {bundle.hybrid.verification.rows.map((row) => {
+                  const meta = SEVEN_MODEL_META[row.modelKey];
+                  const tNow = bundle.hybrid.currentBreakdown.temperature[row.modelKey] ?? null;
+                  const winT = bundle.hybrid.verification.winners.temperature === row.modelKey;
+                  const winY = bundle.hybrid.verification.winners.precipitation === row.modelKey;
+
+                  return (
+                    <tr key={row.modelKey} className="hover:bg-white/[0.025]">
+                      <td className="px-3.5 py-2">
+                        <span className="flex items-center gap-2 font-semibold text-ink-primary">
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ backgroundColor: meta.color }}
+                          />
+                          <span>{row.label}</span>
+                          <span className="hidden sm:inline text-[10px] font-normal text-ink-muted">
+                            {row.resolution}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="px-2.5 py-2 text-ink-primary">
+                        {tNow !== null ? formatTemperature(tNow, unit) : "—"}
+                      </td>
+                      <td className="px-2.5 py-2 text-ink-secondary">
+                        {row.tempBiasC !== null && row.tempBiasC !== undefined
+                          ? `${row.tempBiasC > 0 ? "+" : ""}${row.tempBiasC}°`
+                          : "—"}
+                      </td>
+                      <td
+                        className={`px-2.5 py-2 ${
+                          winT ? "font-semibold text-signal-emerald" : "text-ink-secondary"
+                        }`}
+                      >
+                        {row.tempUbRmseC !== null && row.tempUbRmseC !== undefined
+                          ? `${row.tempUbRmseC}°C`
+                          : row.tempRmseC !== null
+                            ? `${row.tempRmseC}°C`
+                            : "—"}
+                        {winT && <span className="ml-1 text-[10px]">#1</span>}
+                      </td>
+                      <td
+                        className={`px-2.5 py-2 ${
+                          winY ? "font-semibold text-signal-emerald" : "text-ink-secondary"
+                        }`}
+                      >
+                        {row.precipBrier !== null && row.precipBrier !== undefined
+                          ? row.precipBrier.toFixed(3)
+                          : "—"}
+                        {winY && <span className="ml-1 text-[10px]">#1</span>}
+                      </td>
+                      <td className="px-3.5 py-2 text-right text-ink-secondary">
+                        <div className="inline-flex flex-col items-end gap-1">
+                          <span>
+                            %{row.weightsPct.temperature} / %{row.weightsPct.pressure} / %
+                            {row.weightsPct.wind} / %{row.weightsPct.precipitation}
+                          </span>
+                          <span className="h-1 w-24 overflow-hidden rounded-full bg-white/[0.08]">
+                            <span
+                              className="block h-full rounded-full transition-all duration-500"
+                              style={{
+                                width: `${Math.min(100, Math.max(8, row.weightsPct.temperature * 2.2))}%`,
+                                backgroundColor: meta.color
+                              }}
+                            />
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* İsteğe Bağlı Açılır Bilimsel Metodoloji Detayı (varsayılan kapalı -> ferah sayfa!) */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowMethodology((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-xs text-ink-muted hover:text-ink-primary transition-colors"
+            >
+              <span>Bilimsel metodoloji ve standart detayları ({bundle.hybrid.attributions.length})</span>
+              {showMethodology ? (
+                <ChevronUp className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </button>
+
+            {showMethodology && (
+              <div className="mt-3 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 text-xs">
+                {bundle.hybrid.attributions.map((item) => (
+                  <div
+                    key={item.parameter}
+                    className="rounded-xl border border-white/[0.06] bg-obsidian-950/55 p-3 space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-ink-primary">{item.parameter}</span>
+                      <span className="font-mono text-[10px] text-signal-sky">
+                        {item.primaryEngine}
+                      </span>
+                    </div>
+                    <p className="font-mono text-[10px] text-signal-emerald/90">
+                      {item.standardRef}
+                    </p>
+                    <p className="text-[11px] text-ink-muted leading-relaxed">
+                      {item.reason}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
@@ -25,7 +25,10 @@ import {
   windDirectionToCompass
 } from "@/lib/weather";
 import type { GeoLocation, WeatherBundle } from "@/lib/weather-types";
+import { atmosUiSfx } from "@/lib/ui-sfx";
 import LiveRadarMap from "./LiveRadarMap";
+import AnimatedNumber from "./AnimatedNumber";
+import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
 const GlobeScene = dynamic(() => import("./GlobeScene"), {
   ssr: false,
@@ -48,48 +51,67 @@ export default function WorldView() {
   } = useWeather();
 
   const [viewMode, setViewMode] = useState<"radar" | "globe">("radar");
-  const [selectedLoc, setSelectedLoc] = useState<GeoLocation>(activeLocation);
-  const [pointBundle, setPointBundle] = useState<WeatherBundle | null>(bundle);
+  const [manualPick, setManualPick] = useState<{
+    baseId: string;
+    loc: GeoLocation;
+    bundle: WeatherBundle | null;
+  } | null>(null);
   const [fetching, setFetching] = useState(false);
   const [pointError, setPointError] = useState<string | null>(null);
+  const requestSeqRef = useRef(0);
 
-  useEffect(() => {
-    setSelectedLoc(activeLocation);
-    if (bundle) setPointBundle(bundle);
-  }, [activeLocation, bundle]);
+  const isManualActive = manualPick !== null && manualPick.baseId === activeLocation.id;
+  const selectedLoc = isManualActive ? manualPick.loc : activeLocation;
+  const pointBundle = isManualActive ? manualPick.bundle : bundle;
 
-  const fetchPoint = useCallback(async (loc: GeoLocation) => {
-    setSelectedLoc(loc);
-    setFetching(true);
-    setPointError(null);
-    try {
-      const qs = new URLSearchParams({
-        lat: String(loc.lat),
-        lon: String(loc.lon),
-        name: loc.name,
-        country: loc.country ?? ""
-      });
-      const res = await fetch(`/api/weather?${qs.toString()}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+  const fetchPoint = useCallback(
+    async (loc: GeoLocation) => {
+      const seq = ++requestSeqRef.current;
+      const baseId = activeLocation.id;
+      setManualPick((prev) => ({
+        baseId,
+        loc,
+        bundle: prev && prev.baseId === baseId ? prev.bundle : bundle
+      }));
+      setFetching(true);
+      setPointError(null);
+      try {
+        const qs = new URLSearchParams({
+          lat: String(loc.lat),
+          lon: String(loc.lon),
+          name: loc.name,
+          country: loc.country ?? ""
+        });
+        const res = await fetch(`/api/weather?${qs.toString()}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+        const data: WeatherBundle = await res.json();
+        if (seq !== requestSeqRef.current) return;
+        setManualPick({
+          baseId,
+          loc,
+          bundle: {
+            ...data,
+            location: { ...data.location, name: loc.name, country: loc.country }
+          }
+        });
+      } catch (e) {
+        if (seq !== requestSeqRef.current) return;
+        setPointError(
+          e instanceof Error ? e.message : "Seçili koordinat için veri alınamadı."
+        );
+      } finally {
+        if (seq === requestSeqRef.current) setFetching(false);
       }
-      const data: WeatherBundle = await res.json();
-      setPointBundle({
-        ...data,
-        location: { ...data.location, name: loc.name, country: loc.country }
-      });
-    } catch (e) {
-      setPointError(
-        e instanceof Error ? e.message : "Seçili koordinat için veri alınamadı."
-      );
-    } finally {
-      setFetching(false);
-    }
-  }, []);
+    },
+    [activeLocation.id, bundle]
+  );
 
   const handlePickCoords = useCallback(
     async (lat: number, lon: number) => {
+      const seq = ++requestSeqRef.current;
       setFetching(true);
       let name = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
       let country = "Koordinat";
@@ -105,6 +127,7 @@ export default function WorldView() {
       } catch {
         // koordinat adı korunur
       }
+      if (seq !== requestSeqRef.current) return;
 
       const loc: GeoLocation = {
         id: `coord_${lat.toFixed(2)}_${lon.toFixed(2)}`,
@@ -122,19 +145,11 @@ export default function WorldView() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
-      {/* Üst Başlık + Görünüm Geçişi */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-muted">
-            Canlı Radar & Küresel Gözlem
-          </p>
-          <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-ink-primary">
-            Radar & Dünya Küresi
-          </h1>
-          <p className="mt-1 text-sm text-ink-secondary">
-            Canlı yağış radarını oynat veya harita/küre üzerinde herhangi bir noktaya tıklayıp anlık ölçüm al.
-          </p>
-        </div>
+      {/* Kompakt Üst Başlık + Görünüm Geçişi */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl">
+          Radar & Dünya Küresi
+        </h1>
 
         {/* Mod Seçici */}
         <div
@@ -146,35 +161,41 @@ export default function WorldView() {
             type="button"
             role="tab"
             aria-selected={viewMode === "radar"}
-            onClick={() => setViewMode("radar")}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition-colors ${
+            onClick={() => {
+              atmosUiSfx.playNavTick();
+              setViewMode("radar");
+            }}
+            className={`atmos-btn inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium ${
               viewMode === "radar"
-                ? "bg-white/15 text-ink-primary"
-                : "text-ink-secondary hover:text-ink-primary"
+                ? "border border-[rgba(var(--atmos-rim-rgb),0.3)] bg-white/15 text-white"
+                : "border border-transparent text-ink-secondary hover:text-ink-primary"
             }`}
           >
-            <Radio className="h-3.5 w-3.5 text-signal-sky" />
-            <span>Canlı Yağış Radarı</span>
+            <Radio className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
+            <span>Yağış Radarı</span>
           </button>
           <button
             type="button"
             role="tab"
             aria-selected={viewMode === "globe"}
-            onClick={() => setViewMode("globe")}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition-colors ${
+            onClick={() => {
+              atmosUiSfx.playNavTick();
+              setViewMode("globe");
+            }}
+            className={`atmos-btn inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium ${
               viewMode === "globe"
-                ? "bg-white/15 text-ink-primary"
-                : "text-ink-secondary hover:text-ink-primary"
+                ? "border border-[rgba(var(--atmos-rim-rgb),0.3)] bg-white/15 text-white"
+                : "border border-transparent text-ink-secondary hover:text-ink-primary"
             }`}
           >
-            <Globe className="h-3.5 w-3.5 text-signal-sky" />
-            <span>3D Dünya Küresi</span>
+            <Globe className="h-3.5 w-3.5 text-[var(--atmos-accent)]" />
+            <span>3D Küre</span>
           </button>
         </div>
       </div>
 
-      {/* Hızlı İstasyon Şeridi */}
-      <div className="flex flex-wrap gap-1.5">
+      {/* Tek Satır Kaydırılabilir Hızlı İstasyon Şeridi */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
         {GLOBE_CITIES.map((city) => {
           const active =
             Math.abs(selectedLoc.lat - city.lat) < 0.2 &&
@@ -183,11 +204,14 @@ export default function WorldView() {
             <button
               key={city.id}
               type="button"
-              onClick={() => void fetchPoint(city)}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+              onClick={() => {
+                atmosUiSfx.playNavTick();
+                void fetchPoint(city);
+              }}
+              className={`atmos-btn shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium ${
                 active
-                  ? "border-white/25 bg-white/15 text-ink-primary"
-                  : "border-white/[0.08] bg-white/[0.03] text-ink-secondary hover:bg-white/[0.07] hover:text-ink-primary"
+                  ? "border-[rgba(var(--atmos-rim-rgb),0.4)] bg-[rgba(var(--atmos-accent-rgb),0.16)] text-white"
+                  : "border-white/[0.08] bg-white/[0.03] text-ink-secondary hover:text-ink-primary"
               }`}
             >
               {city.name}
@@ -211,6 +235,8 @@ export default function WorldView() {
             <GlobeScene
               selectedLat={selectedLoc.lat}
               selectedLon={selectedLoc.lon}
+              homeLat={activeLocation.lat}
+              homeLon={activeLocation.lon}
               presetCities={GLOBE_CITIES}
               onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
               onPickCity={(city) => void fetchPoint(city)}
@@ -257,13 +283,18 @@ export default function WorldView() {
             {pointBundle ? (
               <>
                 <div className="flex items-baseline justify-between gap-3 border-y border-white/[0.08] py-4">
-                  <div className="flex items-baseline gap-3">
+                  <div className="flex items-center gap-3">
                     <span className="font-display text-5xl font-semibold tracking-tight text-ink-primary tabular">
-                      {formatTemperature(pointBundle.current.temperature, unit)}
+                      <AnimatedNumber value={formatTemperature(pointBundle.current.temperature, unit)} />
                     </span>
                     <div>
-                      <p className="text-sm font-medium text-ink-primary">
-                        {pointBundle.current.condition}
+                      <p className="flex items-center gap-1.5 text-sm font-medium text-ink-primary">
+                        <AnimatedWeatherIcon
+                          code={pointBundle.current.weatherCode}
+                          isNight={pointBundle.current.solarElevationDeg < -3}
+                          className="h-5 w-5"
+                        />
+                        <span>{pointBundle.current.condition}</span>
                       </p>
                       <p className="text-xs text-ink-muted tabular">
                         Hissedilen{" "}

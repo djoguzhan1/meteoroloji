@@ -43,11 +43,7 @@ export default function CitySearch({
 
   useEffect(() => {
     const trimmed = query.trim();
-    if (trimmed.length < 2) {
-      setResults(GLOBE_CITIES.slice(0, 6));
-      setActiveIndex(0);
-      return;
-    }
+    if (trimmed.length < 2) return;
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
@@ -73,6 +69,8 @@ export default function CitySearch({
       controller.abort();
     };
   }, [query]);
+
+  const displayResults = query.trim().length < 2 ? GLOBE_CITIES.slice(0, 6) : results;
 
   const handleChoose = (loc: GeoLocation) => {
     onSelect(loc);
@@ -129,39 +127,40 @@ export default function CitySearch({
 
   return (
     <div ref={containerRef} className="relative w-full">
-      <div className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 transition-colors focus-within:border-white/25 focus-within:bg-obsidian-900/90">
-        <Search className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+      <div className="flex h-9 items-center gap-2 rounded-xl border border-white/12 bg-[#070d19]/65 px-3 transition-all duration-200 hover:border-white/25 focus-within:border-[rgba(var(--atmos-rim-rgb),0.45)] focus-within:bg-obsidian-900/95 focus-within:shadow-[0_0_24px_-8px_rgba(var(--atmos-accent-rgb),0.55)]">
+        <Search className="h-3.5 w-3.5 shrink-0 text-slate-300/80" />
         <input
           type="text"
           value={query}
           onFocus={() => updateOpen(true)}
           onChange={(e) => {
             setQuery(e.target.value);
+            setActiveIndex(0);
             updateOpen(true);
           }}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
               setActiveIndex((prev) =>
-                results.length > 0 ? (prev + 1) % results.length : 0
+                displayResults.length > 0 ? (prev + 1) % displayResults.length : 0
               );
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               setActiveIndex((prev) =>
-                results.length > 0
-                  ? (prev - 1 + results.length) % results.length
+                displayResults.length > 0
+                  ? (prev - 1 + displayResults.length) % displayResults.length
                   : 0
               );
-            } else if (e.key === "Enter" && results[activeIndex]) {
+            } else if (e.key === "Enter" && displayResults[activeIndex]) {
               e.preventDefault();
-              handleChoose(results[activeIndex]);
+              handleChoose(displayResults[activeIndex]);
             } else if (e.key === "Escape") {
               updateOpen(false);
             }
           }}
           placeholder={placeholder}
           aria-label="Şehir ara"
-          className="w-full bg-transparent text-sm text-ink-primary placeholder:text-ink-muted focus:outline-none"
+          className="w-full bg-transparent text-sm text-ink-primary placeholder:text-slate-300/70 focus:outline-none"
         />
         {query && (
           <button
@@ -179,10 +178,9 @@ export default function CitySearch({
           disabled={gpsLoading}
           title="Mevcut GPS konumunu kullan"
           aria-label="Konumumu kullan"
-          className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-ink-secondary hover:border-white/25 hover:text-ink-primary transition-colors disabled:opacity-50"
+          className="atmos-btn flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-ink-secondary hover:text-ink-primary disabled:opacity-50"
         >
           <LocateFixed className={`h-3.5 w-3.5 ${gpsLoading ? "animate-spin" : ""}`} />
-          <span className="hidden sm:inline">Konum</span>
         </button>
       </div>
 
@@ -199,13 +197,13 @@ export default function CitySearch({
             </p>
           )}
 
-          {results.length === 0 ? (
+          {displayResults.length === 0 ? (
             <p className="px-4 py-3.5 text-xs text-ink-muted">
               &ldquo;{query}&rdquo; için sonuç bulunamadı.
             </p>
           ) : (
             <ul className="max-h-72 overflow-y-auto py-1">
-              {results.map((loc, idx) => (
+              {displayResults.map((loc, idx) => (
                 <li key={loc.id}>
                   <button
                     type="button"

@@ -2,6 +2,8 @@ export type UnitSystem = "metric" | "imperial";
 
 export type PrecipType = "none" | "rain" | "snow";
 
+export type PrecipPhase = "none" | "rain" | "sleet" | "snow" | "hail";
+
 export type PressureTrend =
   | "hızlı yükseliyor"
   | "yükseliyor"
@@ -9,7 +11,17 @@ export type PressureTrend =
   | "düşüyor"
   | "hızlı düşüyor";
 
-export type FiveModelKey = "ecmwfIfs" | "ecmwfAifs" | "icon" | "ukmo" | "gfs";
+export type SevenModelKey =
+  | "ecmwfIfs"
+  | "ecmwfAifs"
+  | "icon"
+  | "ukmo"
+  | "gfs"
+  | "meteofrance"
+  | "gem";
+
+/** Geriye dönük uyumluluk için takma ad */
+export type FiveModelKey = SevenModelKey;
 
 export type GeoLocation = {
   id: string;
@@ -43,6 +55,72 @@ export type PrecipitationConsensus = {
   minMm: number;
   medianMm: number;
   maxMm: number;
+  p10Mm?: number;
+  p50Mm?: number;
+  p90Mm?: number;
+  heavyProbPct?: number; // P(>= 5 mm/s)
+  extremeProbPct?: number; // P(>= 15 mm/s)
+  ensembleMembers?: number;
+};
+
+export type EnsembleBand = {
+  p10: number;
+  p50: number;
+  p90: number;
+  members: number;
+};
+
+export type Minutely15Point = {
+  time: string;
+  label: string;
+  temperature: number;
+  precipitation: number;
+  rain: number;
+  snowfall: number;
+  windGusts: number;
+  cape: number | null;
+  lightningPotential: number | null;
+  weatherCode: number;
+  precipPhase: PrecipPhase;
+};
+
+export type StormThreatLevel =
+  | "calm"
+  | "watch"
+  | "thunderstorm"
+  | "severe"
+  | "extreme";
+
+export type StormWindow = {
+  startTime: string;
+  peakTime: string;
+  endTime: string;
+  startLabel: string;
+  peakLabel: string;
+  endLabel: string;
+  peakScore: number;
+  peakGustKmh: number;
+  peakPrecipMm: number;
+};
+
+export type StormAssessment = {
+  score: number; // 0..100
+  level: StormThreatLevel;
+  label: string;
+  color: string;
+  lightningProbPct: number;
+  hailRisk: "Yok" | "Düşük" | "Orta" | "Yüksek";
+  flashFloodRisk: "Yok" | "Düşük" | "Orta" | "Yüksek";
+  expectedPeakGustP50: number;
+  expectedPeakGustP90: number;
+  components: {
+    convective: number; // 0..100
+    wind: number; // 0..100
+    rainfall: number; // 0..100
+    synoptic: number; // 0..100
+  };
+  nextWindow: StormWindow | null;
+  drivers: string[];
 };
 
 export type BeaufortInfo = {
@@ -54,6 +132,8 @@ export type CurrentWeather = {
   time: string;
   temperature: number;
   apparentTemperature: number;
+  wetBulbC?: number;
+  tempBand?: EnsembleBand;
   humidity: number;
   dewPoint: number;
   pressure: number;
@@ -72,9 +152,11 @@ export type CurrentWeather = {
   precipProbability: number;
   precipConsensus: PrecipitationConsensus;
   precipType: PrecipType;
+  precipPhase?: PrecipPhase;
   weatherCode: number;
   condition: string;
   isStorm: boolean;
+  stormScore?: number;
   isDay: boolean;
   solarElevationDeg: number;
   daylight: number;
@@ -88,12 +170,16 @@ export type HourlyPoint = {
   hourLabel: string;
   dayLabel: string;
   temperature: number;
+  tempP10?: number;
+  tempP90?: number;
   apparentTemperature: number;
+  wetBulbC?: number;
   humidity: number;
   dewPoint: number;
   pressure: number;
   windSpeed: number;
   windGusts: number;
+  gustP90?: number;
   windDirection: number;
   cloudCover: number;
   visibilityKm: number;
@@ -102,11 +188,14 @@ export type HourlyPoint = {
   precipProbability: number;
   precipConsensus: PrecipitationConsensus;
   precipType: PrecipType;
+  precipPhase?: PrecipPhase;
   rainAccum: number;
   snowAccum: number;
   weatherCode: number;
   condition: string;
   isStorm: boolean;
+  stormScore?: number;
+  lightningProbPct?: number;
   solarElevationDeg: number;
   daylight: number;
   cape: number | null;
@@ -121,11 +210,19 @@ export type DailyPoint = {
   dayName: string;
   tempMax: number;
   tempMin: number;
+  tempMaxP10?: number;
+  tempMaxP90?: number;
+  tempMinP10?: number;
+  tempMinP90?: number;
   weatherCode: number;
   condition: string;
   precipSum: number;
+  precipP90?: number;
   precipProbabilityMax: number;
+  precipPhase?: PrecipPhase;
   windSpeedMax: number;
+  windGustMax?: number;
+  stormScoreMax?: number;
   uvIndexMax: number;
   sunrise: string;
   sunset: string;
@@ -146,6 +243,7 @@ export type NativeConvective = {
   cin: number | null;
   liftedIndex: number | null;
   freezingLevelM: number | null;
+  lightningPotential?: number | null;
 };
 
 export type HybridModelSnapshot = {
@@ -154,6 +252,8 @@ export type HybridModelSnapshot = {
   icon: number | null;
   ukmo: number | null;
   gfs: number | null;
+  meteofrance?: number | null;
+  gem?: number | null;
 };
 
 export type HybridSourceAttribution = {
@@ -162,6 +262,16 @@ export type HybridSourceAttribution = {
   weightsLabel: string;
   standardRef: string;
   reason: string;
+};
+
+export type MetarWxFlags = {
+  hasPrecip: boolean;
+  heavyPrecip: boolean;
+  isThunderstorm: boolean;
+  hasHail: boolean;
+  hasSnow: boolean;
+  hasSquall: boolean;
+  hasFog: boolean;
 };
 
 export type MetarObservation = {
@@ -180,17 +290,21 @@ export type MetarObservation = {
   qnhHpa: number | null;
   visibilityKm: number | null;
   wxString: string | null;
+  wxFlags?: MetarWxFlags;
 };
 
 export type ModelVerificationRow = {
-  modelKey: FiveModelKey;
+  modelKey: SevenModelKey;
   label: string;
   resolution: string;
   tempRmseC: number | null;
+  tempUbRmseC?: number | null;
+  tempBiasC?: number | null;
   tempMaeC: number | null;
   pressureRmseHpa: number | null;
   windRmseKmh: number | null;
   dewPointRmseC: number | null;
+  precipBrier?: number | null;
   matchedHours: number;
   weightsPct: {
     temperature: number;
@@ -200,20 +314,36 @@ export type ModelVerificationRow = {
   };
 };
 
+export type KalmanCalibrationSummary = {
+  active: boolean;
+  stationCount: number;
+  stationIds: string[];
+  envLapseRateCPerKm: number;
+  nowcastTempDeltaC: number;
+  nowcastKalmanGain: number;
+  ensembleMembers: number;
+  meanTempBiasRemovedC: number;
+};
+
 export type LiveVerificationReport = {
-  mode: "live-metar-24h" | "wmo-prior";
+  mode: "live-metar-48h" | "live-metar-24h" | "wmo-prior";
   station: MetarObservation | null;
+  stations?: MetarObservation[];
   matchedHours: number;
   winners: {
-    temperature: FiveModelKey | null;
-    pressure: FiveModelKey | null;
-    wind: FiveModelKey | null;
+    temperature: SevenModelKey | null;
+    pressure: SevenModelKey | null;
+    wind: SevenModelKey | null;
+    precipitation?: SevenModelKey | null;
   };
+  calibration?: KalmanCalibrationSummary;
   rows: ModelVerificationRow[];
 };
 
 export type HybridMeta = {
+  engineVersion?: string;
   activeModels: string[];
+  ensembleMembers?: number;
   confidencePct: number;
   tempSpreadC: number;
   pressureSpreadHpa: number;
@@ -223,6 +353,7 @@ export type HybridMeta = {
     windSpeed: HybridModelSnapshot;
     temp850hPa: HybridModelSnapshot;
     precipitation: HybridModelSnapshot;
+    cape?: HybridModelSnapshot;
   };
   verification: LiveVerificationReport;
   attributions: HybridSourceAttribution[];
@@ -237,10 +368,12 @@ export type WeatherBundle = {
   current: CurrentWeather;
   airQuality: AirQualityDetail;
   hourly: HourlyPoint[];
+  minutely15?: Minutely15Point[];
   daily: DailyPoint[];
   sounding: SoundingLevel[];
   hourlySoundings: SoundingLevel[][];
   nativeConvective: NativeConvective;
+  storm?: StormAssessment;
   hybrid: HybridMeta;
 };
 
@@ -253,6 +386,8 @@ export type ModelSeriesPoint = {
   icon: number | null;
   ukmo: number | null;
   gfs: number | null;
+  meteofrance?: number | null;
+  gem?: number | null;
 };
 
 export type MultiModelBundle = {
@@ -264,9 +399,9 @@ export type MultiModelBundle = {
   precip: ModelSeriesPoint[];
   wind10m: ModelSeriesPoint[];
   summary: {
-    precip72h: Record<FiveModelKey, number>;
+    precip72h: Record<SevenModelKey, number>;
     maxSpreadTemp2m: number;
-    min850hPa: Record<FiveModelKey, number | null>;
+    min850hPa: Record<SevenModelKey, number | null>;
   };
 };
 
@@ -288,8 +423,8 @@ export type WindGridBundle = {
   west: number;
   north: number;
   east: number;
-  u: number[]; // m/s veya km/s doğu-batı bileşeni (+doğu)
-  v: number[]; // kuzey-güney bileşeni (+kuzey)
+  u: number[];
+  v: number[];
   speedKmh: number[];
   maxSpeedKmh: number;
   fetchedAt: string;

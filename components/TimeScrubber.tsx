@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { CloudRain, Pause, Play, Snowflake } from "lucide-react";
 import { formatTemperature } from "@/lib/weather";
+import { atmosUiSfx } from "@/lib/ui-sfx";
 import type { HourlyPoint, UnitSystem } from "@/lib/weather-types";
+import AnimatedNumber from "./AnimatedNumber";
 
 type TimeScrubberProps = {
   hourly: HourlyPoint[];
@@ -20,15 +22,19 @@ export default function TimeScrubber({
 }: TimeScrubberProps) {
   const [playing, setPlaying] = useState(false);
   const [horizon, setHorizon] = useState<24 | 48>(24);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const slice = hourly.slice(0, Math.min(horizon, hourly.length));
   const maxIdx = Math.max(0, slice.length - 1);
   const clampedIdx = Math.min(frameIndex, maxIdx);
   const active = slice[clampedIdx];
+  const hovered = hoverIdx !== null ? slice[Math.min(hoverIdx, maxIdx)] : null;
 
   useEffect(() => {
     if (!playing || slice.length <= 1) return;
     const timer = window.setInterval(() => {
-      onChange((clampedIdx + 1) % slice.length);
+      const next = (clampedIdx + 1) % slice.length;
+      atmosUiSfx.playScrubTick(next / Math.max(1, slice.length - 1));
+      onChange(next);
     }, 850);
     return () => window.clearInterval(timer);
   }, [playing, clampedIdx, slice.length, onChange]);
@@ -41,22 +47,33 @@ export default function TimeScrubber({
   const spanT = Math.max(1, maxT - minT);
 
   const width = 1000;
-  const height = 52;
+  const height = 56;
   const stepX = width / Math.max(1, slice.length - 1);
+
+  const yOfTemp = (t: number) =>
+    height - 9 - ((t - minT) / spanT) * (height - 18);
 
   const tempPath = slice
     .map((h, i) => {
       const x = i * stepX;
-      const y = height - 8 - ((h.temperature - minT) / spanT) * (height - 16);
+      const y = yOfTemp(h.temperature);
       return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
 
+  const areaPath = `${tempPath} L${width},${height} L0,${height} Z`;
+
   const activePctX = (clampedIdx / Math.max(1, slice.length - 1)) * 100;
-  const activePctY =
-    ((height - 8 - ((active.temperature - minT) / spanT) * (height - 16)) /
-      height) *
-    100;
+  const activePctY = (yOfTemp(active.temperature) / height) * 100;
+
+  const hoverPctX =
+    hoverIdx !== null ? (Math.min(hoverIdx, maxIdx) / Math.max(1, slice.length - 1)) * 100 : null;
+
+  const pickFromSvgPointer = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    return Math.round(frac * maxIdx);
+  };
 
   return (
     <div className="surface-panel w-full p-4 sm:p-5 space-y-3">
@@ -64,10 +81,23 @@ export default function TimeScrubber({
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => setPlaying((p) => !p)}
+            onClick={() => {
+              atmosUiSfx.playNavTick();
+              setPlaying((p) => !p);
+            }}
             aria-label={playing ? "Zaman akışını durdur" : "Zaman akışını oynat"}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-white/[0.06] text-ink-primary hover:bg-white/[0.12] transition-colors"
+            className={`atmos-btn relative flex h-8 w-8 items-center justify-center rounded-lg border text-ink-primary ${
+              playing
+                ? "border-[rgba(var(--atmos-accent-rgb),0.55)] bg-[rgba(var(--atmos-accent-rgb),0.18)] text-[var(--atmos-accent)]"
+                : "border-white/15 bg-white/[0.06]"
+            }`}
           >
+            {playing && (
+              <span
+                aria-hidden="true"
+                className="atmos-beacon-ring pointer-events-none absolute inset-0 rounded-lg border border-[var(--atmos-accent)]"
+              />
+            )}
             {playing ? (
               <Pause className="h-3.5 w-3.5" />
             ) : (
@@ -84,6 +114,7 @@ export default function TimeScrubber({
                   <button
                     type="button"
                     onClick={() => {
+                      atmosUiSfx.playNavTick();
                       setHorizon(24);
                       if (frameIndex >= 24) onChange(23);
                     }}
@@ -97,7 +128,10 @@ export default function TimeScrubber({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setHorizon(48)}
+                    onClick={() => {
+                      atmosUiSfx.playNavTick();
+                      setHorizon(48);
+                    }}
                     className={`rounded px-1.5 py-0.5 transition-colors ${
                       horizon === 48
                         ? "bg-white/15 text-ink-primary"
@@ -119,7 +153,7 @@ export default function TimeScrubber({
 
         <div className="flex items-center gap-2 font-mono text-xs tabular">
           {active.rainAccum > 0 && (
-            <span className="flex items-center gap-1 rounded-lg border border-signal-sky/25 bg-signal-sky/10 px-2.5 py-1 text-signal-sky">
+            <span className="flex items-center gap-1 rounded-lg border border-[rgba(var(--atmos-accent-rgb),0.32)] bg-[rgba(var(--atmos-accent-rgb),0.12)] px-2.5 py-1 text-[var(--atmos-accent)]">
               <CloudRain className="h-3.5 w-3.5" />
               {active.rainAccum.toFixed(1)} mm
             </span>
@@ -130,25 +164,55 @@ export default function TimeScrubber({
               {active.snowAccum.toFixed(1)} cm
             </span>
           )}
-          <span className="rounded-lg border border-white/15 bg-white/[0.05] px-2.5 py-1 text-ink-primary">
-            {active.hourLabel} · {formatTemperature(active.temperature, unit)}
+          <span className="rounded-lg border border-white/15 bg-white/[0.06] px-2.5 py-1 text-ink-primary">
+            {active.hourLabel} ·{" "}
+            <AnimatedNumber value={formatTemperature(active.temperature, unit)} />
           </span>
         </div>
       </div>
 
-      {/* Tam genişlikte slider ile birebir hizalı SVG eğri + yağış olasılığı barları */}
+      {/* İnteraktif Tıklanabilir / Hover Önizlemeli SVG Eğri + Yağış Barları */}
       <div className="relative">
-        <div className="relative h-14 w-full">
+        <div
+          className="relative h-14 w-full cursor-pointer select-none"
+          onPointerMove={(e) => setHoverIdx(pickFromSvgPointer(e))}
+          onPointerLeave={() => setHoverIdx(null)}
+          onClick={(e) => {
+            const idx = pickFromSvgPointer(e);
+            setPlaying(false);
+            atmosUiSfx.playScrubTick(idx / Math.max(1, maxIdx));
+            onChange(idx);
+          }}
+        >
+          {/* Yüzen Hover Önizleme Balonu */}
+          {hovered && hoverPctX !== null && (
+            <div
+              className="pointer-events-none absolute -top-8 z-20 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/15 bg-[#070c17]/95 px-2.5 py-1 font-mono text-[11px] text-ink-primary shadow-lg backdrop-blur-md tabular"
+              style={{ left: `${Math.max(8, Math.min(92, hoverPctX))}%` }}
+            >
+              {hovered.hourLabel} · {formatTemperature(hovered.temperature, unit)} · %
+              {hovered.precipProbability}
+            </div>
+          )}
+
           <svg
             viewBox={`0 0 ${width} ${height}`}
             preserveAspectRatio="none"
             className="h-full w-full overflow-visible"
             aria-hidden="true"
           >
+            <defs>
+              <linearGradient id="scrubberGlowFill" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stopColor="var(--atmos-accent)" stopOpacity="0.22" />
+                <stop offset="100%" stopColor="var(--atmos-accent)" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+
             {slice.map((h, i) => {
               const barH = (h.precipProbability / 100) * (height - 14);
               if (barH <= 1) return null;
               const barW = horizon === 48 ? 7 : 12;
+              const isFocus = i === clampedIdx || i === hoverIdx;
               return (
                 <rect
                   key={h.time}
@@ -159,31 +223,62 @@ export default function TimeScrubber({
                   rx={2.5}
                   fill={
                     h.precipType === "snow"
-                      ? "rgba(226, 232, 240, 0.25)"
-                      : "rgba(56, 189, 248, 0.26)"
+                      ? isFocus
+                        ? "rgba(226, 232, 240, 0.55)"
+                        : "rgba(226, 232, 240, 0.25)"
+                      : isFocus
+                        ? "rgba(56, 189, 248, 0.62)"
+                        : "rgba(56, 189, 248, 0.26)"
                   }
                 />
               );
             })}
+
+            <path d={areaPath} fill="url(#scrubberGlowFill)" />
+
             <path
               d={tempPath}
               fill="none"
-              stroke="rgba(243, 246, 251, 0.88)"
-              strokeWidth={2}
+              stroke="rgba(243, 246, 251, 0.92)"
+              strokeWidth={2.2}
               vectorEffect="non-scaling-stroke"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
           </svg>
 
+          {/* Hover kılavuz çizgisi */}
+          {hoverPctX !== null && (
+            <div
+              className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/20"
+              style={{ left: `${hoverPctX}%` }}
+            />
+          )}
+
+          {/* Aktif zaman ışıklı çizgisi */}
           <div
-            className="pointer-events-none absolute top-0 bottom-0 w-px border-l border-dashed border-white/35"
-            style={{ left: `${activePctX}%` }}
+            className="pointer-events-none absolute top-0 bottom-0 w-px transition-[left] duration-150"
+            style={{
+              left: `${activePctX}%`,
+              background:
+                "linear-gradient(180deg, transparent, var(--atmos-accent), rgba(255,255,255,0.65))"
+            }}
           />
+
+          {/* Nefes Alan Aktif Sıcaklık Noktası */}
           <div
-            className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-obsidian-900 bg-ink-primary"
+            className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 transition-[left,top] duration-150"
             style={{ left: `${activePctX}%`, top: `${activePctY}%` }}
-          />
+          >
+            <span
+              className="atmos-beacon-ring absolute -inset-1.5 rounded-full"
+              style={{ backgroundColor: "var(--atmos-accent)" }}
+            />
+            <span
+              className="relative block h-2.5 w-2.5 rounded-full border-2 border-obsidian-900 bg-white"
+              style={{ boxShadow: "0 0 12px var(--atmos-accent)" }}
+            />
+          </div>
         </div>
 
         <input
@@ -192,8 +287,10 @@ export default function TimeScrubber({
           max={maxIdx}
           value={clampedIdx}
           onChange={(e) => {
+            const val = Number(e.target.value);
             setPlaying(false);
-            onChange(Number(e.target.value));
+            atmosUiSfx.playScrubTick(val / Math.max(1, maxIdx));
+            onChange(val);
           }}
           aria-label={`${horizon} saatlik hava durumu zaman kaydırıcısı`}
           className="meteo-range mt-1 w-full"

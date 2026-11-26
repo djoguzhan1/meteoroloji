@@ -7,6 +7,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from "react";
 import { DEFAULT_LOCATION, PRESET_CITIES } from "@/lib/weather";
@@ -113,7 +114,15 @@ export function WeatherProvider({
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
+  const loadSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+
   const loadForLocation = useCallback(async (loc: GeoLocation) => {
+    const seq = ++loadSeqRef.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setError(null);
     try {
@@ -123,12 +132,15 @@ export function WeatherProvider({
         name: loc.name,
         country: loc.country ?? ""
       });
-      const res = await fetch(`/api/weather?${qs.toString()}`);
+      const res = await fetch(`/api/weather?${qs.toString()}`, {
+        signal: controller.signal
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const data: WeatherBundle = await res.json();
+      if (seq !== loadSeqRef.current) return;
       setBundle({
         ...data,
         location: {
@@ -141,79 +153,90 @@ export function WeatherProvider({
       });
       setFrameIndex(0);
     } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      if (seq !== loadSeqRef.current) return;
       setError(
         e instanceof Error
           ? e.message
           : "Meteoroloji verileri alınamadı. Bağlantını kontrol edip tekrar dene."
       );
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    try {
-      const savedFavs = localStorage.getItem(STORAGE_KEYS.favorites);
-      if (savedFavs) {
-        const parsed = JSON.parse(savedFavs);
-        if (Array.isArray(parsed) && parsed.length > 0) setFavorites(parsed);
-      }
-      const savedAlerts = localStorage.getItem(STORAGE_KEYS.alerts);
-      if (savedAlerts) {
-        const parsed = JSON.parse(savedAlerts);
-        if (Array.isArray(parsed)) setAlerts(parsed);
-      }
-      const savedUnit = localStorage.getItem(STORAGE_KEYS.unit);
-      if (savedUnit === "metric" || savedUnit === "imperial") setUnitState(savedUnit);
-
-      // 1. Öncelik: Paylaşılabilir URL query parametreleri (?lat=&lon=&city=&country=)
-      const params = new URLSearchParams(window.location.search);
-      const urlLat = Number(params.get("lat"));
-      const urlLon = Number(params.get("lon"));
-      const urlCity = params.get("city");
-      const urlCountry = params.get("country") ?? "";
-
-      if (
-        params.has("lat") &&
-        params.has("lon") &&
-        Number.isFinite(urlLat) &&
-        Number.isFinite(urlLon) &&
-        urlLat >= -90 &&
-        urlLat <= 90 &&
-        urlLon >= -180 &&
-        urlLon <= 180
-      ) {
-        const urlLoc: GeoLocation = {
-          id: `url_${urlLat.toFixed(2)}_${urlLon.toFixed(2)}`,
-          name: urlCity || `${urlLat.toFixed(2)}°, ${urlLon.toFixed(2)}°`,
-          country: urlCountry,
-          lat: urlLat,
-          lon: urlLon
-        };
-        setActiveLocationState(urlLoc);
-        void loadForLocation(urlLoc);
-        return;
-      }
-
-      // 2. Öncelik: Kayıtlı son konum
-      const savedLoc = localStorage.getItem(STORAGE_KEYS.location);
-      if (savedLoc) {
-        const loc: GeoLocation = JSON.parse(savedLoc);
-        const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
-        if (
-          loc &&
-          typeof loc.lat === "number" &&
-          typeof loc.lon === "number" &&
-          (Math.abs(loc.lat - initLoc.lat) > 0.05 ||
-            Math.abs(loc.lon - initLoc.lon) > 0.05)
-        ) {
-          setActiveLocationState(loc);
-          void loadForLocation(loc);
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      try {
+        const savedFavs = localStorage.getItem(STORAGE_KEYS.favorites);
+        if (savedFavs) {
+          const parsed = JSON.parse(savedFavs);
+          if (Array.isArray(parsed) && parsed.length > 0) setFavorites(parsed);
         }
+        const savedAlerts = localStorage.getItem(STORAGE_KEYS.alerts);
+        if (savedAlerts) {
+          const parsed = JSON.parse(savedAlerts);
+          if (Array.isArray(parsed)) setAlerts(parsed);
+        }
+        const savedUnit = localStorage.getItem(STORAGE_KEYS.unit);
+        if (savedUnit === "metric" || savedUnit === "imperial") setUnitState(savedUnit);
+
+        // 1. Öncelik: Paylaşılabilir URL query parametreleri (?lat=&lon=&city=&country=)
+        const params = new URLSearchParams(window.location.search);
+        const urlLat = Number(params.get("lat"));
+        const urlLon = Number(params.get("lon"));
+        const urlCity = params.get("city");
+        const urlCountry = params.get("country") ?? "";
+
+        if (
+          params.has("lat") &&
+          params.has("lon") &&
+          Number.isFinite(urlLat) &&
+          Number.isFinite(urlLon) &&
+          urlLat >= -90 &&
+          urlLat <= 90 &&
+          urlLon >= -180 &&
+          urlLon <= 180
+        ) {
+          const urlLoc: GeoLocation = {
+            id: `url_${urlLat.toFixed(2)}_${urlLon.toFixed(2)}`,
+            name: urlCity || `${urlLat.toFixed(2)}°, ${urlLon.toFixed(2)}°`,
+            country: urlCountry,
+            lat: urlLat,
+            lon: urlLon
+          };
+          setActiveLocationState(urlLoc);
+          void loadForLocation(urlLoc);
+          return;
+        }
+
+        // 2. Öncelik: Kayıtlı son konum
+        const savedLoc = localStorage.getItem(STORAGE_KEYS.location);
+        if (savedLoc) {
+          const loc: GeoLocation = JSON.parse(savedLoc);
+          const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
+          if (
+            loc &&
+            typeof loc.lat === "number" &&
+            typeof loc.lon === "number" &&
+            (Math.abs(loc.lat - initLoc.lat) > 0.05 ||
+              Math.abs(loc.lon - initLoc.lon) > 0.05)
+          ) {
+            setActiveLocationState(loc);
+            void loadForLocation(loc);
+          }
+        }
+      } catch {
+        // ignore storage errors
       }
-    } catch {
-      // ignore storage errors
-    }
+    });
+    return () => {
+      active = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

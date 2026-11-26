@@ -7,6 +7,7 @@ const L_V = 2.501e6; // J/kg 0°C buharlaşma gizli ısısı
 const G_0 = 9.80665; // m/s² standart yerçekimi
 const KAPPA = R_D / C_P; // ~0.2859
 const EPSILON = 0.622; // Mw / Md
+const KT_TO_MS = 0.514444;
 
 /**
  * Bolton (1980, Monthly Weather Review, Vol. 108, Eq. 10)
@@ -39,6 +40,21 @@ export function relativeHumidityFromDewPoint(tempC: number, dewPointC: number): 
   return Math.max(1, Math.min(100, (e / es) * 100));
 }
 
+/**
+ * Stull (2011, Journal of Applied Meteorology and Climatology, Vol. 50, Eq. 1)
+ * Islak Termometre Sıcaklığı Tw [°C]. Kar / sulu kar / yağmur faz ayrımı ve ısı stresi için altın standart.
+ */
+export function wetBulbStullC(tempC: number, rhPercent: number): number {
+  const rh = Math.max(5, Math.min(100, rhPercent));
+  const tw =
+    tempC * Math.atan(0.151977 * Math.sqrt(rh + 8.313659)) +
+    Math.atan(tempC + rh) -
+    Math.atan(rh - 1.676331) +
+    0.00391838 * Math.pow(rh, 1.5) * Math.atan(0.023101 * rh) -
+    4.686035;
+  return Math.min(tempC, tw);
+}
+
 export function mixingRatio(vaporPressureHpa: number, pressureHpa: number): number {
   const denom = Math.max(1, pressureHpa - vaporPressureHpa);
   return (EPSILON * vaporPressureHpa) / denom;
@@ -64,8 +80,7 @@ export function computeLclTempK(tempC: number, dewPointC: number): number {
 }
 
 /**
- * Bolton (1980, Monthly Weather Review, Eq. 43) — Eşdeğer Potansiyel Sıcaklık θ_e [K].
- * Tam integral çözümüyle < 0.2 K (tipik 0.02 K) tutarlılık sağlar.
+ * Bolton (1980, Monthly Weather Review, Vol. 108, Eq. 43) — Eşdeğer Potansiyel Sıcaklık θ_e [K].
  */
 export function equivalentPotentialTemperatureK(
   tempC: number,
@@ -114,7 +129,6 @@ export function computeLCL(
     Math.min(surfacePressureHpa, surfacePressureHpa * Math.pow(lclTempK / tK, 1 / KAPPA))
   );
 
-  // Hipsometrik yükseklik: Z_LCL = (R_d * T_mean / g) * ln(P_sfc / P_LCL)
   const tMeanK = 0.5 * (tK + lclTempK);
   const lclHeightM = Math.max(
     0,
@@ -125,6 +139,18 @@ export function computeLCL(
     lclHeightM,
     lclTempC,
     lclPressureHpa
+  };
+}
+
+/**
+ * Rüzgar (hız kt, yön derece) -> meteorolojik (u, v) bileşenleri [m/s].
+ */
+function windKtToUVMs(speedKt: number, dirDeg: number): { u: number; v: number } {
+  const rad = (dirDeg * Math.PI) / 180;
+  const ms = speedKt * KT_TO_MS;
+  return {
+    u: -ms * Math.sin(rad),
+    v: -ms * Math.cos(rad)
   };
 }
 
@@ -144,6 +170,22 @@ export function computeBulkWindShearKt(
   const u2 = -highSpeedKt * Math.sin(r2);
   const v2 = -highSpeedKt * Math.cos(r2);
   return Math.round(Math.hypot(u2 - u1, v2 - v1));
+}
+
+/**
+ * Canlı 1000→850 hPa sondaj profilinden gerçek çevresel sıcaklık gradyanı dT/dz [°C/m].
+ * Kışın sıcaklık terselmesi (inversiyon) olduğunda sabit -0.0065 °C/m hatasını önler.
+ */
+export function computeEnvironmentalLapseRateCPerM(levels: SoundingLevel[]): number {
+  if (!levels || levels.length < 2) return -0.0065;
+  const sorted = [...levels].sort((a, b) => b.pressure - a.pressure);
+  const low = sorted.find((l) => l.pressure >= 925) ?? sorted[0];
+  const high = sorted.find((l) => l.pressure <= 850 && l.pressure >= 700) ?? sorted[sorted.length - 1];
+  const dz = high.altitudeM - low.altitudeM;
+  if (!Number.isFinite(dz) || dz < 250) return -0.0065;
+  const grad = (high.temperature - low.temperature) / dz; // genelde negatif (~ -0.0065)
+  // Fiziksel troposfer sınırı: kuru adyabat (-9.8°C/km) ile güçlü inversiyon (+4.0°C/km) arası
+  return Math.max(-0.0098, Math.min(0.004, grad));
 }
 
 export type ComputedLevelMetrics = {
@@ -176,8 +218,17 @@ export type RiskLevel = {
 };
 
 export type CapeAnalysisResult = {
-  cape: number;
-  cin: number;
+  cape: number; // Yüzey tabanlı SBCAPE (J/kg)
+  cin: number; // SBCIN (J/kg)
+  mucape: number; // En kararsız parsel MUCAPE (1000–700 hPa, gece/cephe orajları!)
+  mucin: number;
+  muParcelPressureHpa: number;
+  mlcape: number; // 0–100 hPa karışım tabakası MLCAPE (J/kg)
+  dcape: number; // Downdraft CAPE — kuru tabakalı microburst rüzgar hamlesi enerjisi (J/kg)
+  srh03: number; // 0–3 km Storm-Relative Helicity (m²/s², Bunkers Right-Mover)
+  scp: number; // Supercell Composite Parameter
+  sigSevere: number; // Craven-Brooks Significant Severe (MUCAPE * Shear_06_ms)
+  wetBulbC: number; // Stull (2011) yüzey ıslak termometre sıcaklığı (°C)
   lclHeightM: number;
   lclPressureHpa: number;
   lfcPressureHpa: number | null;
@@ -188,8 +239,8 @@ export type CapeAnalysisResult = {
   totalTotals: number;
   sweatIndex: number;
   bulkShear06Kt: number;
-  lapseRate700500: number; // °C/km (gerçek jeopotansiyel yükseklik farkından)
-  thickness5001000Dam: number; // 500–1000 hPa jeopotansiyel kalınlık (dam; <=540 kar eşiği)
+  lapseRate700500: number;
+  thickness5001000Dam: number;
   surfaceDewPointC: number;
   capeRisk: RiskLevel;
   liRisk: RiskLevel;
@@ -288,12 +339,20 @@ function interpolateProfile(
       const logSpan = Math.log(low.pressure) - Math.log(high.pressure);
       const frac =
         logSpan > 0 ? (Math.log(low.pressure) - Math.log(pressureHpa)) / logSpan : 0;
+      // Vektörel rüzgar enterpolasyonu (350° -> 10° geçişinde hata yapmaz)
+      const uv1 = windKtToUVMs(low.windSpeedKt, low.windDirection);
+      const uv2 = windKtToUVMs(high.windSpeedKt, high.windDirection);
+      const u = uv1.u + (uv2.u - uv1.u) * frac;
+      const v = uv1.v + (uv2.v - uv1.v) * frac;
+      const spdKt = Math.hypot(u, v) / KT_TO_MS;
+      const dir = ((Math.atan2(-u, -v) * 180) / Math.PI + 360) % 360;
+
       return {
         tempC: low.temperature + (high.temperature - low.temperature) * frac,
         dewPointC: low.dewPoint + (high.dewPoint - low.dewPoint) * frac,
         altitudeM: low.altitudeM + (high.altitudeM - low.altitudeM) * frac,
-        windSpeedKt: low.windSpeedKt + (high.windSpeedKt - low.windSpeedKt) * frac,
-        windDirection: low.windDirection + (high.windDirection - low.windDirection) * frac
+        windSpeedKt: spdKt,
+        windDirection: dir
       };
     }
   }
@@ -339,38 +398,32 @@ function liftParcelToPressure(
   return t;
 }
 
-export type SoundingAnalysisInput = {
-  surfaceTempC: number;
-  surfaceHumidity: number;
-  surfacePressureHpa: number;
-  levels: SoundingLevel[];
-};
-
-export function analyzeConvectiveProfile(
-  input: SoundingAnalysisInput
-): CapeAnalysisResult {
-  const sortedLevels = [...input.levels]
-    .sort((a, b) => b.pressure - a.pressure)
-    .map((lvl) => ({ ...lvl }));
-
-  const clampedRh = Math.max(1, Math.min(100, input.surfaceHumidity));
-  const surfaceDewPointC = dewPointMagnus(input.surfaceTempC, clampedRh);
-  const surfaceP = Math.max(850, Math.min(1060, input.surfacePressureHpa));
-
-  if (sortedLevels.length > 0 && sortedLevels[0].pressure >= 980) {
-    sortedLevels[0].temperature = input.surfaceTempC;
-    sortedLevels[0].dewPoint = surfaceDewPointC;
-    sortedLevels[0].humidity = Math.round(clampedRh);
-  }
-
-  const lcl = computeLCL(input.surfaceTempC, surfaceDewPointC, surfaceP);
-  const surfaceE = vaporPressureFromRH(input.surfaceTempC, clampedRh);
-  const surfaceW = mixingRatio(surfaceE, surfaceP);
+/**
+ * Herhangi bir başlangıç parselinden (yüzey, karışım tabakası veya yükseltilmiş tabaka)
+ * 300 hPa'ya kadar CAPE, CIN, LFC, EL ve tam parsel eğrisi entegrasyonu.
+ */
+function integrateParcelCape(
+  sortedLevels: SoundingLevel[],
+  startTempC: number,
+  startDewPointC: number,
+  startPressureHpa: number,
+  pStep = 10
+): {
+  cape: number;
+  cin: number;
+  lcl: { lclHeightM: number; lclTempC: number; lclPressureHpa: number };
+  lfcPressureHpa: number | null;
+  elPressureHpa: number | null;
+  parcelProfile: ParcelPoint[];
+} {
+  const safeTd = Math.min(startTempC, startDewPointC);
+  const lcl = computeLCL(startTempC, safeTd, startPressureHpa);
+  const startE = saturationVaporPressure(safeTd);
+  const startW = mixingRatio(startE, startPressureHpa);
 
   const parcelProfile: ParcelPoint[] = [];
-  const pStep = 10;
-  let currentP = surfaceP;
-  let parcelT = input.surfaceTempC;
+  let currentP = startPressureHpa;
+  let parcelT = startTempC;
 
   const pushPoint = (p: number, pTemp: number) => {
     const env = interpolateProfile(sortedLevels, p);
@@ -378,7 +431,7 @@ export function analyzeConvectiveProfile(
     const envW = mixingRatio(envE, p);
     const parcelW =
       p >= lcl.lclPressureHpa
-        ? surfaceW
+        ? startW
         : mixingRatio(saturationVaporPressure(pTemp), p);
     parcelProfile.push({
       pressure: p,
@@ -396,7 +449,7 @@ export function analyzeConvectiveProfile(
     const nextP = Math.max(300, currentP - pStep);
     if (nextP >= lcl.lclPressureHpa) {
       parcelT =
-        (input.surfaceTempC + 273.15) * Math.pow(nextP / surfaceP, KAPPA) - 273.15;
+        (startTempC + 273.15) * Math.pow(nextP / startPressureHpa, KAPPA) - 273.15;
     } else if (currentP > lcl.lclPressureHpa && nextP < lcl.lclPressureHpa) {
       const dpMoist = lcl.lclPressureHpa - nextP;
       const k1 = moistAdiabaticDtdP(lcl.lclTempC, lcl.lclPressureHpa);
@@ -441,6 +494,173 @@ export function analyzeConvectiveProfile(
       cin += energy;
     }
   }
+
+  return {
+    cape: Math.max(0, cape),
+    cin,
+    lcl,
+    lfcPressureHpa,
+    elPressureHpa,
+    parcelProfile
+  };
+}
+
+/**
+ * Bunkers (2000) Right-Mover Fırtına Hareket Vektörü ve 0–3 km Storm-Relative Helicity (m²/s²).
+ */
+function computeBunkersSrh03(sortedLevels: SoundingLevel[], surfaceP: number): number {
+  const w0 = interpolateProfile(sortedLevels, surfaceP);
+  const w925 = interpolateProfile(sortedLevels, Math.min(surfaceP, 925));
+  const w850 = interpolateProfile(sortedLevels, 850);
+  const w700 = interpolateProfile(sortedLevels, 700);
+  const w500 = interpolateProfile(sortedLevels, 500);
+
+  const uv0 = windKtToUVMs(w0.windSpeedKt, w0.windDirection);
+  const uv925 = windKtToUVMs(w925.windSpeedKt, w925.windDirection);
+  const uv850 = windKtToUVMs(w850.windSpeedKt, w850.windDirection);
+  const uv700 = windKtToUVMs(w700.windSpeedKt, w700.windDirection);
+  const uv500 = windKtToUVMs(w500.windSpeedKt, w500.windDirection);
+
+  // 0–6 km ortalama rüzgar ve kırılma vektörü
+  const meanU = (uv0.u + uv925.u + uv850.u + uv700.u + uv500.u) / 5;
+  const meanV = (uv0.v + uv925.v + uv850.v + uv700.v + uv500.v) / 5;
+  const shU = uv500.u - uv0.u;
+  const shV = uv500.v - uv0.v;
+  const shMag = Math.hypot(shU, shV);
+
+  // Bunkers sapma büyüklüğü D = 7.5 m/s (kırılma vektörünün 90° sağına)
+  const D = 7.5;
+  const rmU = shMag > 1e-3 ? meanU + (D * shV) / shMag : meanU;
+  const rmV = shMag > 1e-3 ? meanV - (D * shU) / shMag : meanV;
+
+  // 0–3 km (yüzey -> 925 -> 850 -> 700 hPa) hodograf üzerinde SRH = Σ ((u_{i+1}-c_x)(v_i-c_y) - (u_i-c_x)(v_{i+1}-c_y))
+  const pts = [uv0, uv925, uv850, uv700];
+  let srh = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    srh += (b.u - rmU) * (a.v - rmV) - (a.u - rmU) * (b.v - rmV);
+  }
+  return Math.round(Math.max(0, srh));
+}
+
+/**
+ * Downdraft CAPE (DCAPE, J/kg): 700 hPa'daki ıslak termometre parselinin nemli adyabatla
+ * yüzeye inerken ürettiği negatif yüzdürme enerjisi -> şiddetli microburst / rüzgar hamlesi göstergesi.
+ */
+function computeDcape(sortedLevels: SoundingLevel[], surfaceP: number): number {
+  const startP = Math.min(surfaceP - 80, 700);
+  if (startP <= 500) return 0;
+  const env700 = interpolateProfile(sortedLevels, startP);
+  const rh700 = relativeHumidityFromDewPoint(env700.tempC, env700.dewPointC);
+  let parcelT = wetBulbStullC(env700.tempC, rh700);
+
+  let p = startP;
+  const step = 15;
+  let dcape = 0;
+
+  while (p < surfaceP) {
+    const nextP = Math.min(surfaceP, p + step);
+    const dp = nextP - p;
+    const midP = p + dp * 0.5;
+    const k1 = moistAdiabaticDtdP(parcelT, p);
+    const k2 = moistAdiabaticDtdP(parcelT + k1 * dp * 0.5, midP);
+    const nextT = parcelT + k2 * dp;
+
+    const envMid = interpolateProfile(sortedLevels, midP);
+    const tMid = 0.5 * (parcelT + nextT);
+    const diffK = envMid.tempC - tMid; // pozitifse parsel çevreden soğuk -> hızlanarak aşağı iner!
+    if (diffK > 0) {
+      dcape += R_D * diffK * Math.log(nextP / p);
+    }
+    parcelT = nextT;
+    p = nextP;
+  }
+
+  return Math.round(Math.max(0, dcape));
+}
+
+export type SoundingAnalysisInput = {
+  surfaceTempC: number;
+  surfaceHumidity: number;
+  surfacePressureHpa: number;
+  levels: SoundingLevel[];
+};
+
+export function analyzeConvectiveProfile(
+  input: SoundingAnalysisInput
+): CapeAnalysisResult {
+  const sortedLevels = [...input.levels]
+    .sort((a, b) => b.pressure - a.pressure)
+    .map((lvl) => ({ ...lvl }));
+
+  const clampedRh = Math.max(1, Math.min(100, input.surfaceHumidity));
+  const surfaceDewPointC = dewPointMagnus(input.surfaceTempC, clampedRh);
+  const wetBulbC = Number(wetBulbStullC(input.surfaceTempC, clampedRh).toFixed(1));
+  const surfaceP = Math.max(850, Math.min(1060, input.surfacePressureHpa));
+
+  if (sortedLevels.length > 0 && sortedLevels[0].pressure >= 980) {
+    sortedLevels[0].temperature = input.surfaceTempC;
+    sortedLevels[0].dewPoint = surfaceDewPointC;
+    sortedLevels[0].humidity = Math.round(clampedRh);
+  }
+
+  // 1. Yüzey Tabanlı SBCAPE & Tam Parsel Eğrisi (Skew-T için)
+  const sb = integrateParcelCape(
+    sortedLevels,
+    input.surfaceTempC,
+    surfaceDewPointC,
+    surfaceP,
+    10
+  );
+
+  // 2. Most-Unstable MUCAPE (yüzey -> 700 hPa arası en yüksek θ_e parselini bul — gece/cephe orajları!)
+  let bestThetaE = -Infinity;
+  let muStart = { p: surfaceP, t: input.surfaceTempC, td: surfaceDewPointC };
+  const candidatePs = [surfaceP, 975, 950, 925, 900, 850, 800, 750, 700].filter(
+    (p) => p <= surfaceP && p >= 700
+  );
+  for (const p of candidatePs) {
+    const env =
+      p === surfaceP
+        ? { tempC: input.surfaceTempC, dewPointC: surfaceDewPointC }
+        : interpolateProfile(sortedLevels, p);
+    const e = saturationVaporPressure(Math.min(env.dewPointC, env.tempC));
+    const w = mixingRatio(e, p);
+    const thE = equivalentPotentialTemperatureK(env.tempC, p, w, env.dewPointC);
+    if (thE > bestThetaE) {
+      bestThetaE = thE;
+      muStart = { p, t: env.tempC, td: env.dewPointC };
+    }
+  }
+  const mu =
+    muStart.p === surfaceP
+      ? sb
+      : integrateParcelCape(sortedLevels, muStart.t, muStart.td, muStart.p, 15);
+  const mucape = Math.max(Math.round(sb.cape), Math.round(mu.cape));
+  const mucin = muStart.p === surfaceP ? Math.round(sb.cin) : Math.round(mu.cin);
+
+  // 3. Mixed-Layer MLCAPE (en alt 100 hPa ortalaması)
+  let mlT = 0;
+  let mlTd = 0;
+  const mlSteps = 5;
+  for (let i = 0; i < mlSteps; i++) {
+    const p = surfaceP - (100 * i) / (mlSteps - 1);
+    const env =
+      i === 0
+        ? { tempC: input.surfaceTempC, dewPointC: surfaceDewPointC }
+        : interpolateProfile(sortedLevels, p);
+    mlT += env.tempC;
+    mlTd += env.dewPointC;
+  }
+  const ml = integrateParcelCape(
+    sortedLevels,
+    mlT / mlSteps,
+    mlTd / mlSteps,
+    surfaceP - 25,
+    15
+  );
+  const mlcape = Math.round(ml.cape);
 
   const env1000 = interpolateProfile(sortedLevels, 1000);
   const env850 = interpolateProfile(sortedLevels, 850);
@@ -491,6 +711,25 @@ export function analyzeConvectiveProfile(
     env500.windSpeedKt,
     env500.windDirection
   );
+  const bulkShear06Ms = bulkShear06Kt * KT_TO_MS;
+
+  // 4. Bunkers 0–3 km SRH, SPC SCP (MUCAPE >= 450 & CIN korumalı), Craven-Brooks ve DCAPE
+  const srh03 = computeBunkersSrh03(sortedLevels, surfaceP);
+  const effectiveShearTerm =
+    bulkShear06Ms < 10 ? 0 : Math.min(1.5, bulkShear06Ms / 20);
+  const cinTerm =
+    mucin >= -40 ? 1 : mucin <= -180 ? 0 : Math.max(0, Math.min(1, -40 / mucin));
+  const scp =
+    mucape >= 450 && cinTerm > 0
+      ? Number(
+          Math.max(
+            0,
+            (mucape / 1000) * (srh03 / 50) * effectiveShearTerm * cinTerm
+          ).toFixed(2)
+        )
+      : 0;
+  const sigSevere = Math.round(mucape * bulkShear06Ms);
+  const dcape = computeDcape(sortedLevels, surfaceP);
 
   // Gerçek dinamik jeopotansiyel yükseklik farkından 700–500 hPa lapse rate (°C/km)
   const dz700500Km = Math.max(1.5, (env500.altitudeM - env700.altitudeM) / 1000);
@@ -526,15 +765,24 @@ export function analyzeConvectiveProfile(
     };
   });
 
-  const roundedCape = Math.max(0, Math.round(cape));
+  const roundedCape = Math.max(0, Math.round(sb.cape));
 
   return {
     cape: roundedCape,
-    cin: Math.round(cin),
-    lclHeightM: Math.round(lcl.lclHeightM),
-    lclPressureHpa: Math.round(lcl.lclPressureHpa),
-    lfcPressureHpa: lfcPressureHpa ? Math.round(lfcPressureHpa) : null,
-    elPressureHpa: elPressureHpa ? Math.round(elPressureHpa) : null,
+    cin: Math.round(sb.cin),
+    mucape,
+    mucin,
+    muParcelPressureHpa: Math.round(muStart.p),
+    mlcape,
+    dcape,
+    srh03,
+    scp,
+    sigSevere,
+    wetBulbC,
+    lclHeightM: Math.round(sb.lcl.lclHeightM),
+    lclPressureHpa: Math.round(sb.lcl.lclPressureHpa),
+    lfcPressureHpa: sb.lfcPressureHpa ? Math.round(sb.lfcPressureHpa) : null,
+    elPressureHpa: sb.elPressureHpa ? Math.round(sb.elPressureHpa) : null,
     liftedIndex: Number(liftedIndex.toFixed(1)),
     showalterIndex: Number(showalterIndex.toFixed(1)),
     kIndex: Number(kIndex.toFixed(1)),
@@ -544,10 +792,10 @@ export function analyzeConvectiveProfile(
     lapseRate700500,
     thickness5001000Dam,
     surfaceDewPointC: Number(surfaceDewPointC.toFixed(1)),
-    capeRisk: classifyCapeRisk(roundedCape),
+    capeRisk: classifyCapeRisk(Math.max(roundedCape, mucape)),
     liRisk: classifyLiftedIndexRisk(liftedIndex),
     kRisk: classifyKIndexRisk(kIndex),
     levels,
-    parcelProfile
+    parcelProfile: sb.parcelProfile
   };
 }

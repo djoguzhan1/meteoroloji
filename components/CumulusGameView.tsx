@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
+  ChevronDown,
+  ChevronUp,
   CloudLightning,
   Flame,
   Link2,
@@ -185,6 +187,8 @@ export default function CumulusGameView() {
   const [toolMode, setToolMode] = useState<"launch" | "supply">("launch");
   const [paused, setPaused] = useState<boolean>(false);
   const [showIntro, setShowIntro] = useState<boolean>(true);
+  const [showGuide, setShowGuide] = useState<boolean>(false);
+  const [arenaLockIn, setArenaLockIn] = useState<boolean>(false);
   const [sfxEnabled, setSfxEnabled] = useState<boolean>(true);
   const [career, setCareer] = useState<CareerStorage>({
     stages: {},
@@ -193,7 +197,7 @@ export default function CumulusGameView() {
   });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const gameRef = useRef<CumulusGameState>(
+  const [initialGame] = useState<CumulusGameState>(() =>
     createCumulusGame({
       stageId: CUMULUS_STAGES[0].id,
       difficulty: "storm",
@@ -202,6 +206,7 @@ export default function CumulusGameView() {
       liveWindDirDeg
     })
   );
+  const gameRef = useRef<CumulusGameState>(initialGame);
   const atmosRef = useRef<AtmosphericVisualState>(createAtmosphericVisualState());
   const interactionRef = useRef<InteractionState>({
     dragging: false,
@@ -223,7 +228,7 @@ export default function CumulusGameView() {
   const showIntroRef = useRef(showIntro);
   const recordedOutcomeRef = useRef(false);
 
-  const [hud, setHud] = useState<HudSnapshot>(() => extractHud(gameRef.current));
+  const [hud, setHud] = useState<HudSnapshot>(() => extractHud(initialGame));
 
   useEffect(() => {
     launchRatioRef.current = launchRatio;
@@ -246,16 +251,23 @@ export default function CumulusGameView() {
   }, [sfxEnabled]);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(CAREER_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as CareerStorage;
-      if (parsed && typeof parsed === "object" && parsed.stages) {
-        setCareer(parsed);
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      try {
+        const raw = window.localStorage.getItem(CAREER_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as CareerStorage;
+        if (parsed && typeof parsed === "object" && parsed.stages) {
+          setCareer(parsed);
+        }
+      } catch {
+        // ignore storage errors
       }
-    } catch {
-      // ignore storage errors
-    }
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const persistVictory = useCallback((state: CumulusGameState) => {
@@ -658,92 +670,109 @@ export default function CumulusGameView() {
 
   return (
     <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-2.5 px-3 sm:px-5 lg:px-6">
-      {/* Sinematik Panoramik Arena Çerçevesi (Entegre Cam Başlık + 60 FPS Volümetrik Dünya + Taktik Alt Şerit) */}
+      {/* Sinematik Panoramik Arena Çerçevesi (Introda temiz sinematik tam ekran, oyunda kompakt HUD) */}
       <section className="overflow-hidden rounded-2xl border border-sky-200/15 bg-[#060c18]/90 shadow-[0_28px_90px_rgba(0,0,0,0.72)] backdrop-blur-xl">
-        {/* İnce Entegre Hakimiyet & Telemetri Üst Şeridi */}
-        <div className="border-b border-white/[0.08] bg-[#070d1b]/90 px-3.5 py-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-400/35 bg-sky-400/15 text-sky-300">
-                <CloudLightning className="h-4 w-4" />
+        {/* İnce Entegre Hakimiyet & Telemetri Üst Şeridi (Sadece oyun aktifken) */}
+        {!showIntro && (
+          <div className="border-b border-white/[0.08] bg-[#070d1b]/90 px-3.5 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-400/35 bg-sky-400/15 text-sky-300">
+                  <CloudLightning className="h-4 w-4" />
+                </div>
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <h1 className="font-display text-sm font-bold tracking-wider text-ink-primary sm:text-base">
+                    CUMULUS · Bulut Savaşı
+                  </h1>
+                  <span className="rounded-md border border-sky-400/25 bg-sky-400/10 px-2 py-0.5 font-mono text-[11px] text-sky-200">
+                    {currentStage.name}
+                  </span>
+                  <span className="hidden xl:inline text-xs text-ink-muted">
+                    {currentStage.subtitle}
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-wrap items-baseline gap-2">
-                <h1 className="font-display text-sm font-bold tracking-wider text-ink-primary sm:text-base">
-                  CUMULUS · Bulut Savaşı
-                </h1>
-                <span className="rounded-md border border-sky-400/25 bg-sky-400/10 px-2 py-0.5 font-mono text-[11px] text-sky-200">
-                  {currentStage.name}
-                </span>
-                <span className="hidden xl:inline text-xs text-ink-muted">
-                  {currentStage.subtitle}
-                </span>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-ink-primary">
+                  <Wind className="h-3.5 w-3.5 text-sky-400" />
+                  <span>{windBadgeText}</span>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-ink-primary">
+                  {formatClock(hud.elapsedSec)}
+                </div>
+                <div className="hidden sm:flex items-center gap-1 rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 font-mono text-[11px] text-amber-200">
+                  <Trophy className="h-3 w-3 text-amber-400" />
+                  <span>{career.totalWins} Zafer</span>
+                </div>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5">
-              <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-ink-primary">
-                <Wind className="h-3.5 w-3.5 text-sky-400" />
-                <span>{windBadgeText}</span>
-              </div>
-              <div className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-ink-primary">
-                {formatClock(hud.elapsedSec)}
-              </div>
-              <div className="hidden sm:flex items-center gap-1 rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 font-mono text-[11px] text-amber-200">
-                <Trophy className="h-3 w-3 text-amber-400" />
-                <span>{career.totalWins} Zafer</span>
-              </div>
-            </div>
-          </div>
-
-          {/* İnce Hakimiyet Barı + Cephe Özeti */}
-          <div className="mt-2 flex flex-col gap-1.5">
-            <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-              {hud.shares.map((s) => (
-                <div
-                  key={s.faction}
-                  style={{
-                    width: `${Math.max(2, s.pct)}%`,
-                    backgroundColor: FACTION_META[s.faction].primary
-                  }}
-                  className="h-full transition-all duration-300"
-                />
-              ))}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-              <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
-                {hud.shares.map((s) => {
-                  const meta = FACTION_META[s.faction];
+            {/* İnce Hakimiyet Barı + Plazma Cephe Kıvılcımı */}
+            <div className="mt-2 flex flex-col gap-1.5">
+              <div className="relative flex h-2 w-full overflow-hidden rounded-full bg-white/10">
+                {hud.shares.map((s) => (
+                  <div
+                    key={s.faction}
+                    style={{
+                      width: `${Math.max(2, s.pct)}%`,
+                      backgroundColor: FACTION_META[s.faction].primary
+                    }}
+                    className="h-full transition-all duration-300"
+                  />
+                ))}
+                {(() => {
+                  const pShare = hud.shares.find((s) => s.faction === "player")?.pct ?? 0;
+                  if (pShare <= 3 || pShare >= 97) return null;
                   return (
-                    <div key={s.faction} className="flex items-center gap-1.5">
-                      <span
-                        className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: meta.primary }}
-                      />
-                      <span className="font-medium text-ink-primary">{meta.name}</span>
-                      {meta.personality && (
-                        <span className="hidden lg:inline text-ink-muted">
-                          ({meta.personality})
-                        </span>
-                      )}
-                      <span className="font-mono text-ink-secondary">
-                        {s.mass} · %{s.pct}
-                      </span>
-                    </div>
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute top-1/2 h-3.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white"
+                      style={{
+                        left: `${pShare}%`,
+                        boxShadow: "0 0 12px #38bdf8, 0 0 22px #f8fbff"
+                      }}
+                    />
                   );
-                })}
+                })()}
               </div>
-              <div className="font-mono text-ink-muted">
-                Bulutların: <strong className="text-sky-300">{hud.playerCloudCount}</strong> · Süper Hücre:{" "}
-                <strong className="text-amber-300">{hud.playerSupercellCount}</strong>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
+                  {hud.shares.map((s) => {
+                    const meta = FACTION_META[s.faction];
+                    return (
+                      <div key={s.faction} className="flex items-center gap-1.5">
+                        <span
+                          className="h-2 w-2 rounded-full"
+                          style={{ backgroundColor: meta.primary }}
+                        />
+                        <span className="font-medium text-ink-primary">{meta.name}</span>
+                        <span className="font-mono text-ink-secondary">
+                          {s.mass} · %{s.pct}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="font-mono text-ink-muted">
+                  Bulutların: <strong className="text-sky-300">{hud.playerCloudCount}</strong> · Süper Hücre:{" "}
+                  <strong className="text-amber-300">{hud.playerSupercellCount}</strong>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* 60 FPS Tam Genişlik (Sıfır Siyah Kenar!) Yüksek İrtifa Gökyüzü Arenası */}
-        <div className="relative bg-[#061224]">
-          <div className="relative h-[calc(100vh-212px)] min-h-[450px] max-h-[680px] w-full">
+        <div className="relative overflow-hidden bg-[#061224]">
+          <div
+            className={`relative w-full transition-all duration-300 ${
+              showIntro
+                ? "h-[calc(100vh-118px)] min-h-[540px] max-h-[760px]"
+                : "h-[calc(100vh-212px)] min-h-[450px] max-h-[680px]"
+            }`}
+          >
             <canvas
               ref={canvasRef}
               onPointerDown={handlePointerDown}
@@ -752,10 +781,14 @@ export default function CumulusGameView() {
               onPointerCancel={handlePointerUp}
               onWheel={handleWheel}
               onContextMenu={(e) => e.preventDefault()}
-              className="block h-full w-full cursor-crosshair select-none touch-none"
+              className={`block h-full w-full cursor-crosshair select-none touch-none transition-all duration-700 ease-out ${
+                showIntro && !arenaLockIn
+                  ? "scale-110 blur-[4px] brightness-75"
+                  : "scale-100 blur-0 brightness-100"
+              }`}
             />
 
-            {/* Sadece Start Açılışında Çalışan 3D Volümetrik Süper Hücre Sinematiği */}
+            {/* Sadece Start Açılışında Çalışan 3D Volümetrik Süper Hücre 2.0 Sinematiği */}
             {showIntro && (
               <CumulusIntro3D
                 stageId={stageId}
@@ -765,17 +798,27 @@ export default function CumulusGameView() {
                 }}
                 windBadgeText={windBadgeText}
                 windKmh={hud.windKmh}
+                pressureHpa={bundle?.current.pressure}
+                capeJkg={bundle?.nativeConvective.cape ?? null}
                 totalWins={career.totalWins}
+                sfxEnabled={sfxEnabled}
+                onToggleSfx={() => setSfxEnabled((s) => !s)}
                 onStartDive={() => {
                   cumulusAudio.playIntroDive();
+                }}
+                onDiveReveal={() => {
+                  setArenaLockIn(true);
                 }}
                 onComplete={() => {
                   resetGame(stageId, difficulty, windMode);
                   setShowIntro(false);
+                  setArenaLockIn(false);
                 }}
                 onSkip={() => {
+                  cumulusAudio.stopIntroAmbience(0.15);
                   resetGame(stageId, difficulty, windMode);
                   setShowIntro(false);
+                  setArenaLockIn(false);
                 }}
               />
             )}
@@ -879,8 +922,9 @@ export default function CumulusGameView() {
           </div>
         </div>
 
-        {/* Entegre Kompakt Taktik Kontrol Çubuğu */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] bg-[#070d1b]/95 px-3.5 py-2">
+        {/* Entegre Kompakt Taktik Kontrol Çubuğu (Sadece oyun aktifken) */}
+        {!showIntro && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] bg-[#070d1b]/95 px-3.5 py-2">
           <div className="flex flex-wrap items-center gap-2">
             {/* Fırlatma Oranı */}
             <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
@@ -939,12 +983,18 @@ export default function CumulusGameView() {
               onClick={fireShockwave}
               disabled={hud.readySupercellId === null}
               title="120+ kütleli Süper Hücre'den Barometrik Şok Dalgası yay (Kısayol: E)"
-              className={`flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-semibold transition-all ${
+              className={`atmos-btn relative flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-semibold transition-all ${
                 hud.readySupercellId !== null
-                  ? "border-sky-400/70 bg-sky-500/25 text-sky-100 shadow-[0_0_18px_rgba(56,189,248,0.38)] hover:bg-sky-500/35"
+                  ? "border-sky-400/75 bg-sky-500/25 text-sky-100 shadow-[0_0_24px_rgba(56,189,248,0.52)] hover:bg-sky-500/35"
                   : "cursor-not-allowed border-white/10 bg-white/[0.03] text-ink-muted"
               }`}
             >
+              {hud.readySupercellId !== null && (
+                <span
+                  aria-hidden="true"
+                  className="atmos-beacon-ring pointer-events-none absolute inset-0 rounded-xl border border-sky-300"
+                />
+              )}
               <Zap className="h-3.5 w-3.5" />
               <span>
                 {hud.readySupercellId !== null ? "Şok Dalgası Hazır (E)" : "Şok Dalgası (120+ SC)"}
@@ -1052,129 +1102,157 @@ export default function CumulusGameView() {
             </button>
           </div>
         </div>
+        )}
       </section>
 
-      {/* 6 Cephe Bölümü Seçici */}
-      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        {CUMULUS_STAGES.map((stage) => {
-          const active = stage.id === stageId;
-          const rec = career.stages[stage.id];
-          return (
+      {/* 6 Cephe Bölümü Seçici + Katlanabilir Rehber (Sadece oyun aktifken; introda kendi 6-cephe seçicisi var) */}
+      {!showIntro && (
+        <>
+          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {CUMULUS_STAGES.map((stage) => {
+              const active = stage.id === stageId;
+              const rec = career.stages[stage.id];
+              return (
+                <button
+                  key={stage.id}
+                  type="button"
+                  onClick={() => {
+                    setStageId(stage.id);
+                    resetGame(stage.id, difficulty, windMode);
+                  }}
+                  className={`flex flex-col items-start rounded-xl border p-3 text-left transition-all ${
+                    active
+                      ? "border-sky-400/60 bg-sky-500/15 shadow-[0_0_20px_rgba(56,189,248,0.14)]"
+                      : "border-white/10 bg-[#070b14]/80 hover:border-white/20 hover:bg-white/[0.04]"
+                  }`}
+                >
+                  <div className="flex w-full items-center justify-between gap-1">
+                    <span className="font-mono text-[11px] text-ink-muted">
+                      0{stage.index}
+                    </span>
+                    {rec ? (
+                      <span
+                        className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
+                          rec.medal === "gold"
+                            ? "bg-amber-400/20 text-amber-300"
+                            : rec.medal === "silver"
+                              ? "bg-slate-300/20 text-slate-200"
+                              : "bg-orange-400/20 text-orange-300"
+                        }`}
+                      >
+                        {formatClock(rec.bestSec)}
+                      </span>
+                    ) : (
+                      <span className="font-mono text-[10px] text-ink-muted">
+                        1v{stage.opponents.length}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-xs font-semibold text-ink-primary">
+                    {stage.name}
+                  </div>
+                  <div className="mt-1 flex items-center gap-1">
+                    {stage.opponents.map((op) => (
+                      <span
+                        key={op}
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: FACTION_META[op].primary }}
+                        title={FACTION_META[op].name}
+                      />
+                    ))}
+                    {stage.procedural && (
+                      <span className="ml-1 font-mono text-[10px] text-sky-300">
+                        ∞
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </section>
+
+          {/* Katlanabilir Evrim & Taktik Rehberi */}
+          <section className="rounded-2xl border border-white/10 bg-[#070b14]/80 px-4 py-3 text-xs">
             <button
-              key={stage.id}
               type="button"
-              onClick={() => {
-                setStageId(stage.id);
-                resetGame(stage.id, difficulty, windMode);
-              }}
-              className={`flex flex-col items-start rounded-xl border p-3 text-left transition-all ${
-                active
-                  ? "border-sky-400/60 bg-sky-500/15 shadow-[0_0_20px_rgba(56,189,248,0.14)]"
-                  : "border-white/10 bg-[#070b14]/80 hover:border-white/20 hover:bg-white/[0.04]"
-              }`}
+              onClick={() => setShowGuide((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 text-left"
             >
-              <div className="flex w-full items-center justify-between gap-1">
-                <span className="font-mono text-[11px] text-ink-muted">
-                  0{stage.index}
-                </span>
-                {rec ? (
-                  <span
-                    className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
-                      rec.medal === "gold"
-                        ? "bg-amber-400/20 text-amber-300"
-                        : rec.medal === "silver"
-                          ? "bg-slate-300/20 text-slate-200"
-                          : "bg-orange-400/20 text-orange-300"
-                    }`}
-                  >
-                    {formatClock(rec.bestSec)}
-                  </span>
+              <span className="font-display text-xs font-semibold tracking-wide text-ink-primary">
+                Evrim Basamakları &amp; Kısayollar
+              </span>
+              <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-muted">
+                <span>{showGuide ? "Gizle" : "Göster"}</span>
+                {showGuide ? (
+                  <ChevronUp className="h-3.5 w-3.5" />
                 ) : (
-                  <span className="font-mono text-[10px] text-ink-muted">
-                    1v{stage.opponents.length}
-                  </span>
+                  <ChevronDown className="h-3.5 w-3.5" />
                 )}
-              </div>
-              <div className="mt-1 text-xs font-semibold text-ink-primary">
-                {stage.name}
-              </div>
-              <div className="mt-1 flex items-center gap-1">
-                {stage.opponents.map((op) => (
-                  <span
-                    key={op}
-                    className="h-2 w-2 rounded-full"
-                    style={{ backgroundColor: FACTION_META[op].primary }}
-                    title={FACTION_META[op].name}
-                  />
-                ))}
-                {stage.procedural && (
-                  <span className="ml-1 font-mono text-[10px] text-sky-300">
-                    ∞
-                  </span>
-                )}
-              </div>
+              </span>
             </button>
-          );
-        })}
-      </section>
 
-      {/* Kompakt Evrim & Taktik Rehberi */}
-      <section className="grid gap-3 rounded-2xl border border-white/10 bg-[#070b14]/80 p-4 text-xs md:grid-cols-12">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:col-span-8">
-          {(["cu", "congestus", "cb", "supercell"] as CloudStage[]).map((st) => {
-            const m = STAGE_META[st];
-            const rangeText =
-              st === "cu"
-                ? "1–29"
-                : st === "congestus"
-                  ? "30–59"
-                  : st === "cb"
-                    ? "60–99"
-                    : "100+";
-            const perk =
-              st === "cu"
-                ? "Temel yoğunlaşma"
-                : st === "congestus"
-                  ? "Hızlı büyüme · +%15 güç"
-                  : st === "cb"
-                    ? "⚡ Örs Bulutu + Oto Yıldırım"
-                    : "🌀 Mezosiklon + 3× Yıldırım + Şok (120+)";
-            return (
-              <div
-                key={st}
-                className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5"
-              >
-                <div className="flex items-center justify-between font-mono text-[11px]">
-                  <span className="font-semibold text-sky-300">{m.code}</span>
-                  <span className="text-ink-muted">{rangeText}</span>
+            {showGuide && (
+              <div className="mt-3 grid gap-3 md:grid-cols-12">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:col-span-8">
+                  {(["cu", "congestus", "cb", "supercell"] as CloudStage[]).map((st) => {
+                    const m = STAGE_META[st];
+                    const rangeText =
+                      st === "cu"
+                        ? "1–29"
+                        : st === "congestus"
+                          ? "30–59"
+                          : st === "cb"
+                            ? "60–99"
+                            : "100+";
+                    const perk =
+                      st === "cu"
+                        ? "Temel yoğunlaşma"
+                        : st === "congestus"
+                          ? "Hızlı büyüme · +%15 güç"
+                          : st === "cb"
+                            ? "⚡ Örs Bulutu + Oto Yıldırım"
+                            : "🌀 Mezosiklon + 3× Yıldırım + Şok (120+)";
+                    return (
+                      <div
+                        key={st}
+                        className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5"
+                      >
+                        <div className="flex items-center justify-between font-mono text-[11px]">
+                          <span className="font-semibold text-sky-300">{m.code}</span>
+                          <span className="text-ink-muted">{rangeText}</span>
+                        </div>
+                        <div className="mt-0.5 font-medium text-ink-primary">{m.label}</div>
+                        <div className="mt-0.5 text-[11px] text-ink-secondary">{perk}</div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="mt-0.5 font-medium text-ink-primary">{m.label}</div>
-                <div className="mt-0.5 text-[11px] text-ink-secondary">{perk}</div>
-              </div>
-            );
-          })}
-        </div>
 
-        <div className="flex flex-col justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3 md:col-span-4">
-          <div className="flex flex-wrap items-center gap-3 text-[11px]">
-            <span className="flex items-center gap-1 text-amber-300">
-              <Flame className="h-3.5 w-3.5" />
-              <strong>Termal:</strong> 2× Üretim
-            </span>
-            <span className="flex items-center gap-1 text-sky-300">
-              <Snowflake className="h-3.5 w-3.5" />
-              <strong>Buz Çekirdeği:</strong> 1.4× Dolu
-            </span>
-          </div>
-          <p className="leading-relaxed text-[11px] text-ink-secondary">
-            <strong className="text-ink-primary">Sürükle:</strong> Fırlat &amp; çoklu bulut süpür ·{" "}
-            <strong className="text-ink-primary">Kendi bulutuna bırak:</strong> Büyüt &amp; Fırtına Bulutu&apos;na evrimleştir ·{" "}
-            <strong className="text-ink-primary">Sağ tık sürükle / Besle Hattı:</strong> Sürekli nem akışı ·{" "}
-            <strong className="text-ink-primary">Çift tık / A:</strong> Toplu taarruz ·{" "}
-            <strong className="text-ink-primary">Tekerlek:</strong> Oran
-          </p>
-        </div>
-      </section>
+                <div className="flex flex-col justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3 md:col-span-4">
+                  <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                    <span className="flex items-center gap-1 text-amber-300">
+                      <Flame className="h-3.5 w-3.5" />
+                      <strong>Termal:</strong> 2× Üretim
+                    </span>
+                    <span className="flex items-center gap-1 text-sky-300">
+                      <Snowflake className="h-3.5 w-3.5" />
+                      <strong>Buz Çekirdeği:</strong> 1.4× Dolu
+                    </span>
+                  </div>
+                  <p className="leading-relaxed text-[11px] text-ink-secondary">
+                    <strong className="text-ink-primary">Sürükle:</strong> Fırlat &amp; çoklu süpür ·{" "}
+                    <strong className="text-ink-primary">Kendi bulutuna bırak:</strong> Evrimleştir ·{" "}
+                    <strong className="text-ink-primary">Sağ tık:</strong> Besle hattı ·{" "}
+                    <strong className="text-ink-primary">Çift tık / A:</strong> Toplu taarruz ·{" "}
+                    <strong className="text-ink-primary">E:</strong> Şok ·{" "}
+                    <strong className="text-ink-primary">Boşluk:</strong> Duraklat
+                  </p>
+                </div>
+              </div>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }

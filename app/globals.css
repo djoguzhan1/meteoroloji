@@ -2,6 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --atmos-accent: #38bdf8;
+  --atmos-accent-rgb: 56, 189, 248;
+  --atmos-secondary: #f59e0b;
+  --atmos-secondary-rgb: 245, 158, 11;
+  --atmos-rim-rgb: 186, 230, 253;
+  --atmos-glow: rgba(56, 189, 248, 0.22);
+  --atmos-surface-tint: rgba(8, 13, 24, 0.70);
+  --atmos-lightning: 0;
+}
+
 @layer base {
   html {
     scroll-behavior: smooth;
@@ -18,19 +29,349 @@
   }
 }
 
+/* ===== ATMOS SPATIAL OBSERVATORY 4.0 — OPTİK CAM & SPEKÜLER KENAR SİSTEMİ ===== */
+
 .surface-panel {
-  @apply rounded-2xl border border-white/[0.09] bg-[#090d16]/70 shadow-instrument backdrop-blur-2xl;
+  --mx: 50%;
+  --my: 0%;
+  --spot-o: 0;
+  position: relative;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.095);
+  background:
+    radial-gradient(
+      360px circle at var(--mx) var(--my),
+      rgba(var(--atmos-accent-rgb), calc(0.085 * var(--spot-o))),
+      transparent 68%
+    ),
+    linear-gradient(
+      165deg,
+      rgba(255, 255, 255, 0.045) 0%,
+      rgba(255, 255, 255, 0.008) 38%,
+      rgba(0, 0, 0, 0.14) 100%
+    ),
+    var(--atmos-surface-tint);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(var(--atmos-rim-rgb), calc(0.18 + var(--atmos-lightning) * 0.65)),
+    0 0 calc(28px * var(--atmos-lightning)) rgba(var(--atmos-rim-rgb), calc(var(--atmos-lightning) * 0.24));
+  backdrop-filter: blur(26px) saturate(135%);
+  -webkit-backdrop-filter: blur(26px) saturate(135%);
+  transition:
+    border-color 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 700ms ease;
+}
+
+/* 1px İmleç Takipli Optik Kenar Kırılması */
+.surface-panel::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    260px circle at var(--mx) var(--my),
+    rgba(var(--atmos-rim-rgb), calc(0.55 * var(--spot-o))),
+    rgba(var(--atmos-accent-rgb), calc(0.16 * var(--spot-o))) 42%,
+    transparent 74%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+  transition: opacity 260ms ease;
+}
+
+/* Üst Speküler Gökyüzü Yansıma Çizgisi */
+.surface-panel::after {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(var(--atmos-rim-rgb), calc(0.32 + var(--atmos-lightning) * 0.68)),
+    transparent
+  );
+  pointer-events: none;
+  z-index: 1;
 }
 
 .surface-tile {
-  @apply rounded-xl border border-white/[0.07] bg-white/[0.035];
+  --mx: 50%;
+  --my: 50%;
+  --spot-o: 0;
+  position: relative;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  background:
+    radial-gradient(
+      180px circle at var(--mx) var(--my),
+      rgba(var(--atmos-accent-rgb), calc(0.12 * var(--spot-o))),
+      transparent 72%
+    ),
+    rgba(255, 255, 255, 0.032);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  transition:
+    border-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 220ms ease,
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.surface-tile:hover {
+  border-color: rgba(var(--atmos-rim-rgb), 0.24);
+}
+
+/* Taktiksel Kokpit Butonu */
+.atmos-btn {
+  --mx: 50%;
+  --my: 50%;
+  --spot-o: 0;
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms ease,
+    background-color 220ms ease,
+    box-shadow 240ms ease,
+    color 180ms ease;
+}
+
+.atmos-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    110px circle at var(--mx) var(--my),
+    rgba(var(--atmos-rim-rgb), calc(0.24 * var(--spot-o))),
+    transparent 72%
+  );
+  pointer-events: none;
+}
+
+.atmos-btn:hover {
+  border-color: rgba(var(--atmos-rim-rgb), 0.34);
+  box-shadow: 0 0 20px -6px rgba(var(--atmos-accent-rgb), 0.42);
+}
+
+.atmos-btn:active {
+  transform: scale(0.955);
+}
+
+/* Canlı Atmosferik Film Dokusu (Banding giderici ultra-hafif gren) */
+.atmos-grain {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+/* Sayfa Geçiş Sinematiği */
+@keyframes atmosRouteEnter {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.988);
+    filter: blur(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0px);
+  }
+}
+
+.atmos-route-enter {
+  animation: atmosRouteEnter 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes atmosScanSweep {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateX(130%) scaleX(1.1);
+    opacity: 0;
+  }
+}
+
+.atmos-scan-beam {
+  animation: atmosScanSweep 480ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Kademeli Giriş (Staggered Cascade) */
+@keyframes atmosFadeUp {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.atmos-enter-1 {
+  animation: atmosFadeUp 460ms cubic-bezier(0.22, 1, 0.36, 1) 20ms both;
+}
+.atmos-enter-2 {
+  animation: atmosFadeUp 500ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
+}
+.atmos-enter-3 {
+  animation: atmosFadeUp 540ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both;
+}
+
+/* Ses Ekolayzır Çubukları */
+@keyframes atmosEqBar {
+  0%,
+  100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.atmos-eq-1 {
+  animation: atmosEqBar 0.72s ease-in-out infinite;
+}
+.atmos-eq-2 {
+  animation: atmosEqBar 0.56s ease-in-out 0.14s infinite;
+}
+.atmos-eq-3 {
+  animation: atmosEqBar 0.84s ease-in-out 0.28s infinite;
+}
+.atmos-eq-4 {
+  animation: atmosEqBar 0.64s ease-in-out 0.08s infinite;
+}
+
+/* Hareketli Meteoroloji İkon Keyframe'leri */
+@keyframes atmosSunSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes atmosCloudFloat {
+  0%,
+  100% {
+    transform: translateX(0px);
+  }
+  50% {
+    transform: translateX(1.6px);
+  }
+}
+
+@keyframes atmosRainDrop {
+  0% {
+    transform: translate3d(0, -1.5px, 0);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-1.5px, 5.5px, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes atmosSnowFlake {
+  0% {
+    transform: translate3d(0, -1.5px, 0) rotate(0deg);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(1.6px, 5.5px, 0) rotate(120deg);
+    opacity: 0;
+  }
+}
+
+@keyframes atmosBoltFlash {
+  0%,
+  72%,
+  100% {
+    opacity: 0.4;
+    filter: drop-shadow(0 0 0px rgba(245, 158, 11, 0));
+  }
+  76% {
+    opacity: 1;
+    filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.95));
+  }
+  82% {
+    opacity: 0.55;
+  }
+  86% {
+    opacity: 1;
+    filter: drop-shadow(0 0 8px rgba(254, 240, 138, 1));
+  }
+}
+
+@keyframes atmosBeaconPulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.78;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes atmosIsobarSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes atmosLineDraw {
+  from {
+    stroke-dashoffset: 1800;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.atmos-line-draw {
+  stroke-dasharray: 1800;
+  stroke-dashoffset: 0;
+  animation: atmosLineDraw 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.atmos-beacon-ring {
+  animation: atmosBeaconPulse 2.1s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .tabular {
   font-variant-numeric: tabular-nums;
 }
 
-/* Minimalist Range Slider */
+/* Dinamik Atmosferik Range Slider */
 input[type="range"].meteo-range {
   -webkit-appearance: none;
   appearance: none;
@@ -41,19 +382,33 @@ input[type="range"].meteo-range {
 input[type="range"].meteo-range::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.16);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--atmos-accent-rgb), 0.36),
+    rgba(255, 255, 255, 0.16)
+  );
 }
 
 input[type="range"].meteo-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: -5px;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
   border-radius: 9999px;
-  background: #f3f6fb;
-  border: 2px solid #090d16;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+  background: #f8fbff;
+  border: 2.5px solid var(--atmos-accent);
+  box-shadow:
+    0 0 0 3px rgba(var(--atmos-accent-rgb), 0.2),
+    0 2px 10px rgba(0, 0, 0, 0.75);
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease;
+}
+
+input[type="range"].meteo-range::-webkit-slider-thumb:hover {
+  transform: scale(1.18);
+  box-shadow:
+    0 0 0 5px rgba(var(--atmos-accent-rgb), 0.28),
+    0 0 18px rgba(var(--atmos-accent-rgb), 0.65);
 }
 
 ::-webkit-scrollbar {
@@ -66,10 +421,30 @@ input[type="range"].meteo-range::-webkit-slider-thumb {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.28);
+  background: rgba(var(--atmos-rim-rgb), 0.26);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.5);
+  background: rgba(var(--atmos-accent-rgb), 0.55);
+}
+
+/* Erişilebilirlik: Azaltılmış Hareket Tercihi */
+@media (prefers-reduced-motion: reduce) {
+  .atmos-route-enter,
+  .atmos-scan-beam,
+  .atmos-enter-1,
+  .atmos-enter-2,
+  .atmos-enter-3,
+  .atmos-line-draw,
+  .atmos-beacon-ring,
+  .atmos-eq-1,
+  .atmos-eq-2,
+  .atmos-eq-3,
+  .atmos-eq-4 {
+    animation: none !important;
+  }
+  .surface-panel::before {
+    display: none;
+  }
 }

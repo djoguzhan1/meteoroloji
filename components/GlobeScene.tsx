@@ -1,4 +1,3 @@
-/* eslint-disable react/no-unknown-property */
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -302,9 +301,283 @@ function CameraFocusController({
   );
 }
 
+/**
+ * Derin uzay yıldız alanı (deterministik dağılım, yavaş yörünge dönüşü)
+ */
+function OrbitalStarfield() {
+  const pointsRef = useRef<THREE.Points>(null);
+
+  const geo = useMemo(() => {
+    const count = 420;
+    const pos = new Float32Array(count * 3);
+    const hash = (n: number) => {
+      const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+      return s - Math.floor(s);
+    };
+    for (let i = 0; i < count; i++) {
+      const u = hash(i * 3 + 1);
+      const v = hash(i * 3 + 2);
+      const theta = u * Math.PI * 2;
+      const phi = Math.acos(2 * v - 1);
+      const r = 15 + hash(i * 3 + 3) * 10;
+      pos[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
+      pos[i * 3 + 1] = r * Math.cos(phi);
+      pos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    return g;
+  }, []);
+
+  useEffect(() => () => geo.dispose(), [geo]);
+
+  useFrame((_, delta) => {
+    if (pointsRef.current) {
+      pointsRef.current.rotation.y += delta * 0.008;
+    }
+  });
+
+  return (
+    <points ref={pointsRef} geometry={geo}>
+      <pointsMaterial
+        color="#dbeafe"
+        size={0.075}
+        transparent
+        opacity={0.72}
+        sizeAttenuation
+        depthWrite={false}
+      />
+    </points>
+  );
+}
+
+/**
+ * Yavaşça doğuya sürüklenen yarı-saydam küresel bulut kabuğu (gerçek güneş ışığıyla aydınlanır)
+ */
+function GlobalCloudShell({ sunDir }: { sunDir: THREE.Vector3 }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.ShaderMaterial>(null);
+  const uniforms = useMemo(
+    () => ({
+      uSunDir: { value: sunDir.clone() },
+      uTime: { value: 0 }
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  useEffect(() => {
+    if (matRef.current) {
+      matRef.current.uniforms.uSunDir.value.copy(sunDir);
+    }
+  }, [sunDir]);
+
+  useFrame((_, delta) => {
+    if (matRef.current) {
+      matRef.current.uniforms.uTime.value += delta;
+    }
+    if (meshRef.current) {
+      meshRef.current.rotation.y += delta * 0.015;
+    }
+  });
+
+  return (
+    <mesh ref={meshRef}>
+      <sphereGeometry args={[GLOBE_RADIUS + 0.022, 64, 64]} />
+      <shaderMaterial
+        ref={matRef}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        vertexShader={/* glsl */ `
+          varying vec3 vNormalObj;
+          varying vec3 vWorldNormal;
+          void main() {
+            vNormalObj = normalize(position);
+            vWorldNormal = normalize(mat3(modelMatrix) * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `}
+        fragmentShader={/* glsl */ `
+          precision highp float;
+          uniform vec3 uSunDir;
+          uniform float uTime;
+          varying vec3 vNormalObj;
+          varying vec3 vWorldNormal;
+
+          float hash(vec3 p) {
+            p = fract(p * 0.3183099 + 0.1);
+            p *= 17.0;
+            return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+          }
+
+          float noise3(vec3 x) {
+            vec3 i = floor(x);
+            vec3 f = fract(x);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(
+              mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                  mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+              mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                  mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y),
+              f.z
+            );
+          }
+
+          float fbm3(vec3 p) {
+            float v = 0.0;
+            float a = 0.5;
+            for (int i = 0; i < 4; i++) {
+              v += a * noise3(p);
+              p = p * 2.05 + vec3(1.3, 0.7, -0.9);
+              a *= 0.5;
+            }
+            return v;
+          }
+
+          void main() {
+            vec3 sp = vNormalObj * vec3(2.8, 3.4, 2.8);
+            float warp = fbm3(sp * 0.8 + vec3(uTime * 0.015, 0.0, 0.0));
+            float n = fbm3(sp * 1.45 + vec3(warp * 0.75, 0.0, -uTime * 0.01));
+            float clouds = smoothstep(0.52, 0.78, n);
+            if (clouds < 0.02) discard;
+
+            float ndl = dot(normalize(vWorldNormal), normalize(uSunDir));
+            float dayLit = smoothstep(-0.22, 0.35, ndl);
+            vec3 col = mix(vec3(0.26, 0.36, 0.52), vec3(0.92, 0.96, 1.0), dayLit);
+            float alpha = clouds * mix(0.14, 0.34, dayLit);
+            gl_FragColor = vec4(col, alpha);
+          }
+        `}
+      />
+    </mesh>
+  );
+}
+
+/**
+ * Aktif ana şehir ile incelenen uzak nokta arasında uzaydan kavis çizen
+ * büyük-daire (Great-Circle) telemetri yayı ve üzerinde akan sinyal küresi
+ */
+function GreatCircleArc({
+  homeLat,
+  homeLon,
+  targetLat,
+  targetLon
+}: {
+  homeLat: number;
+  homeLon: number;
+  targetLat: number;
+  targetLon: number;
+}) {
+  const pulseRef = useRef<THREE.Mesh>(null);
+
+  const arcData = useMemo(() => {
+    const start = latLonToVector3(homeLat, homeLon, GLOBE_RADIUS + 0.032);
+    const end = latLonToVector3(targetLat, targetLon, GLOBE_RADIUS + 0.032);
+    const dist = start.distanceTo(end);
+    if (dist < 0.09) return null;
+
+    const pts: THREE.Vector3[] = [];
+    const segs = 48;
+    const peakLift = Math.min(0.62, 0.14 + dist * 0.18);
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const v = new THREE.Vector3().lerpVectors(start, end, t).normalize();
+      const lift = Math.sin(t * Math.PI) * peakLift;
+      v.multiplyScalar(GLOBE_RADIUS + 0.034 + lift);
+      pts.push(v);
+    }
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const tube = new THREE.TubeGeometry(curve, 52, 0.0085, 6, false);
+    return { curve, tube };
+  }, [homeLat, homeLon, targetLat, targetLon]);
+
+  useEffect(() => {
+    return () => {
+      arcData?.tube.dispose();
+    };
+  }, [arcData]);
+
+  useFrame((state) => {
+    if (!arcData || !pulseRef.current) return;
+    const t = (state.clock.elapsedTime * 0.38) % 1;
+    const p = arcData.curve.getPointAt(t);
+    pulseRef.current.position.copy(p);
+  });
+
+  if (!arcData) return null;
+
+  return (
+    <group>
+      <mesh geometry={arcData.tube}>
+        <meshBasicMaterial
+          color="#38bdf8"
+          transparent
+          opacity={0.72}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh ref={pulseRef}>
+        <sphereGeometry args={[0.028, 12, 12]} />
+        <meshBasicMaterial
+          color="#fef3c7"
+          transparent
+          opacity={0.95}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+/**
+ * Seçili hedef koordinat üzerinde yüzeye dik nabız atan 3D telemetri halkası
+ */
+function PulsingTargetBeacon({ pos }: { pos: THREE.Vector3 }) {
+  const ringRef = useRef<THREE.Mesh>(null);
+  const quat = useMemo(() => {
+    const q = new THREE.Quaternion();
+    q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), pos.clone().normalize());
+    return q;
+  }, [pos]);
+
+  useFrame((state) => {
+    if (!ringRef.current) return;
+    const t = (state.clock.elapsedTime * 0.85) % 1;
+    const s = 1 + t * 2.4;
+    ringRef.current.scale.set(s, s, 1);
+    const mat = ringRef.current.material as THREE.MeshBasicMaterial;
+    mat.opacity = (1 - t) * 0.78;
+  });
+
+  return (
+    <group position={pos} quaternion={quat}>
+      <mesh>
+        <sphereGeometry args={[0.04, 18, 18]} />
+        <meshBasicMaterial color="#f8fbff" />
+      </mesh>
+      <mesh ref={ringRef}>
+        <ringGeometry args={[0.048, 0.064, 32]} />
+        <meshBasicMaterial
+          color="#38bdf8"
+          transparent
+          opacity={0.75}
+          side={THREE.DoubleSide}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function EarthMesh({
   selectedLat,
   selectedLon,
+  homeLat,
+  homeLon,
   presetCities,
   sunDir,
   onPickCoords,
@@ -312,6 +585,8 @@ function EarthMesh({
 }: {
   selectedLat: number;
   selectedLon: number;
+  homeLat?: number;
+  homeLon?: number;
   presetCities: GeoLocation[];
   sunDir: THREE.Vector3;
   onPickCoords: (lat: number, lon: number) => void;
@@ -410,9 +685,12 @@ function EarthMesh({
         />
       </mesh>
 
+      {/* Yarı-Saydam Dönen Küresel Bulut Kabuğu */}
+      <GlobalCloudShell sunDir={sunDir} />
+
       {/* İnce Rayleigh Atmosfer Limbi */}
       <mesh>
-        <sphereGeometry args={[GLOBE_RADIUS + 0.04, 64, 64]} />
+        <sphereGeometry args={[GLOBE_RADIUS + 0.045, 64, 64]} />
         <shaderMaterial
           uniforms={atmosphereUniforms}
           transparent
@@ -438,10 +716,50 @@ function EarthMesh({
             varying vec3 vViewPos;
 
             void main() {
-              float fresnel = pow(1.0 - max(dot(normalize(vNormalView), normalize(vViewPos)), 0.0), 3.4);
-              float dayLit = smoothstep(-0.25, 0.45, dot(normalize(vWorldNormal), normalize(uSunDir)));
-              vec3 col = mix(vec3(0.20, 0.34, 0.54), vec3(0.38, 0.72, 0.98), dayLit);
-              gl_FragColor = vec4(col, fresnel * (0.35 + 0.42 * dayLit));
+              float fresnel = pow(1.0 - max(dot(normalize(vNormalView), normalize(vViewPos)), 0.0), 3.1);
+              float ndl = dot(normalize(vWorldNormal), normalize(uSunDir));
+              float dayLit = smoothstep(-0.25, 0.45, ndl);
+              float twilight = exp(-pow(ndl * 5.0, 2.0));
+              vec3 col = mix(vec3(0.18, 0.34, 0.58), vec3(0.36, 0.75, 1.0), dayLit);
+              col += vec3(0.95, 0.52, 0.22) * twilight * 0.32;
+              gl_FragColor = vec4(col, fresnel * (0.40 + 0.48 * dayLit));
+            }
+          `}
+        />
+      </mesh>
+
+      {/* Dış Uzay Atmosfer Halesi (ISS Limb Glow) */}
+      <mesh>
+        <sphereGeometry args={[GLOBE_RADIUS + 0.16, 48, 48]} />
+        <shaderMaterial
+          uniforms={atmosphereUniforms}
+          transparent
+          depthWrite={false}
+          side={THREE.BackSide}
+          blending={THREE.AdditiveBlending}
+          vertexShader={/* glsl */ `
+            varying vec3 vNormalView;
+            varying vec3 vWorldNormal;
+            varying vec3 vViewPos;
+            void main() {
+              vNormalView = normalize(normalMatrix * normal);
+              vWorldNormal = normalize(mat3(modelMatrix) * normal);
+              vec4 mv = modelViewMatrix * vec4(position, 1.0);
+              vViewPos = -mv.xyz;
+              gl_Position = projectionMatrix * mv;
+            }
+          `}
+          fragmentShader={/* glsl */ `
+            precision highp float;
+            uniform vec3 uSunDir;
+            varying vec3 vNormalView;
+            varying vec3 vWorldNormal;
+            varying vec3 vViewPos;
+            void main() {
+              float rim = pow(clamp(0.68 - dot(normalize(vNormalView), normalize(-vViewPos)), 0.0, 1.0), 3.2);
+              float dayLit = smoothstep(-0.3, 0.5, dot(normalize(vWorldNormal), normalize(uSunDir)));
+              vec3 col = mix(vec3(0.14, 0.30, 0.58), vec3(0.35, 0.72, 1.0), dayLit);
+              gl_FragColor = vec4(col, rim * (0.28 + 0.32 * dayLit));
             }
           `}
         />
@@ -449,7 +767,7 @@ function EarthMesh({
 
       {/* Küresel İstasyon Pinleri */}
       {presetCities.map((city) => {
-        const pos = latLonToVector3(city.lat, city.lon, GLOBE_RADIUS + 0.022);
+        const pos = latLonToVector3(city.lat, city.lon, GLOBE_RADIUS + 0.028);
         return (
           <mesh
             key={city.id}
@@ -465,11 +783,18 @@ function EarthMesh({
         );
       })}
 
-      {/* Aktif Seçili Konum İşaretçisi */}
-      <mesh position={selectedPos}>
-        <sphereGeometry args={[0.042, 18, 18]} />
-        <meshBasicMaterial color="#f3f6fb" />
-      </mesh>
+      {/* Ana Şehir -> Hedef Şehir Büyük-Daire Telemetri Yayı */}
+      {homeLat !== undefined && homeLon !== undefined && (
+        <GreatCircleArc
+          homeLat={homeLat}
+          homeLon={homeLon}
+          targetLat={selectedLat}
+          targetLon={selectedLon}
+        />
+      )}
+
+      {/* Aktif Seçili Konum Nabızlı İşaretçisi */}
+      <PulsingTargetBeacon pos={selectedPos} />
     </group>
   );
 }
@@ -477,12 +802,16 @@ function EarthMesh({
 export default function GlobeScene({
   selectedLat,
   selectedLon,
+  homeLat,
+  homeLon,
   presetCities,
   onPickCoords,
   onPickCity
 }: {
   selectedLat: number;
   selectedLon: number;
+  homeLat?: number;
+  homeLon?: number;
   presetCities: GeoLocation[];
   onPickCoords: (lat: number, lon: number) => void;
   onPickCity: (city: GeoLocation) => void;
@@ -516,9 +845,12 @@ export default function GlobeScene({
         gl={{ antialias: true, powerPreference: "high-performance" }}
       >
         <PerspectiveCamera makeDefault position={initialCam} fov={40} />
+        <OrbitalStarfield />
         <EarthMesh
           selectedLat={selectedLat}
           selectedLon={selectedLon}
+          homeLat={homeLat}
+          homeLon={homeLon}
           presetCities={presetCities}
           sunDir={sunDir}
           onPickCoords={onPickCoords}

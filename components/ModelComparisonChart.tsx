@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { FIVE_MODEL_KEYS, FIVE_MODEL_META } from "@/lib/metar-verify";
+import { SEVEN_MODEL_KEYS, SEVEN_MODEL_META } from "@/lib/metar-verify";
 import type {
-  FiveModelKey,
   GeoLocation,
   ModelSeriesPoint,
   MultiModelBundle,
+  SevenModelKey,
   UnitSystem
 } from "@/lib/weather-types";
 
@@ -19,7 +19,7 @@ const TAB_CONFIG: Record<
 > = {
   temp2m: {
     label: "2m Sıcaklık",
-    subtitle: "5 Tier-1 model yüzey hava sıcaklığı karşılaştırması",
+    subtitle: "7 Tier-1 model yüzey hava sıcaklığı karşılaştırması",
     unitMetric: "°C",
     unitImperial: "°F"
   },
@@ -78,23 +78,28 @@ export default function ModelComparisonChart({
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<MetricTab>("temp2m");
   const [hoverIdx, setHoverIdx] = useState<number>(0);
-  const [visibleModels, setVisibleModels] = useState<Record<FiveModelKey, boolean>>({
+  const [visibleModels, setVisibleModels] = useState<Record<SevenModelKey, boolean>>({
     ecmwfIfs: true,
     ecmwfAifs: true,
     icon: true,
     ukmo: true,
-    gfs: true
+    meteofrance: true,
+    gfs: true,
+    gem: true
   });
 
-  const toggleModel = (k: FiveModelKey) => {
+  const toggleModel = (k: SevenModelKey) => {
     setVisibleModels((prev) => {
-      const enabledCount = FIVE_MODEL_KEYS.filter((m) => prev[m]).length;
+      const enabledCount = SEVEN_MODEL_KEYS.filter((m) => prev[m]).length;
       if (prev[k] && enabledCount <= 1) return prev;
       return { ...prev, [k]: !prev[k] };
     });
   };
 
+  const reqSeqRef = useRef(0);
+
   const loadModels = useCallback(async () => {
+    const seq = ++reqSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -108,21 +113,31 @@ export default function ModelComparisonChart({
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const data: MultiModelBundle = await res.json();
+      if (seq !== reqSeqRef.current) return;
       setModels(data);
       setHoverIdx(0);
     } catch (e) {
+      if (seq !== reqSeqRef.current) return;
       setError(
         e instanceof Error
           ? e.message
-          : "5-Model sayısal tahmin verileri alınamadı."
+          : "7-Model sayısal tahmin verileri alınamadı."
       );
     } finally {
-      setLoading(false);
+      if (seq === reqSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [location.lat, location.lon]);
 
   useEffect(() => {
-    void loadModels();
+    let active = true;
+    queueMicrotask(() => {
+      if (active) void loadModels();
+    });
+    return () => {
+      active = false;
+    };
   }, [loadModels]);
 
   const activeSeries: ModelSeriesPoint[] = useMemo(() => {
@@ -142,9 +157,9 @@ export default function ModelComparisonChart({
 
     const allVals: number[] = [];
     for (const pt of activeSeries) {
-      for (const k of FIVE_MODEL_KEYS) {
+      for (const k of SEVEN_MODEL_KEYS) {
         if (!visibleModels[k]) continue;
-        const v = convertValue(pt[k], tab, unit);
+        const v = convertValue(pt[k] ?? null, tab, unit);
         if (v !== null) allVals.push(v);
       }
     }
@@ -162,15 +177,36 @@ export default function ModelComparisonChart({
     const xAt = (i: number) => padL + (i / (n - 1)) * plotW;
     const yAt = (v: number) => padT + plotH - ((v - minVal) / span) * plotH;
 
-    const paths = {} as Record<FiveModelKey, string>;
-    for (const k of FIVE_MODEL_KEYS) {
+    const paths = {} as Record<SevenModelKey, string>;
+    for (const k of SEVEN_MODEL_KEYS) {
       paths[k] = buildLinePath(
         activeSeries.map((pt, i) => {
-          const v = convertValue(pt[k], tab, unit);
+          const v = convertValue(pt[k] ?? null, tab, unit);
           return { x: xAt(i), y: v === null ? null : yAt(v) };
         })
       );
     }
+
+    // 7-Model Belirsizlik Zarfı (Min–Max Spread Ribbon)
+    const upperPts: string[] = [];
+    const lowerPts: string[] = [];
+    activeSeries.forEach((pt, i) => {
+      const vals: number[] = [];
+      for (const k of SEVEN_MODEL_KEYS) {
+        if (!visibleModels[k]) continue;
+        const v = convertValue(pt[k] ?? null, tab, unit);
+        if (v !== null) vals.push(v);
+      }
+      if (vals.length >= 2) {
+        const x = xAt(i).toFixed(1);
+        upperPts.push(`${x},${yAt(Math.max(...vals)).toFixed(1)}`);
+        lowerPts.push(`${x},${yAt(Math.min(...vals)).toFixed(1)}`);
+      }
+    });
+    const envelopePath =
+      upperPts.length >= 2
+        ? `M${upperPts.join(" L")} L${lowerPts.reverse().join(" L")} Z`
+        : "";
 
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => {
       const val = minVal + span * frac;
@@ -194,6 +230,7 @@ export default function ModelComparisonChart({
       xAt,
       yAt,
       paths,
+      envelopePath,
       yTicks,
       zeroY
     };
@@ -204,10 +241,10 @@ export default function ModelComparisonChart({
 
   const inspectedValues = useMemo(() => {
     if (!inspected) return null;
-    const map = {} as Record<FiveModelKey, number | null>;
+    const map = {} as Record<SevenModelKey, number | null>;
     const present: number[] = [];
-    for (const k of FIVE_MODEL_KEYS) {
-      const v = convertValue(inspected[k], tab, unit);
+    for (const k of SEVEN_MODEL_KEYS) {
+      const v = convertValue(inspected[k] ?? null, tab, unit);
       map[k] = v;
       if (v !== null && visibleModels[k]) present.push(v);
     }
@@ -232,13 +269,10 @@ export default function ModelComparisonChart({
   return (
     <section className="surface-panel p-5 sm:p-6 space-y-5">
       {/* Üst Satır: Başlık + Değişken Sekmeleri */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-ink-muted">
-            72 Saatlik 5-Model Sayısal Tahmin (NWP + AI)
-          </p>
-          <h2 className="mt-1 font-display text-lg font-semibold text-ink-primary">
-            ECMWF IFS 9km · ECMWF AIFS v1 · DWD ICON-EU · UKMO 10km · NOAA GFS
+          <h2 className="font-display text-lg font-semibold text-ink-primary">
+            72 Saatlik 7-Model Karşılaştırma
           </h2>
           <p className="mt-0.5 text-xs text-ink-muted">
             {location.name} · {TAB_CONFIG[tab].subtitle}
@@ -279,20 +313,20 @@ export default function ModelComparisonChart({
 
       {loading && !models && !error && (
         <div className="h-[260px] rounded-xl border border-white/[0.06] bg-obsidian-950/60 flex items-center justify-center font-mono text-xs text-ink-muted">
-          5 Tier-1 model verisi çekiliyor...
+          7 Tier-1 model verisi çekiliyor...
         </div>
       )}
 
       {models && activeSeries.length > 0 && (
         <>
-          {/* Seçili Saat + Tıklanabilir 5-Model Filtre Bandı */}
+          {/* Seçili Saat + Tıklanabilir 7-Model Filtre Bandı */}
           <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.07] bg-obsidian-950/60 px-3.5 py-2.5 text-xs font-mono tabular">
             <span className="text-ink-secondary">
               {inspected ? `${inspected.dayLabel} · ${inspected.hourLabel}` : "--"}
             </span>
             <div className="flex flex-wrap items-center gap-2">
-              {FIVE_MODEL_KEYS.map((k) => {
-                const meta = FIVE_MODEL_META[k];
+              {SEVEN_MODEL_KEYS.map((k) => {
+                const meta = SEVEN_MODEL_META[k];
                 const active = visibleModels[k];
                 const val = inspectedValues?.map[k];
                 return (
@@ -330,7 +364,7 @@ export default function ModelComparisonChart({
             </div>
           </div>
 
-          {/* 5-Model SVG Grafiği */}
+          {/* 7-Model SVG Grafiği */}
           <div className="rounded-xl border border-white/[0.07] bg-[#070b14] p-2">
             <svg
               viewBox={`0 0 ${chart.W} ${chart.H}`}
@@ -338,7 +372,7 @@ export default function ModelComparisonChart({
               onPointerDown={handlePointer}
               className="h-60 w-full cursor-crosshair select-none touch-none"
               role="img"
-              aria-label="5 Tier-1 meteoroloji modeli 72 saatlik karşılaştırma grafiği"
+              aria-label="7 Tier-1 meteoroloji modeli 72 saatlik karşılaştırma grafiği"
             >
               {chart.yTicks.map((tick) => (
                 <g key={tick.val}>
@@ -404,41 +438,83 @@ export default function ModelComparisonChart({
                 );
               })}
 
-              {FIVE_MODEL_KEYS.map((k) => {
-                if (!visibleModels[k] || !chart.paths[k]) return null;
-                return (
-                  <path
-                    key={k}
-                    d={chart.paths[k]}
-                    fill="none"
-                    stroke={FIVE_MODEL_META[k].color}
-                    strokeWidth={k === "ecmwfIfs" || k === "ecmwfAifs" ? 2.2 : 1.8}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  />
-                );
-              })}
+              {/* 7-Model Belirsizlik Zarfı (Min–Max Spread Ribbon) */}
+              {chart.envelopePath && (
+                <path
+                  d={chart.envelopePath}
+                  fill="rgba(56, 189, 248, 0.10)"
+                  stroke="rgba(56, 189, 248, 0.16)"
+                  strokeWidth="0.7"
+                />
+              )}
+
+              <g key={tab}>
+                {SEVEN_MODEL_KEYS.map((k) => {
+                  if (!visibleModels[k] || !chart.paths[k]) return null;
+                  return (
+                    <path
+                      key={k}
+                      d={chart.paths[k]}
+                      fill="none"
+                      stroke={SEVEN_MODEL_META[k].color}
+                      strokeWidth={k === "ecmwfIfs" || k === "ecmwfAifs" ? 2.3 : 1.75}
+                      strokeLinejoin="round"
+                      strokeLinecap="round"
+                      className="atmos-line-draw"
+                    />
+                  );
+                })}
+              </g>
 
               <line
                 x1={chart.xAt(clampedIdx)}
                 x2={chart.xAt(clampedIdx)}
                 y1={chart.padT}
                 y2={chart.H - chart.padB}
-                stroke="rgba(243, 246, 251, 0.45)"
+                stroke="rgba(243, 246, 251, 0.52)"
                 strokeDasharray="3 3"
-                strokeWidth="1"
+                strokeWidth="1.2"
               />
+
+              {/* Seçili Saatte 7 Modelin Tamamında Eşzamanlı Parlayan Kesişim Düğümleri */}
+              {inspectedValues &&
+                SEVEN_MODEL_KEYS.map((k) => {
+                  if (!visibleModels[k]) return null;
+                  const val = inspectedValues.map[k];
+                  if (val === null || val === undefined) return null;
+                  const cx = chart.xAt(clampedIdx);
+                  const cy = chart.yAt(val);
+                  return (
+                    <g key={`node-${k}`}>
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={6.5}
+                        fill={SEVEN_MODEL_META[k].color}
+                        fillOpacity={0.22}
+                      />
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={3.2}
+                        fill={SEVEN_MODEL_META[k].color}
+                        stroke="#070b14"
+                        strokeWidth="1.4"
+                      />
+                    </g>
+                  );
+                })}
             </svg>
           </div>
 
-          {/* 5-Model Özet Kartları */}
+          {/* 7-Model Özet Kartları */}
           <div className="grid gap-3 sm:grid-cols-3 text-xs font-mono tabular">
             <div className="surface-tile p-3.5 space-y-1.5">
               <span className="text-[11px] text-ink-muted">72 Saat Toplam Yağış (mm)</span>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {FIVE_MODEL_KEYS.map((k) => (
-                  <span key={k} style={{ color: FIVE_MODEL_META[k].color }}>
-                    {FIVE_MODEL_META[k].shortLabel}: {models.summary.precip72h[k]}
+                {SEVEN_MODEL_KEYS.map((k) => (
+                  <span key={k} style={{ color: SEVEN_MODEL_META[k].color }}>
+                    {SEVEN_MODEL_META[k].shortLabel}: {models.summary.precip72h[k]}
                   </span>
                 ))}
               </div>
@@ -447,9 +523,9 @@ export default function ModelComparisonChart({
             <div className="surface-tile p-3.5 space-y-1.5">
               <span className="text-[11px] text-ink-muted">72s En Düşük 850 hPa (°C)</span>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {FIVE_MODEL_KEYS.map((k) => (
-                  <span key={k} style={{ color: FIVE_MODEL_META[k].color }}>
-                    {FIVE_MODEL_META[k].shortLabel}:{" "}
+                {SEVEN_MODEL_KEYS.map((k) => (
+                  <span key={k} style={{ color: SEVEN_MODEL_META[k].color }}>
+                    {SEVEN_MODEL_META[k].shortLabel}:{" "}
                     {models.summary.min850hPa[k] !== null
                       ? `${models.summary.min850hPa[k]}°`
                       : "—"}
@@ -459,7 +535,7 @@ export default function ModelComparisonChart({
             </div>
 
             <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">Maks. 2m 5-Model Sapması</span>
+              <span className="text-[11px] text-ink-muted">Maks. 2m 7-Model Sapması</span>
               <p className="text-sm font-semibold text-ink-primary">
                 ±{models.summary.maxSpreadTemp2m}°C{" "}
                 <span className="text-[11px] font-normal text-ink-muted">

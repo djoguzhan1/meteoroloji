@@ -24,13 +24,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ATMOS — Canlı Meteoroloji, 5-Model Hibrit, Radar & Bulut Savaşı",
+  title: "ATMOS — Canlı Meteoroloji, 7-Model Hibrit v3, Radar & Bulut Savaşı",
   description:
-    "Gerçek zamanlı METAR doğrulamalı 5-model hibrit tahmin (ECMWF IFS · AIFS · ICON · UKMO · GFS), canlı yağış radarı & rüzgar akım haritası, 1000–300 hPa Skew-T sondaj ve CUMULUS Bulut Savaşı.",
+    "ATMOS-Core v3.0: Gerçek zamanlı çoklu ICAO METAR Kalman/MOS doğrulamalı 7 Tier-1 model + 122 ensemble tahmin, canlı Doppler radar & 3D küre, 1000–300 hPa Skew-T sondaj ve CUMULUS Bulut Savaşı.",
   openGraph: {
-    title: "ATMOS — Canlı Meteoroloji, 5-Model Hibrit & Radar",
+    title: "ATMOS — Canlı Meteoroloji, 7-Model Hibrit v3 & Radar",
     description:
-      "Gerçek zamanlı ICAO METAR doğrulamalı 5-model hibrit tahmin, canlı Doppler radar + rüzgar akımı, Skew-T Log-P radyosonda ve CUMULUS Bulut Savaşı.",
+      "Gerçek zamanlı çoklu METAR doğrulamalı 7-model + 122 ensemble hibrit tahmin, canlı Doppler radar + rüzgar akımı, Skew-T Log-P radyosonda ve CUMULUS Bulut Savaşı.",
     type: "website",
     locale: "tr_TR"
   }

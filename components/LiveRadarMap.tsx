@@ -120,7 +120,13 @@ export default function LiveRadarMap({
   });
 
   useEffect(() => {
-    setCenter({ lat: selectedLat, lon: selectedLon });
+    let active = true;
+    queueMicrotask(() => {
+      if (active) setCenter({ lat: selectedLat, lon: selectedLon });
+    });
+    return () => {
+      active = false;
+    };
   }, [selectedLat, selectedLon]);
 
   useEffect(() => {
@@ -160,7 +166,13 @@ export default function LiveRadarMap({
   }, []);
 
   useEffect(() => {
-    void loadRadar();
+    let active = true;
+    queueMicrotask(() => {
+      if (active) void loadRadar();
+    });
+    return () => {
+      active = false;
+    };
   }, [loadRadar]);
 
   // Oynatma döngüsü
@@ -403,7 +415,6 @@ export default function LiveRadarMap({
           }}
         >
           {tiles.map((t) => (
-            // eslint-disable-next-line @next/next/no-img-element
             <img
               key={`base-${basemap}-${t.key}`}
               src={baseTileUrl(zoom, t.y, t.wrapX)}
@@ -424,7 +435,6 @@ export default function LiveRadarMap({
         {showRadar && radar && activeFrame && (
           <div className="pointer-events-none absolute inset-0 opacity-85">
             {tiles.map((t) => (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 key={`radar-${activeFrame.time}-${t.key}`}
                 src={`${radar.host}${activeFrame.path}/256/${zoom}/${t.wrapX}/${t.y}/6/1_1.png`}
@@ -458,7 +468,6 @@ export default function LiveRadarMap({
         {/* Üst Referans Sınır & Şehir İsimleri Katmanı */}
         <div className="pointer-events-none absolute inset-0 opacity-75">
           {tiles.map((t) => (
-            // eslint-disable-next-line @next/next/no-img-element
             <img
               key={`ref-${t.key}`}
               src={`https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/${zoom}/${t.y}/${t.wrapX}`}
@@ -512,7 +521,7 @@ export default function LiveRadarMap({
           );
         })}
 
-        {/* Seçili Ölçüm Noktası Nişangahı */}
+        {/* Seçili Ölçüm Noktası Dönen Doppler Nişangâhı */}
         {selectedPt.x >= -20 &&
           selectedPt.x <= size.width + 20 &&
           selectedPt.y >= -20 &&
@@ -521,9 +530,35 @@ export default function LiveRadarMap({
               style={{ left: selectedPt.x, top: selectedPt.y }}
               className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
             >
-              <div className="relative flex items-center justify-center">
-                <span className="h-7 w-7 rounded-full border border-ink-primary/85 bg-signal-sky/20" />
-                <span className="absolute h-2 w-2 rounded-full bg-ink-primary shadow" />
+              <div className="relative flex h-12 w-12 items-center justify-center">
+                <span
+                  className="atmos-beacon-ring absolute h-8 w-8 rounded-full border border-[var(--atmos-accent)]"
+                />
+                <svg
+                  viewBox="0 0 44 44"
+                  className="h-11 w-11"
+                  style={{ animation: "atmosIsobarSpin 14s linear infinite" }}
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="22"
+                    cy="22"
+                    r="16"
+                    fill="none"
+                    stroke="var(--atmos-accent)"
+                    strokeOpacity="0.82"
+                    strokeWidth="1.2"
+                    strokeDasharray="10 7"
+                  />
+                  <line x1="22" y1="2" x2="22" y2="8" stroke="#f8fbff" strokeWidth="1.4" />
+                  <line x1="22" y1="36" x2="22" y2="42" stroke="#f8fbff" strokeWidth="1.4" />
+                  <line x1="2" y1="22" x2="8" y2="22" stroke="#f8fbff" strokeWidth="1.4" />
+                  <line x1="36" y1="22" x2="42" y2="22" stroke="#f8fbff" strokeWidth="1.4" />
+                </svg>
+                <span
+                  className="absolute h-2.5 w-2.5 rounded-full bg-white"
+                  style={{ boxShadow: "0 0 12px var(--atmos-accent)" }}
+                />
               </div>
             </div>
           )}

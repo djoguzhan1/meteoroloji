@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { SceneAtmosphereInput } from "@/lib/weather-types";
 
 type AtmosphereAudioProps = {
@@ -23,7 +23,7 @@ export default function AtmosphereAudio({
   const filterRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
 
-  const ensureContext = () => {
+  const ensureContext = useCallback(() => {
     if (ctxRef.current) return ctxRef.current;
     try {
       const AudioCtx =
@@ -75,7 +75,7 @@ export default function AtmosphereAudio({
 
       const mainFilter = ctx.createBiquadFilter();
       mainFilter.type = "lowpass";
-      mainFilter.frequency.value = muffled ? 650 : 3400;
+      mainFilter.frequency.value = 3400;
 
       const panner = ctx.createStereoPanner();
       panner.pan.value = 0;
@@ -108,7 +108,7 @@ export default function AtmosphereAudio({
     } catch {
       return null;
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -165,7 +165,8 @@ export default function AtmosphereAudio({
     atmosphere.windSpeed,
     atmosphere.windDirection,
     atmosphere.precipType,
-    atmosphere.precipIntensity
+    atmosphere.precipIntensity,
+    ensureContext
   ]);
 
   // Fırtına modunda aralıklı düşük frekanslı gök gürültüsü

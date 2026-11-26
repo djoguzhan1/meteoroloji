@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     console.error("Multi-model API error:", err);
     return NextResponse.json(
-      { error: "5-model (ECMWF / AIFS / ICON / UKMO / GFS) verileri alınamadı." },
+      { error: "7-model (ECMWF / AIFS / ICON / UKMO / AROME / GFS / GEM) verileri alınamadı." },
       { status: 503 }
     );
   }
