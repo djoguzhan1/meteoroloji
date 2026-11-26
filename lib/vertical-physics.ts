@@ -1,5 +1,5 @@
 /**
- * ATMOS v4.0 — 9-Point Bursa Micro-Stencil, 3D Uludağ Physics & DWD ICON Native Grid Adapter
+ * ATMOS v4.5 — 9-Point Bursa Micro-Stencil, 3D Uludağ Physics & DWD ICON Native Grid Adapter
  * File: lib/vertical-physics.ts
  *
  * Solves NWP grid-orography blurring over Bursa (100-200m plain adjacent to 2,543m Uludağ):

@@ -1,8 +1,8 @@
 /**
- * ATMOS v4.0 — AI + Physics Model Pool, CSG-EMOS PoP Calibration & PM-QM Precipitation Engine
+ * ATMOS v4.5 — AI + Physics Model Pool, CSG-EMOS PoP Calibration & PM-QM Precipitation Engine
  * File: lib/emos-precip-fusion.ts
  *
- * Implements Steps 5 & 6 of the ATMOS v4.0 Bursa Ultra-Precision Architecture:
+ * Implements Steps 5 & 6 of the ATMOS v4.5 Bursa Ultra-Precision Architecture:
  *  1. Expanded 9-Model Physics + AI Foundation Registry (ECMWF IFS 9km, DWD ICON-EU 7km,
  *     Météo-France ARPEGE Europe 10km, UKMO 10km, NOAA GFS 13km, GEM 15km,
  *     ECMWF AIFS 0.25° AI, DWD AICON AI, and 122+ Ensemble Members)

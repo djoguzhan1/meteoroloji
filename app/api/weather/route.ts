@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DEFAULT_LOCATION, fetchWeatherBundle } from "@/lib/weather";
+import { DEFAULT_LOCATION, fetchWeatherBundle, PRESET_CITIES } from "@/lib/weather";
 import type { GeoLocation } from "@/lib/weather-types";
 
 export const dynamic = "force-dynamic";
@@ -9,11 +9,13 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const latRaw = searchParams.get("lat");
   const lonRaw = searchParams.get("lon");
+  const elevRaw = searchParams.get("elevation");
   const name = searchParams.get("name")?.trim();
   const country = searchParams.get("country")?.trim();
 
   const lat = latRaw !== null ? Number(latRaw) : DEFAULT_LOCATION.lat;
   const lon = lonRaw !== null ? Number(lonRaw) : DEFAULT_LOCATION.lon;
+  const parsedElev = elevRaw !== null && elevRaw !== "" ? Number(elevRaw) : NaN;
 
   if (
     !Number.isFinite(lat) ||
@@ -29,16 +31,23 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const presetMatch = PRESET_CITIES.find(
+    (p) => Math.abs(p.lat - lat) < 0.01 && Math.abs(p.lon - lon) < 0.01
+  );
+  const elevation = Number.isFinite(parsedElev) ? parsedElev : presetMatch?.elevation;
+
   const location: GeoLocation = {
-    id: `${lat.toFixed(2)}_${lon.toFixed(2)}`,
+    id: presetMatch?.id ?? `${lat.toFixed(2)}_${lon.toFixed(2)}`,
     name:
       name ||
+      presetMatch?.name ||
       (latRaw === null
         ? DEFAULT_LOCATION.name
         : `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`),
-    country: country || (latRaw === null ? DEFAULT_LOCATION.country : ""),
+    country: country || presetMatch?.country || (latRaw === null ? DEFAULT_LOCATION.country : ""),
     lat,
-    lon
+    lon,
+    ...(elevation !== undefined ? { elevation } : {})
   };
 
   try {

@@ -41,7 +41,7 @@ function makeObs(
   };
 }
 
-describe('ATMOS v4.0 — Bursa Hyper-Local Observation Mesh & Topographic Cressman', () => {
+describe('ATMOS v4.5 — Bursa Hyper-Local Observation Mesh & Topographic Cressman', () => {
   it('decodes 0.1°C precision T-group remarks from aviation METAR strings', () => {
     const raw = 'METAR LTBR 260150Z VRB02KT 6000 NSC 02/M01 Q1024 NOSIG RMK RWY07 T00181009';
     const parsed = parseMetarTenthDegreeGroup(raw);

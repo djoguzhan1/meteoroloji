@@ -489,7 +489,7 @@ export type DynamicHybridWeights = {
 
 /**
  * Geriye dönük uyumlu v2 doğrulama fonksiyonu (eski testler ve doğrudan tek istasyon çağrıları için).
- * Yeni ATMOS-Core v3.0 boru hattı çoklu-istasyonlu Kalman/MOS için `lib/kalman-mos.ts` kullanır.
+ * Yeni ATMOS-Core v4.5 boru hattı çoklu-istasyonlu Kalman/MOS için `lib/kalman-mos.ts` kullanır.
  */
 export function evaluateModelsAgainstMetar({
   station,

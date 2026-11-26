@@ -222,6 +222,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             >
               <AtmosBrandMark windSpeed={atmosphere.windSpeed} />
               <span className="transition-colors group-hover:text-white">ATMOS</span>
+              <span className="rounded bg-white/[0.08] px-1.5 py-0.5 font-mono text-[10px] font-semibold tracking-normal text-[var(--atmos-accent)]">v4.5</span>
             </Link>
 
             {/* Yay Fiziksel Kayan Kapsüllü Masaüstü Sekmeler */}

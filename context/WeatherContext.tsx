@@ -20,10 +20,10 @@ import type {
 } from "@/lib/weather-types";
 
 const STORAGE_KEYS = {
-  location: "atmos:location:v3",
-  favorites: "atmos:stations:v3",
-  alerts: "atmos:alerts:v3",
-  unit: "atmos:unit:v3"
+  location: "atmos:location:v45",
+  favorites: "atmos:stations:v45",
+  alerts: "atmos:alerts:v45",
+  unit: "atmos:unit:v45"
 };
 
 type WeatherContextValue = {
@@ -132,6 +132,9 @@ export function WeatherProvider({
         name: loc.name,
         country: loc.country ?? ""
       });
+      if (loc.elevation !== undefined && Number.isFinite(loc.elevation)) {
+        qs.set("elevation", String(Math.round(loc.elevation)));
+      }
       const res = await fetch(`/api/weather?${qs.toString()}`, {
         signal: controller.signal
       });

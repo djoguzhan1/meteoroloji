@@ -280,7 +280,7 @@ function emptyBiasProfile(): ModelBiasProfile {
 }
 
 /**
- * ATMOS-Core v3.0 Kalman + Diurnal-Phase MOS Eğitim Motoru:
+ * ATMOS-Core v4.5 Kalman + Diurnal-Phase MOS Eğitim Motoru:
  * - Son 48 saatlik çoklu-istasyon METAR ağına karşı 7 modelin ayrı ayrı bias & UBRMSE'sini çıkarır.
  * - Ağırlıkları ham RMSE değil, bias temizlendikten sonraki rastgele hata (UBRMSE²) ile belirler.
  * - Yağış Brier skoruyla (METAR wxString) yağış ağırlıklarını da canlı kalibre eder.
@@ -788,7 +788,7 @@ export function blendKalmanCorrectedScalar({
     candidates.push({ corr, w });
   }
 
-  // ATMOS v4.0 Orta-Uzun Vade (Gün 3-7, leadHour >= 66) Alfa-Kırpılmış (Alpha-Trimmed) Konsensüs:
+  // ATMOS v4.5 Orta-Uzun Vade (Gün 3-7, leadHour >= 66) Alfa-Kırpılmış (Alpha-Trimmed) Konsensüs:
   // Tekil deterministik koşuların uç faz savrulmalarını (en sıcak 1 ve en soğuk 1 uç model) %70 sönümler!
   if (param === "temperature" && leadHour >= 66 && candidates.length >= 5) {
     candidates.sort((a, b) => a.corr - b.corr);

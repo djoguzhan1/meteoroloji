@@ -1,24 +1,20 @@
-# ATMOS — Kanıta Dayalı Canlı Meteoroloji Gözlem & Doğrulama Platformu
+# ATMOS v4.5 — Hiper-Yerel Kanıta Dayalı Meteoroloji & 7-Model EMOS Platformu
 
-%100 gerçek fiziksel gözlem ve çoklu sayısal hava tahmini (NWP + AI) verisiyle çalışan 4 sekmeli gözlem, canlı doğrulama, Doppler radar ve dikey atmosfer sondaj platformu.
+Bursa başta olmak üzere gerçek fiziksel yer istasyonu ağları, 8.712 saatlik WMO 17116 Hibrit EMOS kalibrasyonu, 7 Tier-1 NWP/AI modeli ve 122 olasılıksal ensemble üyesiyle çalışan yeni nesil meteoroloji gözlem ve tahmin platformu (**ATMOS-Core v4.5**).
 
-## Canlı Veri & Doğrulama Mimarisi
+## ATMOS-Core v4.5 Mimarisi
 
-- **Gerçek Fiziksel Yer Gözlemi (METAR):** NOAA AviationWeather.gov resmi METAR API ile seçili konuma 65 km içindeki en yakın ICAO istasyonunun gerçek termometre, çiy noktası, QNH barometre, anemometre ve görüş sensörü okumaları.
-- **5 Tier-1 Model Canlı 24s Ters-RMSE² Hibrit Motoru:** `ECMWF IFS (9 km HRES)`, `ECMWF AIFS v1 (AI)`, `DWD ICON-EU (7 km)`, `UKMO Unified (10 km)` ve `NOAA GFS / HRRR (3 km)` modellerinin son 24 saatteki gerçek METAR gözlemlerine karşı canlı RMSE hatası ölçülür; her parametre (sıcaklık, basınç, rüzgar) için dinamik ağırlıklar hesaplanır. Yakın METAR olmayan noktalarda şeffafça WMO LC-DNV referans ağırlıkları kullanılır.
-- **Fiziksel Standartlar:**
-  - **Termodinamik:** Bolton (1980) Eq. 10 ($e_s$), Eq. 22 ($T_{LCL}$), Eq. 39 ($\theta_e$, `< 0.2 K` hata), dinamik jeopotansiyel yükseklik (`geopotential_height_1000..300hPa`) ve `500–1000 hPa` kalınlık (`dam`).
-  - **Astronomi:** Resmi NOAA Global Monitoring Laboratory Zaman Denklemi (EoT) + Fourier Deklinasyon + Saemundsson atmosferik kırılma düzeltmesi (`< 0.01°`).
-  - **Rüzgar & Basınç:** Vektörel rüzgar yönü ortalaması, WMO Beaufort 0–12 skalası, resmi WMO FM-12 barometrik eğilim eşikleri ve 4 fiziksel hamle modeli.
-  - **Hava Kalitesi:** Copernicus CAMS (10 km) + resmi EEA 6 bantlı EAQI ve baskın kirletici tespiti.
-  - **Radar & Küre:** RainViewer Doppler (Marshall-Palmer $Z = 200 R^{1.6}$ skalası) + filigransız Esri Koyu/Uydu katmanları + Natural Earth 110m 3D Dünya Küresi.
+- **Bursa 19-İlçe MGM Hiper-Yerel Gözlem Ağı & LTBR İzolasyonu (`lib/bursa-mesh.ts`, `lib/topographic-cressman.ts`):** Resmi MGM 19 ilçe istasyonu (Osmangazi WMO 17116, Nilüfer, Yıldırım, Mudanya, Gemlik, Kestel, Uludağ 1.877 m vb.) canlı çekilir; Yenişehir Havalimanı (`LTBR`) çanak-ova radyasyon soğuması tuzağı topografik bariyer cezasıyla izole edilir ve anizotropik Topografik Cressman-Barnes enterpolasyonu uygulanır.
+- **8.712 Saatlik WMO 17116 Eğitimli Hibrit Huber-Ridge + L1-Ağaç EMOS (`lib/bursa-trained-emos.ts`):** 56 özellikli Huber-IRLS Ridge omurgası + simetrik derinlik-3 L1 karar ağaçları + canlı MGM sensörü AR(2) sönümlemesi ile AIFS 6 saatlik testere dişi sapması ve akşam kentsel ısı adası (UHI) salınımı düzeltilir (+1s **0,53 °C** MAE, +6s **0,84 °C** MAE, Gün 1 **1,04 °C** MAE).
+- **3B Uludağ Dikey Fizik & Piksel Düzeyinde Radar Nowcast (`lib/vertical-physics.ts`, `lib/radar-nowcast.ts`):** Lodos adyabatik Fön ısınması, alt-bulut virga buharlaşması, fiziksel sis görüş mesafesi ve RainViewer PNG radar karolarından yarı-Lagrange optik akışla dakika bazlı yağış başlangıç/bitiş tespiti yapılır.
+- **Sıfır Son Dakika Savrulması — 4-Koşulu `dProg/dt` Histerezis Kilidi (`lib/run-consistency.ts`):** 4 ardışık model koşusunu karşılaştırarak tekil ara koşu (06Z/18Z) sapmalarını ve T+0..T+2s spin-up şoklarını sönümler; hatalı son dakika revizyonlarını **%1,35** seviyesine indirir.
 
-## Geliştirme Komutları
+## Geliştirme & Doğruluk Denetimi Komutları
 
 ```bash
 npm install
 npm run typecheck
 npm run test
-npm run build
+npm run benchmark:bursa
 npm run dev
 ```

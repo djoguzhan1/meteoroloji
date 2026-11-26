@@ -24,11 +24,11 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ATMOS — Canlı Meteoroloji, 7-Model Hibrit v3, Radar & Bulut Savaşı",
+  title: "ATMOS v4.5 — Canlı Meteoroloji, 7-Model Hibrit EMOS, Radar & Bulut Savaşı",
   description:
-    "ATMOS-Core v3.0: Gerçek zamanlı çoklu ICAO METAR Kalman/MOS doğrulamalı 7 Tier-1 model + 122 ensemble tahmin, canlı Doppler radar & 3D küre, 1000–300 hPa Skew-T sondaj ve CUMULUS Bulut Savaşı.",
+    "ATMOS-Core v4.5: Bursa 8.712s WMO-17116 Hibrit EMOS + 19-İlçe MGM Topografik Cressman + Çoklu METAR Kalman/MOS doğrulamalı 7 Tier-1 model + 122 ensemble tahmin, canlı Doppler radar & 3D küre.",
   openGraph: {
-    title: "ATMOS — Canlı Meteoroloji, 7-Model Hibrit v3 & Radar",
+    title: "ATMOS v4.5 — Canlı Meteoroloji, 7-Model Hibrit EMOS & Radar",
     description:
       "Gerçek zamanlı çoklu METAR doğrulamalı 7-model + 122 ensemble hibrit tahmin, canlı Doppler radar + rüzgar akımı, Skew-T Log-P radyosonda ve CUMULUS Bulut Savaşı.",
     type: "website",

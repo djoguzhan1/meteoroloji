@@ -524,10 +524,10 @@ export default function HeroSceneView() {
                   <ShieldCheck className="h-3.5 w-3.5" />
                   <span>
                     {isLiveMetar
-                      ? `ATMOS v3 · ${metarStation?.icaoId}${
+                      ? `ATMOS v4.5 · ${metarStation?.icaoId}${
                           metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
                         } · %${bundle.hybrid.confidencePct}`
-                      : `7-Model · %${bundle.hybrid.confidencePct}`}
+                      : `ATMOS v4.5 · 7-Model · %${bundle.hybrid.confidencePct}`}
                   </span>
                 </a>
               )}
@@ -1065,18 +1065,18 @@ export default function HeroSceneView() {
         </div>
       </section>
 
-      {/* BÖLÜM 4: ATMOS-CORE v3.0 — SADELEŞTİRİLMİŞ CANLI DOĞRULAMA & 7-MODEL SKOR KARTI */}
+      {/* BÖLÜM 4: ATMOS-CORE v4.5 — CANLI MGM / METAR KALİBRASYONU & 7-MODEL EMOS SKOR KARTI */}
       {bundle.hybrid && (
         <section id="hibrit" className="scroll-mt-20 surface-panel p-5 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3.5">
             <div>
               <p className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-signal-sky">
                 <Layers className="h-3.5 w-3.5" />
-                {bundle.hybrid.engineVersion ?? "ATMOS-Core v3.0"} · 7-Model
+                {bundle.hybrid.engineVersion ?? "ATMOS-Core v4.5"} · 7-Model
                 {bundle.hybrid.ensembleMembers ? ` + ${bundle.hybrid.ensembleMembers} EPS` : ""}
               </p>
               <h2 className="mt-0.5 font-display text-base font-semibold text-ink-primary">
-                Canlı METAR Kalibrasyonu & Model Doğruluk Tablosu
+                Canlı MGM / METAR Kalibrasyonu & 7-Model EMOS Doğruluk Tablosu
               </h2>
             </div>
 

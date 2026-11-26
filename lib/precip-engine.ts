@@ -83,7 +83,7 @@ export type FusedPrecipResult = {
 };
 
 /**
- * ATMOS-Core v3.0 Yağış Füzyon Motoru:
+ * ATMOS-Core v4.5 Yağış Füzyon Motoru:
  * - 122-Üye Ensemble PoP + 7-Model Ağırlıklı PoP + 0–2s Canlı METAR / 15dk Nowcast Kalibrasyonu
  * - Probability-Matched Mean (PMM — Ebert 2001): hayalet çiseleme (drizzle bias) bastırılır,
  *   gerçek sağanakların tepe şiddeti aritmetik ortalamayla ezilmez!

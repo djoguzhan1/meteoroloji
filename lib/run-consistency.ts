@@ -1,5 +1,5 @@
 /**
- * ATMOS v4.0 — dProg/dt Lagged-Run Consistency & Anti-Flip-Flop Hysteresis Engine
+ * ATMOS v4.5 — dProg/dt Lagged-Run Consistency & Anti-Flip-Flop Hysteresis Engine
  * File: lib/run-consistency.ts
  */
 

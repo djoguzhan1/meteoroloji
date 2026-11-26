@@ -1,5 +1,5 @@
 /**
- * ATMOS v4.0 — Pixel-Level RainViewer Radar dBZ Decoder & Optical-Flow Nowcast (0-180 min)
+ * ATMOS v4.5 — Pixel-Level RainViewer Radar dBZ Decoder & Optical-Flow Nowcast (0-180 min)
  * File: lib/radar-nowcast.ts
  *
  * Upgrades radar from a passive map tile overlay to a quantitative sub-hourly precipitation engine:

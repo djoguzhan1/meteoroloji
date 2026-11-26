@@ -919,7 +919,7 @@ export async function fetchWeatherBundle(
   );
   aqiUrl.searchParams.set("timezone", "auto");
 
-  // 8'li paralel canlı veri akışı (ATMOS-Core v4.0: Bursa 19-ilçe MGM ağı + 4-koşulu dProg/dt arşivi dahil)
+  // 8'li paralel canlı veri akışı (ATMOS-Core v4.5: Bursa 19-ilçe MGM ağı + 4-koşulu dProg/dt arşivi dahil)
   const [forecastRes, hybridRes, ensRes, aqiRes, metarNetwork, bursaMesh, laggedRunsMap, preRadarNowcast] = await Promise.all([
     fetchWithRetry(forecastUrl.toString(), 11000, 1),
     fetchWithRetry(hybridUrl.toString(), 10000, 1).catch(() => null),
@@ -1025,7 +1025,7 @@ export async function fetchWeatherBundle(
       ? bursaMesh.verticalProfile.lapseRateCPerKm / 1000
       : envLapseRateCPerM;
 
-  // ATMOS-CORE v4.0: Topografik/Bariyer Korumalı Cressman + Kalman/Diurnal MOS Eğitimi
+  // ATMOS-CORE v4.5: Topografik/Bariyer Korumalı Cressman + Kalman/Diurnal MOS Eğitimi
   const mos = trainKalmanMos({
     network: metarNetwork,
     cityElevationM,
@@ -2150,7 +2150,7 @@ export async function fetchWeatherBundle(
     },
     {
       parameter: "Şiddetli Fırtına & Oraj Motoru",
-      primaryEngine: "ATMOS-Core v3 SPC/ESTOFEX",
+      primaryEngine: "ATMOS-Core v4.5 SPC/ESTOFEX",
       weightsLabel: `MUCAPE · Bunkers SRH · SCP · DCAPE`,
       standardRef: `7-Model CAPE + ${ensLabel} Hamle/CAPE + 15dk Nowcast`,
       reason:
@@ -2207,7 +2207,7 @@ export async function fetchWeatherBundle(
   const stabilitySummary = summarizeForecastStability(v4ConsistencyTrack, activeRegimeLabel);
 
   const hybrid: HybridMeta = {
-    engineVersion: isBursaEmosActive ? "ATMOS-Core v4.5 (Bursa 8712s EMOS)" : "ATMOS-Core v4.0",
+    engineVersion: isBursaEmosActive ? "ATMOS-Core v4.5 (Bursa 8712s EMOS)" : "ATMOS-Core v4.5",
     activeModels: activeModels.length > 0 ? activeModels : ["Open-Meteo NWP"],
     ensembleMembers: ensIndex.memberCount,
     confidencePct,

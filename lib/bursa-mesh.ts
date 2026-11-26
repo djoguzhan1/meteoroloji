@@ -1,5 +1,5 @@
 /**
- * ATMOS v4.0 — Bursa Hyper-Local Multi-Tier Observation Mesh & Physics QC
+ * ATMOS v4.5 — Bursa Hyper-Local Multi-Tier Observation Mesh & Physics QC
  * File: lib/bursa-mesh.ts
  *
  * Solves the "LTBR Yenişehir Trap" (47 km east rural frost-hollow basin) by fusing:

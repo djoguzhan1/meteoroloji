@@ -248,6 +248,9 @@ export default function DashboardView() {
             name: loc.name,
             country: loc.country ?? ""
           });
+          if (loc.elevation !== undefined && Number.isFinite(loc.elevation)) {
+            qs.set("elevation", String(Math.round(loc.elevation)));
+          }
           const res = await fetch(`/api/weather?${qs.toString()}`);
           if (seq !== fetchSeqRef.current) return;
           if (!res.ok) {

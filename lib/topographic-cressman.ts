@@ -1,5 +1,5 @@
 /**
- * ATMOS v4.0 — Anisotropic Topographic Cressman-Barnes Interpolation & Regime Huber-Kalman MOS
+ * ATMOS v4.5 — Anisotropic Topographic Cressman-Barnes Interpolation & Regime Huber-Kalman MOS
  * File: lib/topographic-cressman.ts
  *
  * Replaces isotropic flat-Earth station interpolation and regime-blind 24h MOS with:
