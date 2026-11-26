@@ -1,6 +1,6 @@
 {
   "name": "atmos-meteoroloji",
-  "version": "2.0.0",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3006",
@@ -8,7 +8,9 @@
     "start": "next start -p 3006",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "benchmark:bursa": "node scripts/benchmark-bursa-365d.mjs",
+    "benchmark:bursa:selftest": "node scripts/benchmark-bursa-365d.mjs --self-test"
   },
   "dependencies": {
     "@react-three/drei": "^10.0.0",

@@ -1,3 +1,5 @@
+import { isWithinBursaDomain } from "./bursa-mesh";
+import { computeRuralBasinToUrbanOffsetC } from "./topographic-cressman";
 import {
   computeInverseRmseWeights,
   MEDIUM_RANGE_PRIOR_WEIGHTS,
@@ -107,8 +109,13 @@ function filterRobustErrors(
 export function buildCressmanMetarTimeline(
   network: MetarNetworkStation[],
   cityElevationM: number,
-  envLapseRateCPerM: number
+  envLapseRateCPerM: number,
+  cityLat?: number,
+  cityLon?: number
 ): Map<string, CressmanHourlyObs> {
+  const isBursaOvaTarget =
+    cityLat !== undefined && cityLon !== undefined &&
+    isWithinBursaDomain(cityLat, cityLon) && cityElevationM <= 450 && cityLon < 29.35;
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
   // Her UTC saati için tüm istasyon gözlemlerini topla
   type StationSample = {
@@ -134,7 +141,9 @@ export function buildCressmanMetarTimeline(
 
     const distKm = Math.max(1, net.station.distanceKm);
     const elevPenalty = 1 + Math.abs(elevDiffToCity) / 280;
-    const stationWeight = 1 / ((distKm * distKm + 14 * 14) * elevPenalty);
+    const isLtbrTrap = isBursaOvaTarget && net.station.icaoId === "LTBR";
+    const barrierFactor = isLtbrTrap && network.length > 1 ? 0.22 : 1.0;
+    const stationWeight = barrierFactor / ((distKm * distKm + 14 * 14) * elevPenalty);
 
     for (const ob of net.history) {
       const obsMs = ob.obsTime * 1000;
@@ -151,9 +160,20 @@ export function buildCressmanMetarTimeline(
         continue;
       }
 
+      const localH = ((new Date(roundedMs).getUTCHours() + 3) % 24);
+      const isNightOb = localH >= 18 || localH <= 8;
+      const ltbrBasinUnbias =
+        isBursaOvaTarget && net.station.icaoId === "LTBR"
+          ? computeRuralBasinToUrbanOffsetC(0.04, 0.96, 0.85, {
+              isNight: isNightOb,
+              localHour: localH,
+              cloudCoverPct: ob.wxString?.includes("OVC") ? 90 : 25,
+              ambientWindSpeedKt: typeof ob.wspd === "number" ? ob.wspd : 4
+            }, typeof ob.wspd === "number" ? ob.wspd : null)
+          : 0;
       const tempCity =
         typeof ob.temp === "number" && Number.isFinite(ob.temp)
-          ? ob.temp + tempElevDelta
+          ? ob.temp + tempElevDelta + ltbrBasinUnbias
           : null;
       const dewCity =
         typeof ob.dewp === "number" && Number.isFinite(ob.dewp)
@@ -268,6 +288,8 @@ function emptyBiasProfile(): ModelBiasProfile {
 export function trainKalmanMos({
   network,
   cityElevationM,
+  cityLat,
+  cityLon,
   envLapseRateCPerM,
   modelHourlyUtc,
   utcTimeIndex,
@@ -277,6 +299,8 @@ export function trainKalmanMos({
 }: {
   network: MetarNetworkStation[];
   cityElevationM: number;
+  cityLat?: number;
+  cityLon?: number;
   envLapseRateCPerM: number;
   modelHourlyUtc: Record<string, Array<number | null> | undefined> | null;
   utcTimeIndex: Map<string, number>;
@@ -285,7 +309,7 @@ export function trainKalmanMos({
   ensembleMembers?: number;
 }): KalmanMosModel {
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
-  const timeline = buildCressmanMetarTimeline(network, cityElevationM, safeLapse);
+  const timeline = buildCressmanMetarTimeline(network, cityElevationM, safeLapse, cityLat, cityLon);
 
   const biases = {} as Record<SevenModelKey, ModelBiasProfile>;
   for (const k of SEVEN_MODEL_KEYS) biases[k] = emptyBiasProfile();
@@ -736,8 +760,7 @@ export function blendKalmanCorrectedScalar({
   const diurnalDecay = Math.exp(-Math.max(0, leadHour) / 72);
   const dewDecay = Math.exp(-Math.max(0, leadHour) / 24);
 
-  let num = 0;
-  let den = 0;
+  const candidates: Array<{ corr: number; w: number }> = [];
 
   for (const k of SEVEN_MODEL_KEYS) {
     const rawVal = snapshot[k];
@@ -762,20 +785,35 @@ export function blendKalmanCorrectedScalar({
       corr = Math.max(0, rawVal - b.windKalmanBiasKmh * Math.exp(-Math.max(0, leadHour) / 12));
     }
 
-    num += corr * w;
-    den += w;
+    candidates.push({ corr, w });
+  }
+
+  // ATMOS v4.0 Orta-Uzun Vade (Gün 3-7, leadHour >= 66) Alfa-Kırpılmış (Alpha-Trimmed) Konsensüs:
+  // Tekil deterministik koşuların uç faz savrulmalarını (en sıcak 1 ve en soğuk 1 uç model) %70 sönümler!
+  if (param === "temperature" && leadHour >= 66 && candidates.length >= 5) {
+    candidates.sort((a, b) => a.corr - b.corr);
+    const trimFactor = leadHour >= 114 ? 0.20 : 0.40;
+    candidates[0].w *= trimFactor;
+    candidates[candidates.length - 1].w *= trimFactor;
+  }
+
+  let num = 0;
+  let den = 0;
+  for (const c of candidates) {
+    num += c.corr * c.w;
+    den += c.w;
   }
 
   let fused = den > 0 ? num / den : fallback;
 
-  // Orta vadede (24–168s) 122-üyeli gerçek ensemble medyanıyla yumuşak stabilizasyon (%0 -> %22)
+  // Orta-uzun vadede (24–168s) 122-üyeli gerçek ensemble medyanıyla faz kilitleme (%0 -> %38)
   if (
     ensembleP50 !== null &&
     Number.isFinite(ensembleP50) &&
     leadHour >= 24 &&
     param === "temperature"
   ) {
-    const ensWeight = clamp((leadHour - 24) / 96, 0, 0.22);
+    const ensWeight = clamp((leadHour - 24) / 120, 0, 0.38);
     fused = fused * (1 - ensWeight) + ensembleP50 * ensWeight;
   }
 

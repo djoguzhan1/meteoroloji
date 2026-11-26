@@ -1,3 +1,4 @@
+import { ATMOS_HTTP_USER_AGENT, parseMetarTenthDegreeGroup } from "./bursa-mesh";
 import type {
   LiveVerificationReport,
   MetarObservation,
@@ -398,7 +399,7 @@ export async function fetchMetarNetworkHistory(
     const res = await fetch(url, {
       cache: "no-store",
       signal: AbortSignal.timeout(7000),
-      headers: { "User-Agent": "ATMOS-Meteo/3.0" }
+      headers: { "User-Agent": ATMOS_HTTP_USER_AGENT }
     });
     if (!res.ok) return [];
     const data = await res.json();
@@ -422,6 +423,11 @@ export async function fetchMetarNetworkHistory(
     const grouped = new Map<string, RawMetarRecord[]>();
     for (const r of records) {
       if (!r.icaoId || typeof r.lat !== "number" || typeof r.lon !== "number") continue;
+      const precise = parseMetarTenthDegreeGroup(r.rawOb);
+      if (precise) {
+        r.temp = precise.tempC;
+        if (precise.dewPointC !== null) r.dewp = precise.dewPointC;
+      }
       const list = grouped.get(r.icaoId) ?? [];
       list.push(r);
       grouped.set(r.icaoId, list);

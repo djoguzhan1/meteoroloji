@@ -1094,6 +1094,38 @@ export default function HeroSceneView() {
             </div>
           </div>
 
+          {bundle.hybrid.atmosV4 && (
+            <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-signal-sky/25 bg-signal-sky/[0.06] px-4 py-2.5 font-mono text-xs tabular">
+              <div className="flex flex-wrap items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-signal-sky shrink-0" />
+                <span className="font-semibold text-signal-sky">
+                  {bundle.hybrid.atmosV4.activeRegimeLabel}
+                </span>
+                <span className="text-ink-secondary">
+                  · dProg/dt Kararlılık %{bundle.hybrid.atmosV4.stabilityPct} ({Math.round(bundle.hybrid.atmosV4.meanRunLockCount)} koşu kilitli)
+                </span>
+                {bundle.hybrid.atmosV4.ltbrIsolated && (
+                  <span className="rounded bg-signal-emerald/15 px-1.5 py-0.5 text-[10px] text-signal-emerald">
+                    {bundle.hybrid.atmosV4.bursaTier1Online} Bursa MGM Sensörü Aktif · LTBR İzole
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-ink-muted">
+                {bundle.hybrid.atmosV4.nextRainOnsetMin !== null && (
+                  <span className="text-signal-amber font-semibold">
+                    Radar Yağış Başlangıcı: +{bundle.hybrid.atmosV4.nextRainOnsetMin} dk
+                  </span>
+                )}
+                {bundle.hybrid.atmosV4.radarSummaryCode === "VIRGA_ALOFT" && (
+                  <span className="text-amber-200">Alt Seviye Virga Bastırıldı</span>
+                )}
+                {bundle.hybrid.atmosV4.blockedFlipFlops > 0 && (
+                  <span>Engellenen Sapma: {bundle.hybrid.atmosV4.blockedFlipFlops}s</span>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Kompakt Fiziksel İstasyon & Kalman Özet Şeridi */}
           {metarStation && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-signal-emerald/30 bg-signal-emerald/[0.06] px-4 py-3 font-mono text-xs tabular shadow-[inset_0_1px_0_rgba(16,185,129,0.22)]">

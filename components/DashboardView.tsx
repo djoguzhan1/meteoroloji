@@ -553,6 +553,11 @@ export default function DashboardView() {
                       className="h-4 w-4"
                     />
                     <span>{b.current.condition}</span>
+                    {b.hybrid?.atmosV4 && (
+                      <span className="rounded border border-signal-emerald/30 bg-signal-emerald/10 px-1.5 py-0.5 font-mono text-[10px] text-signal-emerald">
+                        %{b.hybrid.atmosV4.stabilityPct} Kilitli
+                      </span>
+                    )}
                     {b.storm && b.storm.score >= 35 && (
                       <span
                         className="rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"

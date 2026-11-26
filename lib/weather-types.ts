@@ -203,6 +203,7 @@ export type HourlyPoint = {
   liftedIndex: number | null;
   freezingLevelM: number | null;
   temp850hPa: number | null;
+  stabilityGrade?: "LOCKED" | "CONVERGING" | "WATCH";
 };
 
 export type DailyPoint = {
@@ -226,6 +227,7 @@ export type DailyPoint = {
   uvIndexMax: number;
   sunrise: string;
   sunset: string;
+  stabilityGrade?: "LOCKED" | "CONVERGING" | "WATCH";
 };
 
 export type SoundingLevel = {
@@ -340,6 +342,24 @@ export type LiveVerificationReport = {
   rows: ModelVerificationRow[];
 };
 
+export type AtmosV4Meta = {
+  activeRegime: string;
+  activeRegimeLabel: string;
+  verticalMechanism: string;
+  froudeNumber: number;
+  stabilityPct: number;
+  stabilityGrade: "LOCKED" | "CONVERGING" | "WATCH";
+  meanRunLockCount: number;
+  blockedFlipFlops: number;
+  spinUpVetoes: number;
+  stabilityBadgeLabel: string;
+  radarSummaryCode: string;
+  nextRainOnsetMin: number | null;
+  rainCessationMin: number | null;
+  bursaTier1Online: number;
+  ltbrIsolated: boolean;
+};
+
 export type HybridMeta = {
   engineVersion?: string;
   activeModels: string[];
@@ -357,6 +377,7 @@ export type HybridMeta = {
   };
   verification: LiveVerificationReport;
   attributions: HybridSourceAttribution[];
+  atmosV4?: AtmosV4Meta;
 };
 
 export type WeatherBundle = {

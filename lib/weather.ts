@@ -1,4 +1,34 @@
 import {
+  ATMOS_HTTP_USER_AGENT,
+  fetchBursaObservationMesh,
+  isWithinBursaDomain,
+  mapMeshToMetarObservations
+} from "./bursa-mesh";
+import {
+  classifyBursaSynopticRegime,
+  interpolateTopographicSurface
+} from "./topographic-cressman";
+import {
+  diagnosePhysicalVisibilityM,
+  type PressureLevelSlice,
+  solveVerticalColumnPhysics
+} from "./vertical-physics";
+import {
+  blendNowcastWithHourlyNwp,
+  fetchBursaRadarNowcast
+} from "./radar-nowcast";
+import { fusePrecipitationPmqm } from "./emos-precip-fusion";
+import {
+  predictBursaTrainedPrecip,
+  predictBursaTrainedTempC
+} from "./bursa-trained-emos";
+import {
+  evaluateHourlyRunConsistency,
+  fetchOpenMeteoLaggedRuns,
+  type HourlyConsistencyOutput,
+  summarizeForecastStability
+} from "./run-consistency";
+import {
   analyzeConvectiveProfile,
   computeEnvironmentalLapseRateCPerM,
   dewPointMagnus,
@@ -640,6 +670,7 @@ async function fetchWithRetry(
     try {
       const res = await fetch(url, {
         cache: "no-store",
+        headers: { "User-Agent": ATMOS_HTTP_USER_AGENT },
         signal: AbortSignal.timeout(timeoutMs)
       });
       if (res.ok || res.status < 500 || attempt === retries) {
@@ -754,10 +785,23 @@ export async function fetchWeatherBundle(
     };
   }
 
+  const isBursaDomain = isWithinBursaDomain(location.lat, location.lon);
+  const distFromBursa17116Km = Math.hypot(
+    (location.lat - 40.2308) * 111.32,
+    (location.lon - 29.0133) * 85.0
+  );
+  const isBursaEmosActive =
+    isBursaDomain &&
+    distFromBursa17116Km <= 24 &&
+    (location.elevation === undefined || location.elevation <= 650);
+
   // 1. Ana sondaj + 15dk nowcast + günlük güneş döngüsü
   const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
   forecastUrl.searchParams.set("latitude", location.lat.toFixed(4));
   forecastUrl.searchParams.set("longitude", location.lon.toFixed(4));
+  if (isBursaEmosActive && location.elevation !== undefined && Number.isFinite(location.elevation)) {
+    forecastUrl.searchParams.set("elevation", String(Math.round(location.elevation)));
+  }
   forecastUrl.searchParams.set("timezone", "auto");
   forecastUrl.searchParams.set("forecast_days", "7");
   forecastUrl.searchParams.set("forecast_minutely_15", "24");
@@ -836,15 +880,20 @@ export async function fetchWeatherBundle(
   );
 
   // 2. 7 Tier-1 Operasyonel NWP + AI Modeli (son 72s + gelecek 7 gün = 240 saat!)
+  // Bursa kentsel havzasında 8.712 saatlik WMO 17116 (40.2308K, 29.0133D, 100m) eğitim ızgarasına kilitlenir;
+  // hedef rakıma taşıma işlemi canlı Ova<->Uludağ dikey lapse-rate profiliyle yapılır.
   const hybridUrl = new URL("https://api.open-meteo.com/v1/forecast");
-  hybridUrl.searchParams.set("latitude", location.lat.toFixed(4));
-  hybridUrl.searchParams.set("longitude", location.lon.toFixed(4));
+  hybridUrl.searchParams.set("latitude", isBursaEmosActive ? "40.2308" : location.lat.toFixed(4));
+  hybridUrl.searchParams.set("longitude", isBursaEmosActive ? "29.0133" : location.lon.toFixed(4));
+  if (isBursaEmosActive) {
+    hybridUrl.searchParams.set("elevation", "100");
+  }
   hybridUrl.searchParams.set("timezone", "GMT");
   hybridUrl.searchParams.set("past_days", "3");
   hybridUrl.searchParams.set("forecast_days", "7");
   hybridUrl.searchParams.set(
     "models",
-    "ecmwf_ifs,ecmwf_aifs025_single,icon_seamless,ukmo_seamless,meteofrance_seamless,gfs_seamless,gem_seamless,ecmwf_ifs025"
+    "ecmwf_ifs,ecmwf_aifs025_single,icon_seamless,ukmo_seamless,meteofrance_seamless,gfs_seamless,gem_seamless,ecmwf_ifs025,icon_global"
   );
   hybridUrl.searchParams.set(
     "hourly",
@@ -870,13 +919,24 @@ export async function fetchWeatherBundle(
   );
   aqiUrl.searchParams.set("timezone", "auto");
 
-  // 5'li paralel canlı veri akışı
-  const [forecastRes, hybridRes, ensRes, aqiRes, metarNetwork] = await Promise.all([
+  // 8'li paralel canlı veri akışı (ATMOS-Core v4.0: Bursa 19-ilçe MGM ağı + 4-koşulu dProg/dt arşivi dahil)
+  const [forecastRes, hybridRes, ensRes, aqiRes, metarNetwork, bursaMesh, laggedRunsMap, preRadarNowcast] = await Promise.all([
     fetchWithRetry(forecastUrl.toString(), 11000, 1),
     fetchWithRetry(hybridUrl.toString(), 10000, 1).catch(() => null),
     fetchWithRetry(ensembleUrl.toString(), 9000, 1).catch(() => null),
     fetchWithRetry(aqiUrl.toString(), 8000, 1).catch(() => null),
-    fetchMetarNetworkHistory(location.lat, location.lon, 4, 85).catch(() => [])
+    fetchMetarNetworkHistory(location.lat, location.lon, 4, 85).catch(() => []),
+    isBursaDomain
+      ? fetchBursaObservationMesh(location.lat, location.lon, { referenceElevationM: location.elevation ?? 155 }).catch(() => null)
+      : Promise.resolve(null),
+    fetchOpenMeteoLaggedRuns({ lat: location.lat, lon: location.lon, elevationM: location.elevation }).catch(() => new Map()),
+    fetchBursaRadarNowcast(location.lat, location.lon, {
+      steeringWindFromDeg: 220,
+      steeringWindSpeedKt: 20,
+      surfaceTempC: 14,
+      surfaceDewPointC: 7,
+      orographicUpslopeActive: isBursaDomain
+    }).catch(() => null)
   ]);
 
   if (!forecastRes.ok) {
@@ -960,17 +1020,91 @@ export async function fetchWeatherBundle(
     ? localIsoToUtcDate(times[startIdx], utcOffsetSeconds).getTime()
     : Date.now();
 
-  // ATMOS-CORE v3.0: 48s Çoklu-İstasyon Cressman METAR + Kalman/Diurnal-Phase MOS Eğitimi
+  const effectiveLapseCPerM =
+    bursaMesh && bursaMesh.verticalProfile.isDirectlyMeasured
+      ? bursaMesh.verticalProfile.lapseRateCPerKm / 1000
+      : envLapseRateCPerM;
+
+  // ATMOS-CORE v4.0: Topografik/Bariyer Korumalı Cressman + Kalman/Diurnal MOS Eğitimi
   const mos = trainKalmanMos({
     network: metarNetwork,
     cityElevationM,
-    envLapseRateCPerM,
+    cityLat: location.lat,
+    cityLon: location.lon,
+    envLapseRateCPerM: effectiveLapseCPerM,
     modelHourlyUtc: hybridHourly,
     utcTimeIndex,
     nowUtcMs,
     utcOffsetSeconds,
     ensembleMembers: ensIndex.memberCount
   });
+
+  const startLocalHour = Number(times[startIdx]?.slice(11, 13) ?? 12);
+  const startIsNight = startLocalHour >= 19 || startLocalHour <= 6;
+  const startCloudPct = Number(hourlyRaw.cloud_cover?.[startIdx] ?? cur.cloud_cover ?? 35);
+  const startWindDir = Number(hourlyRaw.wind_direction_10m?.[startIdx] ?? cur.wind_direction_10m ?? 0);
+  const startWindKmh = Number(hourlyRaw.wind_speed_10m?.[startIdx] ?? cur.wind_speed_10m ?? 8);
+
+  const liveBursaSurface =
+    bursaMesh && bursaMesh.acceptedCount > 0
+      ? interpolateTopographicSurface(
+          { lat: location.lat, lon: location.lon, elevationM: cityElevationM },
+          bursaMesh.stations,
+          bursaMesh.verticalProfile,
+          {
+            isNight: startIsNight,
+            localHour: startLocalHour,
+            cloudCoverPct: startCloudPct,
+            ambientWindDirDeg: startWindDir,
+            ambientWindSpeedKt: startWindKmh * 0.539957
+          }
+        )
+      : null;
+
+  if (bursaMesh && liveBursaSurface) {
+    const mappedBursaStations = mapMeshToMetarObservations(bursaMesh, location.lat, location.lon);
+    if (mappedBursaStations.length > 0) {
+      mos.anchor = {
+        active: true,
+        tempObsCityC: liveBursaSurface.tempC,
+        dewObsCityC: liveBursaSurface.dewPointC,
+        pressObsHpa: liveBursaSurface.pressureMslHpa ?? mos.anchor.pressObsHpa,
+        windObsKmh:
+          liveBursaSurface.windSpeedKt !== null
+            ? Number((liveBursaSurface.windSpeedKt * 1.852).toFixed(1))
+            : mos.anchor.windObsKmh,
+        tempKalmanGain: bursaMesh.tier1OnlineCount > 0 ? 0.92 : 0.78,
+        pressKalmanGain: 0.88,
+        windKalmanGain: 0.62,
+        wxFlags: mappedBursaStations[0].wxFlags ?? mos.anchor.wxFlags,
+        primaryStationAgeMin: mappedBursaStations[0].ageMinutes,
+        primaryStationDistKm: mappedBursaStations[0].distanceKm
+      };
+      mos.report.station = mappedBursaStations[0];
+      mos.report.stations = mappedBursaStations;
+      mos.summary.active = true;
+      mos.summary.stationCount = mappedBursaStations.length;
+      mos.summary.stationIds = mappedBursaStations.slice(0, 4).map((s) => s.icaoId);
+      mos.summary.envLapseRateCPerKm = Number((effectiveLapseCPerM * 1000).toFixed(2));
+      mos.summary.nowcastKalmanGain = mos.anchor.tempKalmanGain;
+    }
+  }
+
+  const radarNowcast = preRadarNowcast ?? {
+    generatedAtIso: new Date().toISOString(),
+    radarAvailable: false,
+    currentDbzOverTarget: 0,
+    currentRainRateMmHr: 0,
+    advectionSpeedKmH: 0,
+    advectionFromDeg: 220,
+    nextRainOnsetMinutes: null,
+    rainCessationMinutes: null,
+    summaryCode: "DRY_CLEAR" as const,
+    steps5Min: []
+  };
+  const laggedSeriesList = [...laggedRunsMap.values()];
+  const v4ConsistencyTrack: HourlyConsistencyOutput[] = [];
+  let firstHourVertPhys: ReturnType<typeof solveVerticalColumnPhysics> | null = null;
 
   const readSevenModelSnapshot = (
     prefix: string,
@@ -989,13 +1123,19 @@ export async function fetchWeatherBundle(
         gem: null
       };
     }
-    const ifsApiId = useIfs025ForIfs ? "ecmwf_ifs025" : SEVEN_MODEL_META.ecmwfIfs.apiModel;
+    const ifsPrimary = useIfs025ForIfs
+      ? toFiniteNum(hybridHourly[`${prefix}_ecmwf_ifs025`]?.[hIdx])
+      : toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.ecmwfIfs.apiModel}`]?.[hIdx]) ??
+        toFiniteNum(hybridHourly[`${prefix}_ecmwf_ifs025`]?.[hIdx]);
+    const iconPrimary =
+      toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.icon.apiModel}`]?.[hIdx]) ??
+      toFiniteNum(hybridHourly[`${prefix}_icon_global`]?.[hIdx]);
     return {
-      ecmwfIfs: toFiniteNum(hybridHourly[`${prefix}_${ifsApiId}`]?.[hIdx]),
+      ecmwfIfs: ifsPrimary,
       ecmwfAifs: toFiniteNum(
         hybridHourly[`${prefix}_${SEVEN_MODEL_META.ecmwfAifs.apiModel}`]?.[hIdx]
       ),
-      icon: toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.icon.apiModel}`]?.[hIdx]),
+      icon: iconPrimary,
       ukmo: toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.ukmo.apiModel}`]?.[hIdx]),
       meteofrance: toFiniteNum(
         hybridHourly[`${prefix}_${SEVEN_MODEL_META.meteofrance.apiModel}`]?.[hIdx]
@@ -1004,6 +1144,66 @@ export async function fetchWeatherBundle(
       gem: toFiniteNum(hybridHourly[`${prefix}_${SEVEN_MODEL_META.gem.apiModel}`]?.[hIdx])
     };
   };
+
+  // ATMOS v4.5: 240 saatlik 7-model medyan dizisi ve canlı Bursa T+0 AR(2) termometre rezidüeli
+  const hybridUtcList: string[] = Array.isArray(hJson?.hourly?.time) ? (hJson.hourly.time as string[]) : [];
+  const hybridTempMedians: number[] = hybridUtcList.map((uKey) => {
+    const sn = readSevenModelSnapshot("temperature_2m", uKey);
+    const vals = SEVEN_MODEL_KEYS.map((k) => sn[k])
+      .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v))
+      .sort((a, b) => a - b);
+    if (vals.length === 0) return Number(cur.temperature_2m ?? 15);
+    const mid = Math.floor(vals.length / 2);
+    return vals.length % 2 === 0 ? 0.5 * (vals[mid - 1] + vals[mid]) : vals[mid];
+  });
+
+  const getBursaNeighborMedians = (utcKey: string, fallbackMed: number) => {
+    const hIdx = utcTimeIndex.get(utcKey);
+    if (hIdx === undefined || hybridTempMedians.length === 0) {
+      return {
+        minus3h: fallbackMed,
+        minus1h: fallbackMed,
+        plus1h: fallbackMed,
+        plus3h: fallbackMed,
+        min24h: fallbackMed - 3,
+        max24h: fallbackMed + 3
+      };
+    }
+    const win = hybridTempMedians.slice(
+      Math.max(0, hIdx - 12),
+      Math.min(hybridTempMedians.length, hIdx + 13)
+    );
+    return {
+      minus3h: hybridTempMedians[Math.max(0, hIdx - 3)] ?? fallbackMed,
+      minus1h: hybridTempMedians[Math.max(0, hIdx - 1)] ?? fallbackMed,
+      plus1h: hybridTempMedians[Math.min(hybridTempMedians.length - 1, hIdx + 1)] ?? fallbackMed,
+      plus3h: hybridTempMedians[Math.min(hybridTempMedians.length - 1, hIdx + 3)] ?? fallbackMed,
+      min24h: win.length > 0 ? Math.min(...win) : fallbackMed - 3,
+      max24h: win.length > 0 ? Math.max(...win) : fallbackMed + 3
+    };
+  };
+
+  const effectiveLapsePerKm = Number((effectiveLapseCPerM * 1000).toFixed(2));
+  const originUtcDate = times[startIdx]
+    ? localIsoToUtcDate(times[startIdx], utcOffsetSeconds)
+    : new Date();
+  const originUtcKey = originUtcDate.toISOString().slice(0, 16);
+  const originEmosBaseC = isBursaEmosActive
+    ? predictBursaTrainedTempC({
+        leadHours: 0,
+        utcDate: originUtcDate,
+        localHourTrt: startLocalHour,
+        tempSnapshot: readSevenModelSnapshot("temperature_2m", originUtcKey),
+        precipSnapshot: readSevenModelSnapshot("precipitation", originUtcKey),
+        neighborMedians: getBursaNeighborMedians(originUtcKey, Number(cur.temperature_2m ?? 15)),
+        targetElevationM: cityElevationM,
+        lapseRateCPerKm: effectiveLapsePerKm
+      })
+    : null;
+  const bursaLiveOriginResidualC =
+    originEmosBaseC !== null && liveBursaSurface !== null
+      ? Number((liveBursaSurface.tempC - originEmosBaseC).toFixed(2))
+      : null;
 
   // 15 dakikalık nowcast yağış toplamlarını saat başına grupla (0..5s)
   const nowcastHourlyPrecipMm = new Map<string, number>();
@@ -1088,18 +1288,88 @@ export async function fetchWeatherBundle(
     const ensTempStats = ensTempArr ? computeEnsembleDistStats(ensTempArr) : null;
     const ensGustStats = ensGustArr ? computeEnsembleDistStats(ensGustArr) : null;
 
-    // 1. KALMAN + DIURNAL MOS SICAKLIK, ÇİY, BASINÇ, RÜZGAR
-    const temperature = Number(
-      blendKalmanCorrectedScalar({
-        snapshot: tempSnap,
-        mos,
-        param: "temperature",
-        leadHour,
-        localHour,
-        fallback: rawTemp,
-        ensembleP50: ensTempStats?.p50 ?? null
-      }).toFixed(1)
-    );
+    // 1. BURSA 8.712s WMO-17116 HİBRİT EMOS (Huber-Ridge + L1-Tree + AR2 Sensör) / GENEL KALMAN MOS
+    const kalmanFallbackTemp = blendKalmanCorrectedScalar({
+      snapshot: tempSnap,
+      mos,
+      param: "temperature",
+      leadHour,
+      localHour,
+      fallback: rawTemp,
+      ensembleP50: ensTempStats?.p50 ?? null
+    });
+    const bursaEmosTemp = isBursaEmosActive
+      ? predictBursaTrainedTempC({
+          leadHours: leadHour,
+          utcDate,
+          localHourTrt: localHour,
+          tempSnapshot: tempSnap,
+          precipSnapshot: precipSnap,
+          neighborMedians: getBursaNeighborMedians(utcKey, kalmanFallbackTemp),
+          targetElevationM: cityElevationM,
+          liveOriginResidualC: bursaLiveOriginResidualC,
+          lapseRateCPerKm: effectiveLapsePerKm
+        })
+      : null;
+    const baseKalmanTemp = bursaEmosTemp ?? kalmanFallbackTemp;
+
+    const columnLevels: PressureLevelSlice[] = ([1000, 925, 850, 700] as const).map((hpa) => ({
+      pressureHpa: hpa,
+      geopotentialHeightM: Number(hourlyRaw[`geopotential_height_${hpa}hPa`]?.[i] ?? (hpa === 1000 ? 110 : hpa === 925 ? 780 : hpa === 850 ? 1500 : 3050)),
+      tempC: Number(hourlyRaw[`temperature_${hpa}hPa`]?.[i] ?? (baseKalmanTemp - (1000 - hpa) * 0.06)),
+      relHumidityPct: Number(hourlyRaw[`relative_humidity_${hpa}hPa`]?.[i] ?? 65),
+      windSpeedKt: Number(hourlyRaw[`wind_speed_${hpa}hPa`]?.[i] ?? 15) * 0.539957,
+      windDirDeg: Number(hourlyRaw[`wind_direction_${hpa}hPa`]?.[i] ?? rawWindDir)
+    }));
+
+    const vertPhys = isBursaDomain
+      ? solveVerticalColumnPhysics({
+          targetElevationM: cityElevationM,
+          rawModelTemp2mC: baseKalmanTemp,
+          rawModelDew2mC: rawDew,
+          rawModelPrecipMmHr: rawPrecip,
+          rawModelVisibilityM: typeof hourlyRaw.visibility?.[i] === "number" ? Number(hourlyRaw.visibility[i]) : null,
+          cloudCoverLowPct: Number(hourlyRaw.cloud_cover?.[i] ?? 35),
+          shortwaveRadiationWm2: Math.max(0, Math.sin((Math.max(0, solarElevationDeg) * Math.PI) / 180) * 780),
+          isNight: solarElevationDeg <= 0,
+          levels: columnLevels
+        })
+      : null;
+    if (leadHour === 0) firstHourVertPhys = vertPhys;
+
+    // 3B Fön/Enversiyon düzeltmesi (Bursa EMOS aktifken klimatolojik profil zaten öğrenildiğinden yalnız dinamik Lodos Fön darbesi eklenir)
+    const physAdjustedTemp = vertPhys
+      ? bursaEmosTemp !== null
+        ? vertPhys.activeMechanism === "LODOS_DRY_FOEHN"
+          ? baseKalmanTemp + 0.22 * vertPhys.tempDeltaC
+          : baseKalmanTemp
+        : baseKalmanTemp + 0.45 * vertPhys.tempDeltaC
+      : baseKalmanTemp;
+    const preLockP3Prev =
+      leadHour >= 3
+        ? hourly[leadHour - 3]?.pressure ?? rawPress
+        : Number(hourlyRaw.pressure_msl?.[Math.max(0, i - 3)] ?? rawPress);
+
+    const tempConsistency = evaluateHourlyRunConsistency({
+      leadHours: leadHour,
+      validTimeIso: timeStr,
+      utcHourKey: utcKey,
+      candidateTempC: physAdjustedTemp,
+      candidateIsWet: rawPrecip >= 0.15,
+      candidatePrecipMmHr: rawPrecip,
+      candidatePopPct: rawPop,
+      ensembleTempIqrC: ensTempStats ? ensTempStats.p75 - ensTempStats.p25 : null,
+      laggedModels: laggedSeriesList,
+      hourIndex: leadHour,
+      liveAnchor: {
+        liveObsTempC: liveBursaSurface?.tempC ?? mos.anchor.tempObsCityC,
+        liveRadarRainMmHr: radarNowcast.radarAvailable ? radarNowcast.currentRainRateMmHr : null,
+        liveGaugePrecipMmHr: liveBursaSurface?.precipRateMmHr ?? null,
+        pressureTrend3hHpa: rawPress - preLockP3Prev
+      }
+    });
+    v4ConsistencyTrack.push(tempConsistency);
+    const temperature = Number(tempConsistency.finalTempC.toFixed(1));
 
     if (leadHour === 0) {
       firstHourTempShiftC = Number((temperature - rawTemp).toFixed(2));
@@ -1215,8 +1485,17 @@ export async function fetchWeatherBundle(
       mos.mediumRangeWeights.precipitation,
       leadHour
     );
-    const ncHourMm = nowcastHourlyPrecipMm.get(timeStr.slice(0, 13)) ?? null;
-    const fusedPrecip = fusePrecipitationHour({
+    const radarHourSlice =
+      leadHour < 3 && radarNowcast.radarAvailable
+        ? radarNowcast.steps5Min.filter((s) => s.offsetMinutes >= leadHour * 60 && s.offsetMinutes < (leadHour + 1) * 60)
+        : [];
+    const radarHourMeanMm =
+      radarHourSlice.length > 0
+        ? radarHourSlice.reduce((a, s) => a + s.rainRateMmHr, 0) / radarHourSlice.length
+        : null;
+    const ncHourMm = radarHourMeanMm ?? nowcastHourlyPrecipMm.get(timeStr.slice(0, 13)) ?? null;
+
+    const baseFusedPrecip = fusePrecipitationHour({
       detSnapshot: precipSnap,
       detWeights: leadPrecipW,
       ensembleMembersMm: ensPrecipArr,
@@ -1226,6 +1505,70 @@ export async function fetchWeatherBundle(
       nowcast15Mm: ncHourMm,
       liveMetarWx: leadHour <= 1 && mos.anchor.active ? mos.anchor.wxFlags : null
     });
+
+    // Apply Bursa 3D Virga evaporation / DEK orographic multiplier & CSG-EMOS drizzle suppression
+    const stepRegime = classifyBursaSynopticRegime({
+      windDir10mDeg: windDirection,
+      windSpeed10mKt: windSpeed * 0.539957,
+      pressureMslHpa: pressure,
+      cloudCoverPct: Number(hourlyRaw.cloud_cover?.[i] ?? 40),
+      localHour,
+      month: utcDate.getUTCMonth() + 1
+    });
+    const pmqmCheck = fusePrecipitationPmqm({
+      leadHours: leadHour,
+      regime: stepRegime,
+      modelPrecipMm: SEVEN_MODEL_KEYS.map((mk) => ({
+        modelKey: mk,
+        precipMmHr: Math.max(0, precipSnap[mk] ?? 0) * (vertPhys?.precipMultiplier ?? 1),
+        weight: leadPrecipW[mk] ?? 0.1
+      })),
+      ensemblePopPct: baseFusedPrecip.precipProbabilityPct,
+      ensembleP75Mm: baseFusedPrecip.consensus.p90Mm ?? null,
+      temp2mC: temperature,
+      relHumidityPct: humidity,
+      targetElevationM: cityElevationM
+    });
+
+    const bursaTrainedPrecip = isBursaEmosActive
+      ? predictBursaTrainedPrecip({
+          leadHours: leadHour,
+          precipSnapshot: precipSnap,
+          ensemblePopPct: baseFusedPrecip.precipProbabilityPct
+        })
+      : null;
+    const virgaVetoed = Boolean(vertPhys && vertPhys.precipMultiplier === 0);
+    const effectiveWetHour =
+      !virgaVetoed && (bursaTrainedPrecip ? bursaTrainedPrecip.isWet : pmqmCheck.isWetHour);
+    const calibratedNwpPrecipMm = effectiveWetHour
+      ? bursaTrainedPrecip
+        ? Number((0.60 * bursaTrainedPrecip.qpfMmHr + 0.40 * Math.max(baseFusedPrecip.precipitationMm, pmqmCheck.qpfMmHr)).toFixed(2))
+        : Number((0.55 * baseFusedPrecip.precipitationMm + 0.45 * pmqmCheck.qpfMmHr).toFixed(2))
+      : 0;
+
+    const radarBlendedMm =
+      leadHour < 3 && radarNowcast.radarAvailable
+        ? blendNowcastWithHourlyNwp(
+            radarNowcast,
+            [0, 1, 2].map((hOff) => (hOff === leadHour ? calibratedNwpPrecipMm : baseFusedPrecip.precipitationMm))
+          )[leadHour]
+        : calibratedNwpPrecipMm;
+
+    const fusedPrecip = {
+      ...baseFusedPrecip,
+      precipitationMm:
+        leadHour <= 1 &&
+        !tempConsistency.finalIsWet &&
+        radarNowcast.radarAvailable &&
+        radarNowcast.currentRainRateMmHr === 0
+          ? 0
+          : radarBlendedMm,
+      precipProbabilityPct: virgaVetoed || (pmqmCheck.drizzleSuppressed && !effectiveWetHour)
+        ? Math.min(34, baseFusedPrecip.precipProbabilityPct)
+        : bursaTrainedPrecip
+          ? bursaTrainedPrecip.popPct
+          : baseFusedPrecip.precipProbabilityPct
+    };
 
     const snowfallCm = Number(
       Math.max(
@@ -1368,7 +1711,17 @@ export async function fetchWeatherBundle(
       gustP90,
       windDirection,
       cloudCover: Math.round(Number(hourlyRaw.cloud_cover?.[i] ?? 0)),
-      visibilityKm: Number((Number(hourlyRaw.visibility?.[i] ?? 15000) / 1000).toFixed(1)),
+      visibilityKm: Number((
+        diagnosePhysicalVisibilityM({
+          rawVisibilityM: typeof hourlyRaw.visibility?.[i] === "number" ? Number(hourlyRaw.visibility[i]) : null,
+          temp2mC: temperature,
+          dewPoint2mC: dewPoint,
+          cloudCoverLowPct: Number(hourlyRaw.cloud_cover?.[i] ?? 30),
+          precipMmHr: fusedPrecip.precipitationMm,
+          isSnow: phaseResult.precipType === "snow",
+          windSpeedKt: windSpeed * 0.539957
+        }) / 1000
+      ).toFixed(1)),
       uvIndex: Number(hourlyRaw.uv_index?.[i] ?? 0),
       precipitation: fusedPrecip.precipitationMm,
       precipProbability: fusedPrecip.precipProbabilityPct,
@@ -1404,7 +1757,8 @@ export async function fetchWeatherBundle(
           ? Number(rawLi.toFixed(1))
           : soundingAnalysis?.liftedIndex ?? null,
       freezingLevelM,
-      temp850hPa
+      temp850hPa,
+      stabilityGrade: tempConsistency.stabilityGrade
     });
   }
 
@@ -1589,7 +1943,7 @@ export async function fetchWeatherBundle(
       const eTStats = eT ? computeEnsembleDistStats(eT) : null;
       const eGStats = eG ? computeEnsembleDistStats(eG) : null;
 
-      const tCal = blendKalmanCorrectedScalar({
+      const tKalmanRaw = blendKalmanCorrectedScalar({
         snapshot: tSnap,
         mos,
         param: "temperature",
@@ -1598,6 +1952,34 @@ export async function fetchWeatherBundle(
         fallback: Number(dailyRaw.temperature_2m_max?.[dIdx] ?? 15),
         ensembleP50: eTStats?.p50 ?? null
       });
+      const tBursaEmosRaw = isBursaEmosActive
+        ? predictBursaTrainedTempC({
+            leadHours: leadH,
+            utcDate,
+            localHourTrt: hh,
+            tempSnapshot: tSnap,
+            precipSnapshot: pSnap,
+            neighborMedians: getBursaNeighborMedians(uKey, tKalmanRaw),
+            targetElevationM: cityElevationM,
+            liveOriginResidualC: bursaLiveOriginResidualC,
+            lapseRateCPerKm: effectiveLapsePerKm
+          })
+        : null;
+      const tCalRaw = tBursaEmosRaw ?? tKalmanRaw;
+      const dayStepCons = evaluateHourlyRunConsistency({
+        leadHours: leadH,
+        validTimeIso: localIso,
+        utcHourKey: uKey,
+        candidateTempC: tCalRaw,
+        candidateIsWet: false,
+        candidatePrecipMmHr: 0,
+        candidatePopPct: 0,
+        ensembleTempIqrC: eTStats ? eTStats.p75 - eTStats.p25 : null,
+        laggedModels: laggedSeriesList,
+        hourIndex: leadH
+      });
+      v4ConsistencyTrack.push(dayStepCons);
+      const tCal = dayStepCons.finalTempC;
       if (tCal < minT) minT = tCal;
       if (tCal > maxT) maxT = tCal;
       if (eTStats) {
@@ -1613,7 +1995,7 @@ export async function fetchWeatherBundle(
         mos.mediumRangeWeights.precipitation,
         leadH
       );
-      const fp = fusePrecipitationHour({
+      const fpBase = fusePrecipitationHour({
         detSnapshot: pSnap,
         detWeights: wLead,
         ensembleMembersMm: eP,
@@ -1621,10 +2003,21 @@ export async function fetchWeatherBundle(
         rawPopFallbackPct: Number(dailyRaw.precipitation_probability_max?.[dIdx] ?? 0),
         leadHour: leadH
       });
-      precipSum += fp.precipitationMm;
-      precipP90Sum += fp.consensus.p90Mm ?? fp.precipitationMm;
-      maxPop = Math.max(maxPop, fp.precipProbabilityPct);
-      if (fp.precipitationMm >= 0.2) {
+      const bursaDayPrecip = isBursaEmosActive
+        ? predictBursaTrainedPrecip({
+            leadHours: leadH,
+            precipSnapshot: pSnap,
+            ensemblePopPct: fpBase.precipProbabilityPct
+          })
+        : null;
+      const fpMm = bursaDayPrecip
+        ? (bursaDayPrecip.isWet ? Number((0.60 * bursaDayPrecip.qpfMmHr + 0.40 * fpBase.precipitationMm).toFixed(2)) : 0)
+        : fpBase.precipitationMm;
+      const fpPop = bursaDayPrecip ? bursaDayPrecip.popPct : fpBase.precipProbabilityPct;
+      precipSum += fpMm;
+      precipP90Sum += fpBase.consensus.p90Mm ?? fpMm;
+      maxPop = Math.max(maxPop, fpPop);
+      if (fpMm >= 0.2) {
         if (tCal <= 0.5) dominantPhase = "snow";
         else if (dominantPhase === "none") dominantPhase = "rain";
       }
@@ -1694,7 +2087,8 @@ export async function fetchWeatherBundle(
       stormScoreMax: maxStormScore > 0 ? maxStormScore : undefined,
       uvIndexMax: Number(Number(dailyRaw.uv_index_max?.[dIdx] ?? 0).toFixed(1)),
       sunrise: String(dailyRaw.sunrise?.[dIdx] ?? ""),
-      sunset: String(dailyRaw.sunset?.[dIdx] ?? "")
+      sunset: String(dailyRaw.sunset?.[dIdx] ?? ""),
+      stabilityGrade: dIdx <= 2 ? "LOCKED" : (laggedSeriesList.length >= 3 ? "CONVERGING" : "WATCH")
     };
   });
 
@@ -1737,11 +2131,14 @@ export async function fetchWeatherBundle(
       parameter: "2m Sıcaklık & Çiy Noktası",
       primaryEngine: topModelLabel(mos.shortRangeWeights.temperature),
       weightsLabel: formatWeightsLabel(mos.shortRangeWeights.temperature),
-      standardRef: isLiveVerified
-        ? `48s Çoklu METAR (${stIdsText}) Kalman/Diurnal MOS + UBRMSE²`
-        : `7-Model + ${ensLabel} + Bolton (1980)`,
-      reason:
-        "7 Tier-1 model gündüz/gece fazlı Kalman sapma düzeltmesinden geçirilir; 0–6s aralığında canlı METAR sensörü asimile edilir."
+      standardRef: isBursaEmosActive
+        ? `WMO 17116 (8.712s) Huber-Ridge + L1-Tree EMOS + MGM 19-İlçe AR(2)`
+        : isLiveVerified
+          ? `48s Çoklu METAR (${stIdsText}) Kalman/Diurnal MOS + UBRMSE²`
+          : `7-Model + ${ensLabel} + Bolton (1980)`,
+      reason: isBursaEmosActive
+        ? "Bursa Merkez (17116) 8.712 saatlik gerçek termometre serisiyle eğitilen 56-özellikli Huber-Ridge + L1-Ağaç EMOS; AIFS testere dişi ve akşam UHI salınımını giderir, ilk 24 saatte canlı MGM sensörüne kilitlenir."
+        : "7 Tier-1 model gündüz/gece fazlı Kalman sapma düzeltmesinden geçirilir; 0–6s aralığında canlı METAR sensörü asimile edilir."
     },
     {
       parameter: "Yağış, PoP & Faz (Kar/Dolu)",
@@ -1787,8 +2184,30 @@ export async function fetchWeatherBundle(
     }
   ];
 
+  const activeBursaRegime = classifyBursaSynopticRegime({
+    windDir10mDeg: hybridCurDir,
+    windSpeed10mKt: hybridCurWind * 0.539957,
+    pressureMslHpa: pNow,
+    cloudCoverPct: Number(cur.cloud_cover ?? firstHour?.cloudCover ?? 35),
+    capeJkg: firstHour?.cape ?? 0,
+    localHour: startLocalHour,
+    month: new Date().getUTCMonth() + 1
+  });
+  const regimeTrMap: Record<string, string> = {
+    LODOS_FOEHN: "Uludağ Lodos Fönü",
+    POYRAZ_KARAYEL_ADV: "Poyraz / Karayel Marmara Akışı",
+    OVA_INVERSION_CALM: "Bursa Ovası Enversiyon / Ayaz",
+    MARMARA_SEA_BREEZE: "Marmara Deniz Meltemi",
+    CONVECTIVE_UNSTABLE: "Konvektif Kararsızlık",
+    SYNOPTIC_TRANSITION: "Sinoptik Cephe Geçişi"
+  };
+  const activeRegimeLabel = isBursaDomain
+    ? (regimeTrMap[activeBursaRegime] ?? "Sinoptik Akış")
+    : "Çoklu Model Sinoptik Rejim";
+  const stabilitySummary = summarizeForecastStability(v4ConsistencyTrack, activeRegimeLabel);
+
   const hybrid: HybridMeta = {
-    engineVersion: "ATMOS-Core v3.0",
+    engineVersion: isBursaEmosActive ? "ATMOS-Core v4.5 (Bursa 8712s EMOS)" : "ATMOS-Core v4.0",
     activeModels: activeModels.length > 0 ? activeModels : ["Open-Meteo NWP"],
     ensembleMembers: ensIndex.memberCount,
     confidencePct,
@@ -1803,7 +2222,24 @@ export async function fetchWeatherBundle(
       cape: curCapeSnap
     },
     verification: mos.report,
-    attributions
+    attributions,
+    atmosV4: {
+      activeRegime: activeBursaRegime,
+      activeRegimeLabel,
+      verticalMechanism: firstHourVertPhys?.activeMechanism ?? "STANDARD_PROFILE",
+      froudeNumber: firstHourVertPhys?.froudeNumber ?? 0,
+      stabilityPct: stabilitySummary.overallStabilityPct,
+      stabilityGrade: stabilitySummary.overallGrade,
+      meanRunLockCount: stabilitySummary.meanRunLockCount,
+      blockedFlipFlops: stabilitySummary.blockedNoisyRevisionsCount,
+      spinUpVetoes: stabilitySummary.spinUpVetoesCount,
+      stabilityBadgeLabel: stabilitySummary.badgeLabelTr,
+      radarSummaryCode: radarNowcast.summaryCode,
+      nextRainOnsetMin: radarNowcast.nextRainOnsetMinutes,
+      rainCessationMin: radarNowcast.rainCessationMinutes,
+      bursaTier1Online: bursaMesh?.tier1OnlineCount ?? 0,
+      ltbrIsolated: Boolean(isBursaDomain && (bursaMesh?.tier1OnlineCount ?? 0) > 0)
+    }
   };
 
   const curWmo = firstHour?.weatherCode ?? Number(cur.weather_code ?? 0);
