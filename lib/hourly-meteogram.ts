@@ -1,8 +1,12 @@
-import type {
-  DailyPoint,
-  HourlyPoint,
-  PrecipPhase,
-  PrecipType
+import { formatTempDelta, formatWindSpeed } from "./weather-client";
+import {
+  isWetActiveSample,
+  PRECIP_WETNESS_CONTRACT,
+  type DailyPoint,
+  type HourlyPoint,
+  type PrecipPhase,
+  type PrecipType,
+  type UnitSystem
 } from "./weather-types";
 
 export type WeatherGlyphKind =
@@ -95,9 +99,9 @@ export function resolveWeatherGlyphKind({
 }
 
 export interface HourlyDisplaySemantics {
-  /** Gerçek ölçülebilir yağış düşüyor mu (`>= 0.05 mm` veya `>= 0.08 cm` havada kar) */
+  /** Gerçek ölçülebilir yağış düşüyor mu (`>= 0.05 mm` veya `>= 0.08 cm` havada kar, `mm > 0`) */
   isWetActive: boolean;
-  /** Miktar `0.0 mm` iken kayda değer yağış olasılığı (`>= %18`) var mı (kesikli hayalet bar) */
+  /** Miktar `0.0 mm` iken kayda değer yağış olasılığı (`>= GHOST_POP_MIN_PCT`) var mı (kesikli hayalet bar) */
   isProbabilisticGhost: boolean;
   /** İkonda kullanılacak dürüst faz (`0.0 mm` iken yanıltıcı yağış damlası/kar tanesi çizmez) */
   iconPhase: PrecipPhase;
@@ -111,7 +115,7 @@ export interface HourlyDisplaySemantics {
 
 /**
  * `0.0 mm` yağışlı saatlerde `"Karla Karışık Yağmur · 0.0 mm"` gibi çelişkili durum/ikon üretimini önler;
- * gerçek aktif yağış ile kuru olasılık izini (ghost bar) birbirinden net biçimde ayırır.
+ * gerçek aktif yağış ile kuru olasılık izini (ghost bar) `PRECIP_WETNESS_CONTRACT` üzerinden ayırır.
  */
 export function resolveHourlyDisplaySemantics(
   hour: Pick<
@@ -136,7 +140,7 @@ export function resolveHourlyDisplaySemantics(
   const tw = hour.wetBulbC ?? hour.temperature;
 
   // Potansiyel termodinamik faz (yağış düşerse hangi fazda düşeceği)
-  let potentialPhase: PrecipPhase =
+  const potentialPhase: PrecipPhase =
     hour.precipPhase && hour.precipPhase !== "none"
       ? hour.precipPhase
       : hour.precipType === "snow"
@@ -149,7 +153,7 @@ export function resolveHourlyDisplaySemantics(
               ? "sleet"
               : "rain";
 
-  const isWetActive = mm >= 0.05 || airSnow >= 0.08;
+  const isWetActive = isWetActiveSample(mm, airSnow);
   if (isWetActive) {
     return {
       isWetActive: true,
@@ -163,7 +167,7 @@ export function resolveHourlyDisplaySemantics(
     };
   }
 
-  // Miktar < 0.05 mm: Gökyüzü kuru/iz düzeyinde -> yanıltıcı yağış ikonu yerine gerçek bulutluluk ikonu!
+  // Miktar aktif eşiğin altında: yanıltıcı yağış ikonu yerine gerçek gökyüzü bulutluluk ikonu!
   const skyCode =
     hour.weatherCode === 45 || hour.weatherCode === 48
       ? hour.weatherCode
@@ -190,7 +194,7 @@ export function resolveHourlyDisplaySemantics(
               ? "Az Bulutlu"
               : "Açık";
 
-  if (pop >= 18) {
+  if (pop >= PRECIP_WETNESS_CONTRACT.GHOST_POP_MIN_PCT) {
     const potentialTr =
       potentialPhase === "snow"
         ? "Kar İhtimali"
@@ -236,12 +240,15 @@ export interface Point2D {
 }
 
 /**
- * Monoton-sınırlı Catmull-Rom -> Kübik Bezier SVG eğrisi:
- * Tüm saat düğümlerinden tam geçer ve keskin cephe düşüşlerinde fizik dışı aşım (overshoot) yapmaz.
+ * Monoton-sınırlı (Fritsch-Carlson / konveks zarf garantili) Catmull-Rom -> Kübik Bezier SVG eğrisi:
+ * - Tüm saat düğümlerinden tam geçer ve keskin cephe düşüşlerinde sıfır aşım (0 overshoot) yapar.
+ * - `firstSegmentSpanHours` (`0.05..1`) verildiğinde `"Şimdi"` alt-saatlik ofsetine göre `i === 1` düğümünün
+ *   teğet eğimini gerçek zaman aralığıyla (`2 / (1 + dt0)`) ağırlıklandırır.
  */
 export function buildSmoothCurvePath(
   points: ReadonlyArray<Point2D>,
-  tension = 0.22
+  tension = 0.22,
+  firstSegmentSpanHours = 1
 ): string {
   if (points.length === 0) return "";
   if (points.length === 1) {
@@ -250,6 +257,12 @@ export function buildSmoothCurvePath(
   if (points.length === 2) {
     return `M${points[0].x.toFixed(1)},${points[0].y.toFixed(1)} L${points[1].x.toFixed(1)},${points[1].y.toFixed(1)}`;
   }
+
+  const dt0 = Number.isFinite(firstSegmentSpanHours)
+    ? Math.max(0.05, Math.min(1, firstSegmentSpanHours))
+    : 1;
+  // i === 1 düğümünde toplam zaman açıklığı (dt0 + 1) = (2 - f_sub) saat olduğundan teğet ölçeği:
+  const node1SlopeScale = 2 / (1 + dt0);
 
   let d = `M${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`;
   for (let i = 0; i < points.length - 1; i++) {
@@ -260,13 +273,20 @@ export function buildSmoothCurvePath(
 
     const minSegY = Math.min(p1.y, p2.y);
     const maxSegY = Math.max(p1.y, p2.y);
+    const minSegX = Math.min(p1.x, p2.x);
+    const maxSegX = Math.max(p1.x, p2.x);
 
-    const cp1x = p1.x + (p2.x - p0.x) * tension;
-    const rawCp1y = p1.y + (p2.y - p0.y) * tension;
+    const cp1SlopeWeight = i === 1 ? node1SlopeScale : 1;
+    const cp2SlopeWeight = i === 0 ? node1SlopeScale * dt0 : 1;
+
+    const rawCp1x = p1.x + (p2.x - p0.x) * tension;
+    const cp1x = Math.max(minSegX, Math.min(maxSegX, rawCp1x));
+    const rawCp1y = p1.y + (p2.y - p0.y) * tension * cp1SlopeWeight;
     const cp1y = Math.max(minSegY, Math.min(maxSegY, rawCp1y));
 
-    const cp2x = p2.x - (p3.x - p1.x) * tension;
-    const rawCp2y = p2.y - (p3.y - p1.y) * tension;
+    const rawCp2x = p2.x - (p3.x - p1.x) * tension;
+    const cp2x = Math.max(minSegX, Math.min(maxSegX, rawCp2x));
+    const rawCp2y = p2.y - (p3.y - p1.y) * tension * cp2SlopeWeight;
     const cp2y = Math.max(minSegY, Math.min(maxSegY, rawCp2y));
 
     d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
@@ -408,9 +428,9 @@ export function buildHourlyDayGroups(
       if (h.temperature < prev.tempMin) prev.tempMin = h.temperature;
       if (h.temperature > prev.tempMax) prev.tempMax = h.temperature;
       if (h.precipProbability > prev.maxPopPct) prev.maxPopPct = h.precipProbability;
-      prev.precipSumMm = Number((prev.precipSumMm + h.precipitation).toFixed(1));
-      prev.snowAirSumCm = Number((prev.snowAirSumCm + (h.airSnowCm ?? 0)).toFixed(1));
-      prev.snowGroundSumCm = Number((prev.snowGroundSumCm + (h.groundSnowCm ?? 0)).toFixed(1));
+      prev.precipSumMm += h.precipitation;
+      prev.snowAirSumCm += h.airSnowCm ?? 0;
+      prev.snowGroundSumCm += h.groundSnowCm ?? 0;
       if ((h.lightningProbPct ?? 0) > prev.maxLightningProbPct) {
         prev.maxLightningProbPct = h.lightningProbPct ?? 0;
       }
@@ -434,12 +454,18 @@ export function buildHourlyDayGroups(
   }
 
   for (const g of groups) {
+    g.precipSumMm = Number(g.precipSumMm.toFixed(1));
+    g.snowAirSumCm = Number(g.snowAirSumCm.toFixed(1));
+    g.snowGroundSumCm = Number(g.snowGroundSumCm.toFixed(1));
+
     const d = dailyByDate.get(g.date);
     if (d) {
       g.tempMin = d.tempMin;
       g.tempMax = d.tempMax;
       g.dominantCode = d.weatherCode;
       if (d.precipPhase) g.dominantPhase = d.precipPhase;
+      g.precipSumMm = Number(Math.max(g.precipSumMm, d.precipSum).toFixed(1));
+      g.maxPopPct = Math.max(g.maxPopPct, d.precipProbabilityMax);
       if (d.airSnowSumCm !== undefined) g.snowAirSumCm = d.airSnowSumCm;
       if (d.groundSnowSumCm !== undefined) g.snowGroundSumCm = d.groundSnowSumCm;
       if (d.lightningProbMaxPct !== undefined) {
@@ -458,8 +484,27 @@ export interface SolarTimelineMarker {
   fractionalIndex: number;
 }
 
+function addDaysYmd(ymd: string, deltaDays: number): string {
+  const baseMs = Date.parse(`${ymd.slice(0, 10)}T12:00:00Z`);
+  if (!Number.isFinite(baseMs)) return ymd.slice(0, 10);
+  return new Date(baseMs + deltaDays * 86_400_000).toISOString().slice(0, 10);
+}
+
+function normalizeSolarIso(raw: string, fallbackYmd: string): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed.length >= 16 && trimmed.includes("T")) {
+    return trimmed.slice(0, 16);
+  }
+  if (/^\d{2}:\d{2}$/.test(trimmed) && fallbackYmd.length >= 10) {
+    return `${fallbackYmd.slice(0, 10)}T${trimmed}`;
+  }
+  return null;
+}
+
 /**
  * Günlük sunrise/sunset ISO dizgelerini saatlik eksende kesirli sütun konumlarına eşler.
+ * Gece yarısını aşan yüksek enlem günbatımlarında (`ssHour < srHour`) doğru ertesi gün sütununa yerleştirir.
  */
 export function buildSolarMarkers(
   hourly: ReadonlyArray<HourlyPoint>,
@@ -469,15 +514,46 @@ export function buildSolarMarkers(
 
   const hourPrefixToIndex = new Map<string, number>();
   hourly.forEach((h, idx) => {
-    hourPrefixToIndex.set(h.time.slice(0, 13), idx);
+    const prefix = h.time.slice(0, 13);
+    if (!hourPrefixToIndex.has(prefix)) {
+      hourPrefixToIndex.set(prefix, idx);
+    }
   });
 
   const markers: SolarTimelineMarker[] = [];
+  const seenIds = new Set<string>();
+
   for (const d of daily) {
-    const pairs: Array<{ kind: "sunrise" | "sunset"; iso: string }> = [
-      { kind: "sunrise", iso: d.sunrise },
-      { kind: "sunset", iso: d.sunset }
+    const srIso = normalizeSolarIso(d.sunrise, d.date);
+    let ssIso = normalizeSolarIso(d.sunset, d.date);
+
+    if (srIso && ssIso) {
+      const srYmd = srIso.slice(0, 10);
+      const ssYmd = ssIso.slice(0, 10);
+      const srHour = Number(srIso.slice(11, 13));
+      const srMin = Number(srIso.slice(14, 16));
+      const ssHour = Number(ssIso.slice(11, 13));
+      const ssMin = Number(ssIso.slice(14, 16));
+      const srTotalMin = srHour * 60 + srMin;
+      const ssTotalMin = ssHour * 60 + ssMin;
+
+      // Kutup gündüzü/gecesinde özdeş saat damgası sahte işaretçi üretmesin
+      if (srYmd === ssYmd && srTotalMin === ssTotalMin) {
+        continue;
+      }
+
+      // Gece yarısı sonrası günbatımı aynı takvim günüyle yazılmışsa ertesi güne kaydır
+      if (ssYmd === srYmd && (ssHour < srHour || ssTotalMin < srTotalMin)) {
+        const nextYmd = addDaysYmd(ssYmd, 1);
+        ssIso = `${nextYmd}${ssIso.slice(10, 16)}`;
+      }
+    }
+
+    const pairs: Array<{ kind: "sunrise" | "sunset"; iso: string | null }> = [
+      { kind: "sunrise", iso: srIso },
+      { kind: "sunset", iso: ssIso }
     ];
+
     for (const { kind, iso } of pairs) {
       if (!iso || iso.length < 16) continue;
       const hourPrefix = iso.slice(0, 13);
@@ -486,8 +562,11 @@ export function buildSolarMarkers(
       const mins = Number(iso.slice(14, 16));
       const frac = Number.isFinite(mins) ? Math.max(0, Math.min(0.98, mins / 60)) : 0;
       const fractionalIndex = Math.min(hourly.length - 1, baseIdx + frac);
+      const id = `${kind}-${iso.slice(0, 16)}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
       markers.push({
-        id: `${kind}-${iso.slice(0, 16)}`,
+        id,
         kind,
         timeLabel: iso.slice(11, 16),
         fractionalIndex
@@ -559,10 +638,11 @@ function angularDiffDeg(a: number, b: number): number {
 
 /**
  * Saatlik seride önemli sinoptik kırılma anlarını (Yağmur->Kar geçişi, Soğuk Cephe,
- * 0°C Don/Buzlanma eşiği, Oraj zirvesi, Fırtına hamlesi) çakışmasız (en az 5 saat aralıklı) bulur.
+ * 0°C/32°F Don/Buzlanma eşiği, Oraj zirvesi, Fırtına hamlesi) çakışmasız (en az 5 saat aralıklı) bulur.
  */
 export function detectSynopticEvents(
-  hourly: ReadonlyArray<HourlyPoint>
+  hourly: ReadonlyArray<HourlyPoint>,
+  unit: UnitSystem = "metric"
 ): SynopticTimelineEvent[] {
   if (hourly.length < 4) return [];
 
@@ -602,7 +682,7 @@ export function detectSynopticEvents(
           id: `front-${cur.time}`,
           hourIndex: i,
           kind: "cold_front",
-          labelTr: `▼ Cephe (${dT3h.toFixed(1)}°)`,
+          labelTr: `▼ Cephe (${formatTempDelta(dT3h, unit, { decimals: 1, signed: true, showUnit: true })})`,
           badgeClass: "border-cyan-400/45 bg-[#081424]/95 text-cyan-200",
           lineStroke: "#38bdf8",
           priority: 88
@@ -611,16 +691,22 @@ export function detectSynopticEvents(
       }
     }
 
-    // 3. 0°C Donma / Gizli Buzlanma Geçişi
+    // 3. 0°C / 32°F Donma / Gizli Buzlanma Geçişi
     if (
       (prev.temperature > 0.2 && cur.temperature <= 0.0) ||
       (prev.icingRisk !== "black_ice" && cur.icingRisk === "black_ice")
     ) {
+      const freezeLabel =
+        cur.icingRisk === "black_ice"
+          ? "⚠ Gizli Buz"
+          : unit === "imperial"
+            ? "32°F Don"
+            : "0°C Don";
       candidates.push({
         id: `freeze-${cur.time}`,
         hourIndex: i,
         kind: "freeze_cross",
-        labelTr: cur.icingRisk === "black_ice" ? "⚠ Gizli Buz" : "0°C Don",
+        labelTr: freezeLabel,
         badgeClass:
           cur.icingRisk === "black_ice"
             ? "border-rose-400/50 bg-[#1f0b14]/95 text-rose-200"
@@ -667,7 +753,7 @@ export function detectSynopticEvents(
           id: `gust-${cur.time}`,
           hourIndex: i,
           kind: "peak_gust",
-          labelTr: `⚑ ${Math.round(cur.windGusts)} km/s`,
+          labelTr: `⚑ ${formatWindSpeed(cur.windGusts, unit)}`,
           badgeClass: "border-orange-400/45 bg-[#1c1008]/95 text-orange-200",
           lineStroke: "#fb923c",
           priority: 72

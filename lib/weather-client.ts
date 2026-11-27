@@ -1,15 +1,27 @@
 import { CORE_MODEL_KEYS } from "./model-registry";
-import type {
-  BeaufortInfo,
-  CoreModelKey,
-  GeoLocation,
-  HybridModelSnapshot,
-  PrecipitationConsensus,
-  PrecipType,
-  PressureTrend,
-  SynopticSignal,
-  UnitSystem
+import {
+  isSnowLinePhysicallyRelevant,
+  isWetActiveSample,
+  PRECIP_WETNESS_CONTRACT,
+  type BeaufortInfo,
+  type CoreModelKey,
+  type GeoLocation,
+  type HourlyHorizonHours,
+  type HybridModelSnapshot,
+  type PrecipitationConsensus,
+  type PrecipType,
+  type PressureTrend,
+  type SynopticSignal,
+  type UnitSystem
 } from "./weather-types";
+
+export * from "./weather-types";
+export {
+  PRECIP_WETNESS_CONTRACT,
+  isWetActiveSample,
+  isSnowLinePhysicallyRelevant,
+  type HourlyHorizonHours
+};
 
 /**
  * Resmi Bursa Hava Merkezi Referansı:
@@ -622,24 +634,749 @@ export function computeHybridConfidence(
   return Math.round(Math.max(45, Math.min(99, 99 - tempPenalty - pressPenalty)));
 }
 
-export function formatTemperature(celsius: number, unit: UnitSystem): string {
-  if (unit === "imperial") {
-    return `${Math.round((celsius * 9) / 5 + 32)}°F`;
-  }
-  return `${Math.round(celsius)}°`;
+// ============================================================================
+// SIZINTISIZ BİRİM YARDIMCILARI (METRIC / IMPERIAL SSOT)
+// ============================================================================
+
+export function convertTempValue(celsius: number, unit: UnitSystem): number {
+  return unit === "imperial" ? celsius * 1.8 + 32 : celsius;
 }
 
-export function formatWindSpeed(kmh: number, unit: UnitSystem): string {
-  if (unit === "imperial") {
-    return `${Math.round(kmh * 0.621371)} mph`;
+/**
+ * Sıcaklık farkı, anomali, RMSE, MAE ve yayılım dönüşümü (KESİNLİKLE +32 eklenmez!).
+ */
+export function convertTempDelta(deltaC: number, unit: UnitSystem): number {
+  const val = unit === "imperial" ? deltaC * 1.8 : deltaC;
+  return val === 0 ? 0 : val;
+}
+
+export function formatTemperature(
+  celsius: number,
+  unit: UnitSystem,
+  opts?: { decimals?: number; showUnit?: boolean; signed?: boolean }
+): string {
+  if (!opts) {
+    if (unit === "imperial") {
+      return `${Math.round((celsius * 9) / 5 + 32)}°F`;
+    }
+    return `${Math.round(celsius)}°`;
   }
-  return `${Math.round(kmh)} km/s`;
+
+  const val = convertTempValue(celsius, unit);
+  const decimals = Math.max(0, opts.decimals ?? 0);
+  const factor = 10 ** decimals;
+  const rounded = Math.round(val * factor) / factor;
+  const clean = Math.abs(rounded) < 1e-9 ? 0 : rounded;
+  const numStr = decimals > 0 ? clean.toFixed(decimals) : String(Math.round(clean));
+  const prefix = opts.signed && clean > 0 ? "+" : "";
+
+  const unitSuffix =
+    opts.showUnit === true
+      ? unit === "imperial"
+        ? "°F"
+        : "°C"
+      : opts.showUnit === false
+        ? "°"
+        : unit === "imperial"
+          ? "°F"
+          : "°";
+
+  return `${prefix}${numStr}${unitSuffix}`;
+}
+
+export function formatTempDelta(
+  deltaC: number,
+  unit: UnitSystem,
+  opts?: { decimals?: number; signed?: boolean; showUnit?: boolean }
+): string {
+  const val = convertTempDelta(deltaC, unit);
+  const decimals = Math.max(0, opts?.decimals ?? 1);
+  const signed = opts?.signed ?? true;
+  const showUnit = opts?.showUnit ?? true;
+
+  const factor = 10 ** decimals;
+  const rounded = Math.round(val * factor) / factor;
+  const clean = Math.abs(rounded) < 1e-9 ? 0 : rounded;
+  const numStr = decimals > 0 ? clean.toFixed(decimals) : String(Math.round(clean));
+  const prefix = signed && clean > 0 ? "+" : "";
+  const suffix = showUnit ? (unit === "imperial" ? "°F" : "°C") : "°";
+  return `${prefix}${numStr}${suffix}`;
+}
+
+export function formatLapseRate(cPerKm: number, unit: UnitSystem): string {
+  if (unit === "imperial") {
+    const imp = cPerKm * 0.54864;
+    const clean = Math.abs(imp) < 1e-9 ? 0 : imp;
+    return `${clean.toFixed(1)}°F/kft`;
+  }
+  const clean = Math.abs(cPerKm) < 1e-9 ? 0 : cPerKm;
+  return `${clean.toFixed(1)}°C/km`;
+}
+
+export function convertWindSpeed(kmh: number, unit: UnitSystem): number {
+  return unit === "imperial" ? kmh * 0.621371 : kmh;
+}
+
+export function formatWindSpeed(
+  kmh: number,
+  unit: UnitSystem,
+  opts?: { decimals?: number; showUnit?: boolean; signed?: boolean }
+): string {
+  if (!opts) {
+    if (unit === "imperial") {
+      return `${Math.round(kmh * 0.621371)} mph`;
+    }
+    return `${Math.round(kmh)} km/s`;
+  }
+
+  const val = convertWindSpeed(kmh, unit);
+  const decimals = Math.max(0, opts.decimals ?? 0);
+  const showUnit = opts.showUnit ?? true;
+  const factor = 10 ** decimals;
+  const rounded = Math.round(val * factor) / factor;
+  const clean = Math.abs(rounded) < 1e-9 ? 0 : rounded;
+  const numStr = decimals > 0 ? clean.toFixed(decimals) : String(Math.round(clean));
+  const prefix = opts.signed && clean > 0 ? "+" : "";
+  if (!showUnit) return `${prefix}${numStr}`;
+  return `${prefix}${numStr} ${unit === "imperial" ? "mph" : "km/s"}`;
+}
+
+export function convertPrecipMm(mm: number, unit: UnitSystem): number {
+  return unit === "imperial" ? mm / 25.4 : mm;
+}
+
+export function formatPrecip(
+  mm: number,
+  unit: UnitSystem,
+  opts?: { per?: "hour" | "15m"; showUnit?: boolean }
+): string {
+  const showUnit = opts?.showUnit ?? true;
+  const perSuffix =
+    opts?.per === "hour" ? "/sa" : opts?.per === "15m" ? "/15dk" : "";
+  const unitLabel = unit === "imperial" ? `in${perSuffix}` : `mm${perSuffix}`;
+  const suffix = showUnit ? ` ${unitLabel}` : "";
+
+  const safeMm = Number.isFinite(mm) && mm > 0 ? mm : 0;
+  if (safeMm <= 0) {
+    return unit === "imperial" ? `0.00${suffix}` : `0.0${suffix}`;
+  }
+
+  if (unit === "imperial") {
+    const inVal = safeMm / 25.4;
+    if (inVal < 0.01) {
+      return `<0.01${suffix}`;
+    }
+    return `${inVal.toFixed(2)}${suffix}`;
+  }
+
+  if (opts?.per === "15m" && safeMm < 0.1) {
+    return `${safeMm.toFixed(2)}${suffix}`;
+  }
+  if (safeMm < 0.05) {
+    return `<0.1${suffix}`;
+  }
+  return `${safeMm.toFixed(1)}${suffix}`;
+}
+
+export function convertSnowCm(cm: number, unit: UnitSystem): number {
+  return unit === "imperial" ? cm / 2.54 : cm;
+}
+
+export function formatSnowDepth(
+  cm: number | null | undefined,
+  unit: UnitSystem,
+  opts?: { showUnit?: boolean; per?: "hour" | "day" }
+): string {
+  const showUnit = opts?.showUnit ?? true;
+  const perSuffix =
+    opts?.per === "hour" ? "/sa" : opts?.per === "day" ? "/gün" : "";
+  const unitLabel = unit === "imperial" ? `in${perSuffix}` : `cm${perSuffix}`;
+  const suffix = showUnit ? ` ${unitLabel}` : "";
+
+  const safeCm =
+    cm !== null && cm !== undefined && Number.isFinite(cm) && cm > 0 ? cm : 0;
+  if (safeCm <= 0) {
+    return `0${suffix}`;
+  }
+
+  if (unit === "imperial") {
+    const inVal = safeCm / 2.54;
+    if (inVal < 0.1) return `<0.1${suffix}`;
+    if (inVal < 10) return `${inVal.toFixed(1)}${suffix}`;
+    return `${Math.round(inVal)}${suffix}`;
+  }
+
+  if (safeCm < 0.05) return `<0.1${suffix}`;
+  if (safeCm < 10) return `${safeCm.toFixed(1)}${suffix}`;
+  return `${Math.round(safeCm)}${suffix}`;
+}
+
+export function convertElevationM(meters: number, unit: UnitSystem): number {
+  return unit === "imperial" ? Math.round(meters * 3.28084) : Math.round(meters);
+}
+
+export function formatElevation(
+  meters: number | null | undefined,
+  unit: UnitSystem
+): string {
+  if (meters === null || meters === undefined || !Number.isFinite(meters)) {
+    return "—";
+  }
+  return unit === "imperial"
+    ? `${Math.round(meters * 3.28084)} ft`
+    : `${Math.round(meters)} m`;
+}
+
+export function convertDistanceKm(km: number, unit: UnitSystem): number {
+  return unit === "imperial" ? km * 0.621371 : km;
+}
+
+export function formatDistance(
+  km: number,
+  unit: UnitSystem,
+  opts?: { decimals?: number }
+): string {
+  const safeKm = Number.isFinite(km) ? Math.max(0, km) : 0;
+  const val = convertDistanceKm(safeKm, unit);
+  const unitLabel = unit === "imperial" ? "mi" : "km";
+
+  if (opts?.decimals !== undefined) {
+    const dec = Math.max(0, opts.decimals);
+    return `${dec > 0 ? val.toFixed(dec) : Math.round(val)} ${unitLabel}`;
+  }
+
+  if (unit === "imperial") {
+    if (val === 0) return "0 mi";
+    if (val < 20) return `${val.toFixed(1).replace(/\.0$/, "")} mi`;
+    return `${Math.round(val)} mi`;
+  }
+
+  if (val >= 10 || Number.isInteger(val)) {
+    return `${Math.round(val)} km`;
+  }
+  return `${val.toFixed(1)} km`;
+}
+
+export function convertPressureHpa(hpa: number, unit: UnitSystem): number {
+  return unit === "imperial" ? hpa * 0.029529983 : hpa;
+}
+
+export function formatPressure(
+  hpa: number,
+  unit: UnitSystem,
+  opts?: { showUnit?: boolean }
+): string {
+  const showUnit = opts?.showUnit ?? true;
+  if (unit === "imperial") {
+    const inHg = hpa * 0.029529983;
+    return showUnit ? `${inHg.toFixed(2)} inHg` : inHg.toFixed(2);
+  }
+  const rounded = Math.round(hpa);
+  return showUnit ? `${rounded} hPa` : String(rounded);
+}
+
+export function formatPressureDelta(
+  deltaHpa: number,
+  unit: UnitSystem,
+  per3h = true
+): string {
+  const rateSuffix = per3h ? "/3s" : "";
+  if (unit === "imperial") {
+    const rawInHg = deltaHpa * 0.029529983;
+    const rounded = Math.round(rawInHg * 100) / 100;
+    const clean = Math.abs(rounded) < 1e-9 ? 0 : rounded;
+    const sign = clean > 0 ? "+" : "";
+    return `${sign}${clean.toFixed(2)} inHg${rateSuffix}`;
+  }
+  const rounded = Math.round(deltaHpa * 10) / 10;
+  const clean = Math.abs(rounded) < 1e-9 ? 0 : rounded;
+  const sign = clean > 0 ? "+" : "";
+  return `${sign}${clean.toFixed(1)} hPa${rateSuffix}`;
 }
 
 export function formatLatLon(lat: number, lon: number, decimals = 2): string {
   const latHem = lat >= 0 ? "K" : "G";
   const lonHem = lon >= 0 ? "D" : "B";
   return `${Math.abs(lat).toFixed(decimals)}°${latHem} · ${Math.abs(lon).toFixed(decimals)}°${lonHem}`;
+}
+
+// ============================================================================
+// KÜRESEL IANA SAAT DİLİMİ (DST), TAKVİM FARKI VE MODÜLER GÜNEŞ YAYI
+// ============================================================================
+
+const DAY_NAMES_SHORT_TR = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"] as const;
+
+/**
+ * UTC 12:00 öğle demirlemeli saf takvim günü farkı (DST ve sunucu yerel saatinden %100 bağımsız).
+ */
+export function computeCalendarDayDiff(
+  targetYmd: string,
+  originTodayYmd: string
+): number {
+  const tYmd = targetYmd.slice(0, 10);
+  const oYmd = originTodayYmd.slice(0, 10);
+  const tMs = Date.parse(`${tYmd}T12:00:00Z`);
+  const oMs = Date.parse(`${oYmd}T12:00:00Z`);
+  if (!Number.isFinite(tMs) || !Number.isFinite(oMs)) return 0;
+  return Math.round((tMs - oMs) / 86_400_000);
+}
+
+export function formatRelativeDayLabelTr(
+  targetYmd: string,
+  originTodayYmd: string,
+  style: "weekday" | "plusDay" = "weekday"
+): string {
+  const diff = computeCalendarDayDiff(targetYmd, originTodayYmd);
+  if (diff === 0) return "Bugün";
+  if (diff === 1) return "Yarın";
+  if (diff < 0) return "Dün";
+  if (style === "plusDay") return `+${diff}g`;
+
+  const tYmd = targetYmd.slice(0, 10);
+  const d = new Date(`${tYmd}T12:00:00Z`);
+  return DAY_NAMES_SHORT_TR[d.getUTCDay()] ?? tYmd.slice(5);
+}
+
+export interface ZonedLocalParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  ymd: string;
+  hm: string;
+  isoMinute: string;
+  isoHour: string;
+  localMinutesOfDay: number;
+  offsetSeconds: number;
+}
+
+export interface FastZonedTimeResolver {
+  localIsoToUtcDate: (localIso: string, prevUtcMs?: number) => Date;
+  localIsoToUtcHourKey: (localIso: string, prevUtcMs?: number) => string;
+  epochMsToLocalParts: (epochMs: number) => ZonedLocalParts;
+}
+
+const SIX_HOURS_MS = 6 * 3600_000;
+const zonedDtfCache = new Map<string, Intl.DateTimeFormat | null>();
+const zonedGridOffsetCache = new Map<string, Map<number, number>>();
+
+function getCachedZonedFormatter(timeZone?: string): Intl.DateTimeFormat | null {
+  if (!timeZone || typeof timeZone !== "string") return null;
+  const key = timeZone.trim();
+  if (!key) return null;
+  if (zonedDtfCache.has(key)) return zonedDtfCache.get(key) ?? null;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: key,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23"
+    });
+    zonedDtfCache.set(key, fmt);
+    return fmt;
+  } catch {
+    zonedDtfCache.set(key, null);
+    return null;
+  }
+}
+
+function extractZonedPartsRaw(
+  fmt: Intl.DateTimeFormat,
+  utcMs: number
+): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  offsetSeconds: number;
+} {
+  const parts = fmt.formatToParts(new Date(utcMs));
+  let year = 1970;
+  let month = 1;
+  let day = 1;
+  let hour = 0;
+  let minute = 0;
+  let second = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.type === "year") year = Number(p.value);
+    else if (p.type === "month") month = Number(p.value);
+    else if (p.type === "day") day = Number(p.value);
+    else if (p.type === "hour") {
+      const hv = Number(p.value);
+      hour = hv === 24 ? 0 : hv;
+    } else if (p.type === "minute") minute = Number(p.value);
+    else if (p.type === "second") second = Number(p.value);
+  }
+  const wallUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  const secAlignedUtcMs = Math.floor(utcMs / 1000) * 1000;
+  const offsetSeconds = Math.round((wallUtcMs - secAlignedUtcMs) / 1000);
+  return { year, month, day, hour, minute, second, offsetSeconds };
+}
+
+function buildLocalPartsFromShiftedUtc(
+  shiftedMs: number,
+  offsetSeconds: number
+): ZonedLocalParts {
+  const d = new Date(shiftedMs);
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  const hour = d.getUTCHours();
+  const minute = d.getUTCMinutes();
+  const second = d.getUTCSeconds();
+  const mStr = String(month).padStart(2, "0");
+  const dStr = String(day).padStart(2, "0");
+  const hStr = String(hour).padStart(2, "0");
+  const minStr = String(minute).padStart(2, "0");
+  const ymd = `${year}-${mStr}-${dStr}`;
+  const hm = `${hStr}:${minStr}`;
+  return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    ymd,
+    hm,
+    isoMinute: `${ymd}T${hm}`,
+    isoHour: `${ymd}T${hStr}:00`,
+    localMinutesOfDay: hour * 60 + minute,
+    offsetSeconds
+  };
+}
+
+function parseLocalWallAsUtcMs(localIso: string): number | null {
+  if (!localIso || typeof localIso !== "string") return null;
+  const s = localIso.trim();
+  if (s.length < 10) return null;
+  const year = Number(s.slice(0, 4));
+  const month = Number(s.slice(5, 7));
+  const day = Number(s.slice(8, 10));
+  const hour = s.length >= 13 ? Number(s.slice(11, 13)) : 0;
+  const minute = s.length >= 16 ? Number(s.slice(14, 16)) : 0;
+  const second = s.length >= 19 ? Number(s.slice(17, 19)) : 0;
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute) ||
+    !Number.isFinite(second) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null;
+  }
+  return Date.UTC(year, month - 1, day, hour, minute, second);
+}
+
+/**
+ * Modül önbellekli Intl.DateTimeFormat + 6 saatlik blok-atlamalı sabit nokta DST çözücüsü:
+ * - Mart ileri sarma (spring-forward gap) ve Kasım geri sarma (fall-back fold) geçişlerinde sıfır kayma sağlar.
+ * - Geçersiz veya boş IANA saat diliminde çökmeden `fallbackOffsetSeconds` ile çalışır.
+ */
+export function createFastZonedTimeResolver(
+  timeZone: string | undefined,
+  fallbackOffsetSeconds = 0
+): FastZonedTimeResolver {
+  const safeFallbackSec = Number.isFinite(fallbackOffsetSeconds)
+    ? Math.round(fallbackOffsetSeconds)
+    : 0;
+  const fmt = getCachedZonedFormatter(timeZone);
+  const tzKey = fmt && timeZone ? timeZone.trim() : "";
+
+  let gridMap = tzKey ? zonedGridOffsetCache.get(tzKey) : undefined;
+  if (tzKey && !gridMap) {
+    gridMap = new Map<number, number>();
+    zonedGridOffsetCache.set(tzKey, gridMap);
+  }
+
+  const getExactOffsetSec = (utcMs: number): number => {
+    if (!fmt) return safeFallbackSec;
+    return extractZonedPartsRaw(fmt, utcMs).offsetSeconds;
+  };
+
+  const getGridOffsetSec = (gridIdx: number): number => {
+    if (!fmt || !gridMap) return safeFallbackSec;
+    const hit = gridMap.get(gridIdx);
+    if (hit !== undefined) return hit;
+    if (gridMap.size > 4096) gridMap.clear();
+    const off = extractZonedPartsRaw(fmt, gridIdx * SIX_HOURS_MS).offsetSeconds;
+    gridMap.set(gridIdx, off);
+    return off;
+  };
+
+  let seedOffsetSec = safeFallbackSec;
+
+  const resolveWallMsToUtcMs = (wallAsUtcMs: number, prevUtcMs?: number): number => {
+    if (!fmt) {
+      return wallAsUtcMs - safeFallbackSec * 1000;
+    }
+
+    let bIdx = Math.floor((wallAsUtcMs - seedOffsetSec * 1000) / SIX_HOURS_MS);
+    let offCur = getGridOffsetSec(bIdx);
+    const reanchoredMs = wallAsUtcMs - offCur * 1000;
+    const bIdxReanchored = Math.floor(reanchoredMs / SIX_HOURS_MS);
+    if (bIdxReanchored !== bIdx) {
+      bIdx = bIdxReanchored;
+      offCur = getGridOffsetSec(bIdx);
+    }
+
+    const offPrev = getGridOffsetSec(bIdx - 1);
+    const offNext = getGridOffsetSec(bIdx + 1);
+
+    // Hızlı yol (%99.9): komşu 6 saatlik bloklarda DST geçişi yoksa O(1) aritmetik çözüm
+    if (offPrev === offCur && offCur === offNext) {
+      seedOffsetSec = offCur;
+      return wallAsUtcMs - offCur * 1000;
+    }
+
+    // Geçiş bloğu yolu: geri sarma (fold) ve ileri sarma (gap) için kesin aday çözücü
+    const offPreProbe = getExactOffsetSec(wallAsUtcMs - offPrev * 1000 - 2 * 3600_000);
+    const offPostProbe = getExactOffsetSec(wallAsUtcMs - offNext * 1000 + 2 * 3600_000);
+    const uniqueOffsets = Array.from(
+      new Set([offPreProbe, offPrev, offCur, offNext, offPostProbe])
+    );
+
+    const candidateUtcList = uniqueOffsets
+      .map((off) => wallAsUtcMs - off * 1000)
+      .sort((a, b) => a - b);
+
+    const exactMatches: number[] = [];
+    for (let i = 0; i < candidateUtcList.length; i++) {
+      const cand = candidateUtcList[i];
+      const actualOff = getExactOffsetSec(cand);
+      if (cand + actualOff * 1000 === wallAsUtcMs) {
+        if (exactMatches.length === 0 || exactMatches[exactMatches.length - 1] !== cand) {
+          exactMatches.push(cand);
+        }
+      }
+    }
+
+    if (exactMatches.length === 1) {
+      const chosen = exactMatches[0];
+      seedOffsetSec = Math.round((wallAsUtcMs - chosen) / 1000);
+      return chosen;
+    }
+
+    if (exactMatches.length >= 2) {
+      // Kasım geri sarma (01:00 tekrarı): prevUtcMs verilmişse bir önceki saatten kesin ileri olan adayı seç
+      let chosen = exactMatches[0];
+      if (prevUtcMs !== undefined && Number.isFinite(prevUtcMs)) {
+        const strictlyAfter = exactMatches.find((m) => m > prevUtcMs);
+        chosen =
+          strictlyAfter !== undefined
+            ? strictlyAfter
+            : exactMatches[exactMatches.length - 1];
+      }
+      seedOffsetSec = Math.round((wallAsUtcMs - chosen) / 1000);
+      return chosen;
+    }
+
+    // Mart ileri sarma kayıp saat boşluğu (ör. 02:30 -> geçiş öncesi ofsetle ileri taşı)
+    const gapResolved = wallAsUtcMs - offPreProbe * 1000;
+    seedOffsetSec = getExactOffsetSec(gapResolved);
+    return gapResolved;
+  };
+
+  const localIsoToUtcDate = (localIso: string, prevUtcMs?: number): Date => {
+    if (localIso && /(?:Z|[+-]\d{2}:\d{2})$/i.test(localIso.trim())) {
+      const explicitMs = Date.parse(localIso.trim());
+      if (Number.isFinite(explicitMs)) return new Date(explicitMs);
+    }
+    const wallMs = parseLocalWallAsUtcMs(localIso);
+    if (wallMs === null) {
+      return new Date(
+        prevUtcMs !== undefined && Number.isFinite(prevUtcMs) ? prevUtcMs : Date.now()
+      );
+    }
+    return new Date(resolveWallMsToUtcMs(wallMs, prevUtcMs));
+  };
+
+  const localIsoToUtcHourKey = (localIso: string, prevUtcMs?: number): string => {
+    const utcDate = localIsoToUtcDate(localIso, prevUtcMs);
+    const nearestHourMs = Math.round(utcDate.getTime() / 3600_000) * 3600_000;
+    return new Date(nearestHourMs).toISOString().slice(0, 16);
+  };
+
+  const epochMsToLocalParts = (epochMs: number): ZonedLocalParts => {
+    const safeMs = Number.isFinite(epochMs) ? epochMs : Date.now();
+    if (!fmt) {
+      return buildLocalPartsFromShiftedUtc(safeMs + safeFallbackSec * 1000, safeFallbackSec);
+    }
+
+    const bIdx = Math.floor(safeMs / SIX_HOURS_MS);
+    const offCur = getGridOffsetSec(bIdx);
+    const offNext = getGridOffsetSec(bIdx + 1);
+    if (offCur === offNext) {
+      return buildLocalPartsFromShiftedUtc(safeMs + offCur * 1000, offCur);
+    }
+
+    const raw = extractZonedPartsRaw(fmt, safeMs);
+    const mStr = String(raw.month).padStart(2, "0");
+    const dStr = String(raw.day).padStart(2, "0");
+    const hStr = String(raw.hour).padStart(2, "0");
+    const minStr = String(raw.minute).padStart(2, "0");
+    const ymd = `${raw.year}-${mStr}-${dStr}`;
+    const hm = `${hStr}:${minStr}`;
+    return {
+      year: raw.year,
+      month: raw.month,
+      day: raw.day,
+      hour: raw.hour,
+      minute: raw.minute,
+      second: raw.second,
+      ymd,
+      hm,
+      isoMinute: `${ymd}T${hm}`,
+      isoHour: `${ymd}T${hStr}:00`,
+      localMinutesOfDay: raw.hour * 60 + raw.minute,
+      offsetSeconds: raw.offsetSeconds
+    };
+  };
+
+  return {
+    localIsoToUtcDate,
+    localIsoToUtcHourKey,
+    epochMsToLocalParts
+  };
+}
+
+export interface ModularSolarArcInput {
+  sunriseIso: string;
+  sunsetIso: string;
+  nowLocalMinutes: number;
+  solarElevationDeg: number;
+}
+
+export interface ModularSolarArcResult {
+  sunriseHm: string;
+  sunsetHm: string;
+  sunriseMinutes: number | null;
+  sunsetMinutes: number | null;
+  daylightMinutes: number;
+  durationHours: number;
+  durationMinutes: number;
+  durationLabelTr: string;
+  progress: number;
+  isUp: boolean;
+  isPolarDay: boolean;
+  isPolarNight: boolean;
+  wrapsMidnight: boolean;
+}
+
+function parseIsoClockMinutes(iso: string): { hm: string; minutes: number } | null {
+  if (!iso || typeof iso !== "string") return null;
+  const trimmed = iso.trim();
+  const hmCandidate =
+    trimmed.length >= 16 && trimmed.includes("T")
+      ? trimmed.slice(11, 16)
+      : trimmed.slice(0, 5);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hmCandidate);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh < 0 || hh > 24 || mm < 0 || mm > 59) {
+    return null;
+  }
+  const normH = hh % 24;
+  return {
+    hm: `${String(normH).padStart(2, "0")}:${String(mm).padStart(2, "0")}`,
+    minutes: normH * 60 + mm
+  };
+}
+
+/**
+ * Modüler 24-saat güneş yayı çözücüsü:
+ * - Reykjavik / yüksek enlem yaz gecelerinde `sunset < sunrise` (ör. 02:55 -> 00:04 = 21s 9dk) gece yarısı aşımını çözer.
+ * - Kutup gündüzü (24s 0dk) ve kutup gecesini (0s 0dk) destekler.
+ */
+export function computeModularSolarArc(
+  params: ModularSolarArcInput
+): ModularSolarArcResult {
+  const sr = parseIsoClockMinutes(params.sunriseIso);
+  const ss = parseIsoClockMinutes(params.sunsetIso);
+  const normNow = ((params.nowLocalMinutes % 1440) + 1440) % 1440;
+  const isUp = params.solarElevationDeg > 0;
+
+  if (!sr || !ss || sr.minutes === ss.minutes) {
+    if (params.solarElevationDeg > -0.833) {
+      return {
+        sunriseHm: "--:--",
+        sunsetHm: "--:--",
+        sunriseMinutes: null,
+        sunsetMinutes: null,
+        daylightMinutes: 1440,
+        durationHours: 24,
+        durationMinutes: 0,
+        durationLabelTr: "24s 0dk",
+        progress: Math.max(0, Math.min(1, normNow / 1440)),
+        isUp: true,
+        isPolarDay: true,
+        isPolarNight: false,
+        wrapsMidnight: false
+      };
+    }
+    return {
+      sunriseHm: "--:--",
+      sunsetHm: "--:--",
+      sunriseMinutes: null,
+      sunsetMinutes: null,
+      daylightMinutes: 0,
+      durationHours: 0,
+      durationMinutes: 0,
+      durationLabelTr: "0s 0dk",
+      progress: 0,
+      isUp: false,
+      isPolarDay: false,
+      isPolarNight: true,
+      wrapsMidnight: false
+    };
+  }
+
+  const daylightMinutes = (ss.minutes - sr.minutes + 1440) % 1440;
+  const durationHours = Math.floor(daylightMinutes / 60);
+  const durationMinutes = daylightMinutes % 60;
+  const durationLabelTr = `${durationHours}s ${durationMinutes}dk`;
+  const wrapsMidnight = ss.minutes < sr.minutes;
+
+  const modElapsed = (normNow - sr.minutes + 1440) % 1440;
+  let progress: number;
+  if (modElapsed <= daylightMinutes) {
+    progress = daylightMinutes > 0 ? modElapsed / daylightMinutes : 0;
+  } else {
+    const nightElapsed = modElapsed - daylightMinutes;
+    const nightSpan = 1440 - daylightMinutes;
+    progress = nightElapsed <= nightSpan * 0.5 ? 1 : 0;
+  }
+
+  return {
+    sunriseHm: sr.hm,
+    sunsetHm: ss.hm,
+    sunriseMinutes: sr.minutes,
+    sunsetMinutes: ss.minutes,
+    daylightMinutes,
+    durationHours,
+    durationMinutes,
+    durationLabelTr,
+    progress: Math.max(0, Math.min(1, progress)),
+    isUp,
+    isPolarDay: false,
+    isPolarNight: false,
+    wrapsMidnight
+  };
 }
 
 export function computeSynopticSignals(params: {
@@ -649,14 +1386,16 @@ export function computeSynopticSignals(params: {
   windGustsKmh: number;
   cape: number | null;
   isStorm: boolean;
-  europeanAqi: number;
-  dominantPollutant: string;
+  europeanAqi: number | null;
+  dominantPollutant?: string;
   uvIndex: number;
   freezingLevelM: number | null;
   temperatureC: number;
   stormScore?: number;
   scp?: number;
+  unit?: UnitSystem;
 }): SynopticSignal[] {
+  const unit: UnitSystem = params.unit ?? "metric";
   const signals: SynopticSignal[] = [];
 
   if (Math.abs(params.pressureDelta3h) >= 3.0) {
@@ -665,7 +1404,7 @@ export function computeSynopticSignals(params: {
       id: "pressure-tendency",
       severity: dropping ? "warning" : "info",
       title: dropping ? "Hızlı Basınç Düşüşü" : "Hızlı Basınç Yükselişi",
-      detail: `${params.pressureDelta3h > 0 ? "+" : ""}${params.pressureDelta3h} hPa/3s · ${
+      detail: `${formatPressureDelta(params.pressureDelta3h, unit, true)} · ${
         dropping ? "Aktif cephe geçişi" : "Cephe arkası yüksek basınç"
       }`
     });
@@ -695,7 +1434,7 @@ export function computeSynopticSignals(params: {
       id: "wind-gusts",
       severity: params.windGustsKmh >= 70 ? "warning" : "caution",
       title: "Kuvvetli Rüzgar Hamlesi",
-      detail: `Hamle ${Math.round(params.windGustsKmh)} km/s · Bft ${bft.scale}`
+      detail: `Hamle ${formatWindSpeed(params.windGustsKmh, unit)} · Bft ${bft.scale}`
     });
   }
 
@@ -706,14 +1445,24 @@ export function computeSynopticSignals(params: {
       params.thickness5001000Dam <= 542)
   ) {
     const parts: string[] = [];
-    if (params.temp850hPa !== null) parts.push(`850 hPa ${params.temp850hPa}°C`);
+    if (params.temp850hPa !== null) {
+      parts.push(
+        `850 hPa ${formatTemperature(params.temp850hPa, unit, { decimals: 1, showUnit: true })}`
+      );
+    }
     if (
       params.thickness5001000Dam !== undefined &&
       params.thickness5001000Dam !== null
     ) {
       parts.push(`Kalınlık ${params.thickness5001000Dam} dam`);
     }
-    if (params.freezingLevelM !== null) parts.push(`0°C: ${params.freezingLevelM} m`);
+    if (params.freezingLevelM !== null) {
+      parts.push(
+        unit === "imperial"
+          ? `32°F: ${formatElevation(params.freezingLevelM, unit)}`
+          : `0°C: ${formatElevation(params.freezingLevelM, unit)}`
+      );
+    }
     signals.push({
       id: "cold-snow-threshold",
       severity: "info",
@@ -725,16 +1474,21 @@ export function computeSynopticSignals(params: {
       id: "frost",
       severity: "caution",
       title: "Don & Buzlanma Eşiği",
-      detail: `Yüzey ${params.temperatureC.toFixed(1)}°C`
+      detail: `Yüzey ${formatTemperature(params.temperatureC, unit, { decimals: 1, showUnit: true })}`
     });
   }
 
-  if (params.europeanAqi >= 61) {
+  if (
+    params.europeanAqi !== null &&
+    Number.isFinite(params.europeanAqi) &&
+    params.europeanAqi >= 75
+  ) {
+    const domText = params.dominantPollutant ? ` · Baskın ${params.dominantPollutant}` : "";
     signals.push({
       id: "air-quality",
       severity: params.europeanAqi >= 81 ? "warning" : "caution",
       title: "Hava Kalitesi Kötü",
-      detail: `EAQI ${params.europeanAqi} · Baskın ${params.dominantPollutant}`
+      detail: `EAQI ${Math.round(params.europeanAqi)}${domText}`
     });
   }
 

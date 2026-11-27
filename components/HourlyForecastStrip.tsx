@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Droplets,
   Gauge,
+  Lock,
   RotateCcw,
   ShieldCheck,
   Snowflake,
@@ -39,9 +40,17 @@ import {
 import { computeVirtualHourWindow } from "@/lib/perf-budgets";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import {
+  convertTempValue,
+  convertWindSpeed,
+  formatElevation,
+  formatPrecip,
+  formatPressure,
+  formatSnowDepth,
   formatTemperature,
   formatWindSpeed,
-  windDirectionToCompass
+  isSnowLinePhysicallyRelevant,
+  windDirectionToCompass,
+  type HourlyHorizonHours
 } from "@/lib/weather-client";
 import type {
   DailyPoint,
@@ -53,6 +62,10 @@ import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
 type MeteogramLens = "synoptic" | "snow" | "thermo" | "wind" | "convective";
+
+type HourlyPointWithSubHour = HourlyPoint & {
+  subHourOffsetFrac?: number;
+};
 
 const LENS_OPTIONS: ReadonlyArray<{ key: MeteogramLens; label: string }> = [
   { key: "synoptic", label: "Meteogram" },
@@ -69,14 +82,6 @@ const CURVE_TOP = 114;
 const CURVE_BOT = 208;
 const HYETO_BASE_Y = 316;
 const HYETO_MAX_H = 54;
-
-function toUnitTemp(c: number, unit: UnitSystem): number {
-  return unit === "imperial" ? (c * 9) / 5 + 32 : c;
-}
-
-function toUnitWind(kmh: number, unit: UnitSystem): number {
-  return unit === "imperial" ? kmh * 0.621371 : kmh;
-}
 
 function skyBandColor(solarElevDeg: number): string {
   if (solarElevDeg < -10) return "rgba(15, 23, 42, 0.72)";
@@ -129,18 +134,18 @@ function stabilityLabelTr(grade?: "LOCKED" | "CONVERGING" | "WATCH"): {
 } {
   if (grade === "LOCKED") {
     return {
-      text: "KİLİTLİ",
+      text: "KOŞU UZLAŞISI",
       cls: "border-signal-emerald/35 bg-signal-emerald/12 text-signal-emerald"
     };
   }
   if (grade === "CONVERGING") {
     return {
-      text: "YAKINSIYOR",
+      text: "MODELLER YAKINSIYOR",
       cls: "border-signal-sky/35 bg-signal-sky/12 text-signal-sky"
     };
   }
   return {
-    text: "İZLENİYOR",
+    text: "CEPHE OYNAKLIĞI",
     cls: "border-signal-amber/35 bg-signal-amber/12 text-signal-amber"
   };
 }
@@ -151,19 +156,36 @@ export interface HourlyForecastStripProps {
   minutely15?: Minutely15Point[];
   unit: UnitSystem;
   selectedIndex: number;
-  onSelectIndex: (idx: number) => void;
+  onSelectIndex?: (idx: number) => void;
+  onSelectHour?: (idx: number) => void;
+  horizonDays?: 7 | 10;
+  onHorizonDaysChange?: (d: 7 | 10) => void;
+  horizonHours?: HourlyHorizonHours | 24;
+  onHorizonChange?: (h: HourlyHorizonHours) => void;
+  focusedDate?: string | null;
+  onFocusDate?: (ymd: string) => void;
+  baseElevationM?: number;
+  subHourOffsetFrac?: number;
 }
 
 function HourlyForecastStripBase({
   hourly: fullHourly,
   daily = [],
-  minutely15 = [],
   unit,
   selectedIndex,
-  onSelectIndex
+  onSelectIndex,
+  onSelectHour,
+  horizonDays,
+  onHorizonDaysChange,
+  horizonHours,
+  onHorizonChange,
+  focusedDate,
+  onFocusDate,
+  baseElevationM,
+  subHourOffsetFrac
 }: HourlyForecastStripProps) {
   const [lens, setLens] = useState<MeteogramLens>("synoptic");
-  const [extended240, setExtended240] = useState(false);
+  const [internalExtended240, setInternalExtended240] = useState(false);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [scrollDayDate, setScrollDayDate] = useState<string | null>(null);
   const [scrollMetrics, setScrollMetrics] = useState<{
@@ -174,10 +196,36 @@ function HourlyForecastStripBase({
     viewportWidth: 1120
   });
   const scrollRafRef = useRef<number>(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const programmaticScrollUntilRef = useRef<number>(0);
+
+  const notifySelectHour = useCallback(
+    (idx: number) => {
+      if (onSelectIndex) onSelectIndex(idx);
+      else if (onSelectHour) onSelectHour(idx);
+    },
+    [onSelectHour, onSelectIndex]
+  );
 
   const hasExtendedHours = fullHourly.length > 168;
-  const showExtended = extended240 || selectedIndex >= 168;
-  const hourly = useMemo(
+  const controlledExtended =
+    horizonDays !== undefined
+      ? horizonDays === 10
+      : horizonHours !== undefined
+        ? horizonHours > 168
+        : internalExtended240;
+  const showExtended = hasExtendedHours && (controlledExtended || selectedIndex >= 168);
+
+  const setExtendedHorizon = useCallback(
+    (nextExtended: boolean) => {
+      setInternalExtended240(nextExtended);
+      onHorizonDaysChange?.(nextExtended ? 10 : 7);
+      onHorizonChange?.(nextExtended ? 240 : 168);
+    },
+    [onHorizonChange, onHorizonDaysChange]
+  );
+
+  const visibleHours: ReadonlyArray<HourlyPointWithSubHour> = useMemo(
     () =>
       showExtended
         ? fullHourly
@@ -203,30 +251,145 @@ function HourlyForecastStripBase({
   });
   const suppressExternalScrollRef = useRef(false);
 
-  const count = hourly.length;
+  const count = visibleHours.length;
   const clampedSelected = Math.max(0, Math.min(selectedIndex, Math.max(0, count - 1)));
+
+  // Seçili saat her değiştiğinde manuel kaydırma gün izini sıfırla
+  const [prevClampedSelected, setPrevClampedSelected] = useState(clampedSelected);
+  if (prevClampedSelected !== clampedSelected) {
+    setPrevClampedSelected(clampedSelected);
+    if (scrollDayDate !== null) {
+      setScrollDayDate(null);
+    }
+  }
+
   const inspectedIdx =
     hoverIdx !== null
       ? Math.max(0, Math.min(hoverIdx, Math.max(0, count - 1)))
       : clampedSelected;
 
   const dayGroups = useMemo(
-    () => buildHourlyDayGroups(hourly, daily),
-    [hourly, daily]
+    () => buildHourlyDayGroups(visibleHours, daily),
+    [visibleHours, daily]
   );
   const solarMarkers = useMemo(
-    () => buildSolarMarkers(hourly, daily),
-    [hourly, daily]
+    () => buildSolarMarkers(visibleHours, daily),
+    [visibleHours, daily]
   );
-  const diurnalExtrema = useMemo(() => detectDiurnalExtrema(hourly), [hourly]);
-  const synopticEvents = useMemo(() => detectSynopticEvents(hourly), [hourly]);
+  const diurnalExtrema = useMemo(() => detectDiurnalExtrema(visibleHours), [visibleHours]);
+  const synopticEvents = useMemo(
+    () => detectSynopticEvents(visibleHours, unit),
+    [visibleHours, unit]
+  );
   const semanticsList = useMemo(
-    () => hourly.map((h) => resolveHourlyDisplaySemantics(h)),
-    [hourly]
+    () => visibleHours.map((h) => resolveHourlyDisplaySemantics(h)),
+    [visibleHours]
   );
 
+  // Seçili sütun görünür penceredeyse aktif gün hapı daima seçili saatin gününü gösterir
+  const selectedDayDate = visibleHours[clampedSelected]?.time.slice(0, 10) ?? "";
+  const selectedCenterPx = clampedSelected * COL_W + COL_W / 2;
+  const isSelectedColumnVisible =
+    selectedCenterPx >= scrollMetrics.scrollLeft + COL_W * 0.25 &&
+    selectedCenterPx <= scrollMetrics.scrollLeft + scrollMetrics.viewportWidth - COL_W * 0.25;
+
   const activeDayDate =
-    scrollDayDate ?? hourly[clampedSelected]?.time.slice(0, 10) ?? dayGroups[0]?.date ?? "";
+    clampedSelected === 0 && scrollDayDate
+      ? scrollDayDate
+      : isSelectedColumnVisible
+        ? selectedDayDate || dayGroups[0]?.date || ""
+        : scrollDayDate ?? (selectedDayDate || dayGroups[0]?.date || "");
+
+  // Dışarıdan focusedDate verildiğinde yalnızca yatay kaydırma yap; notifySelectHour çağırıp kullanıcının "date" modunu "hour" moduna bozma!
+  const [prevFocusedDateProp, setPrevFocusedDateProp] = useState<string | null | undefined>(
+    focusedDate
+  );
+  if (focusedDate !== prevFocusedDateProp) {
+    setPrevFocusedDateProp(focusedDate);
+    if (focusedDate) {
+      const currentSelectedYmd = fullHourly[selectedIndex]?.time.slice(0, 10);
+      if (!(selectedIndex > 0 && currentSelectedYmd === focusedDate)) {
+        const targetIdx = fullHourly.findIndex((h) => h.time.slice(0, 10) === focusedDate);
+        if (targetIdx >= 0) {
+          setScrollDayDate(targetIdx === 0 ? null : focusedDate);
+          if (targetIdx >= 168 && !internalExtended240) {
+            setInternalExtended240(true);
+          }
+        }
+      }
+    }
+  }
+
+  const lastHandledFocusedDateRef = useRef<string | null | undefined>(focusedDate);
+  useEffect(() => {
+    if (!focusedDate || focusedDate === lastHandledFocusedDateRef.current) return;
+    lastHandledFocusedDateRef.current = focusedDate;
+
+    const currentSelectedYmd = fullHourly[selectedIndex]?.time.slice(0, 10);
+    if (selectedIndex > 0 && currentSelectedYmd === focusedDate) return;
+
+    const targetIdx = fullHourly.findIndex((h) => h.time.slice(0, 10) === focusedDate);
+    if (targetIdx < 0) return;
+
+    const needsExpand = targetIdx >= 168 && !controlledExtended;
+    if (needsExpand) {
+      onHorizonDaysChange?.(10);
+      onHorizonChange?.(240);
+    }
+    programmaticScrollUntilRef.current = performance.now() + 460;
+
+    const targetScrollLeft =
+      targetIdx === 0 ? 0 : Math.max(0, targetIdx * COL_W - COL_W * 1.2);
+    const applyScroll = () => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      suppressExternalScrollRef.current = true;
+      el.scrollTo({
+        left: targetScrollLeft,
+        behavior: "smooth"
+      });
+    };
+
+    applyScroll();
+    if (needsExpand && typeof window !== "undefined") {
+      const raf = window.requestAnimationFrame(applyScroll);
+      return () => window.cancelAnimationFrame(raf);
+    }
+  }, [
+    controlledExtended,
+    focusedDate,
+    fullHourly,
+    onHorizonChange,
+    onHorizonDaysChange,
+    selectedIndex
+  ]);
+
+  // "atmos:open-convective-lens" özel olayı tetiklendiğinde Oraj & CAPE merceğini aç ve #saatlik bölümüne odaklan
+  useEffect(() => {
+    const handleOpenConvective = (ev: Event) => {
+      setLens("convective");
+      const detail = (ev as CustomEvent<{ hourIndex?: number } | undefined>).detail;
+      if (detail && typeof detail.hourIndex === "number" && Number.isFinite(detail.hourIndex)) {
+        const targetIdx = Math.max(
+          0,
+          Math.min(Math.trunc(detail.hourIndex), Math.max(0, fullHourly.length - 1))
+        );
+        if (targetIdx >= 168) {
+          setExtendedHorizon(true);
+        }
+        programmaticScrollUntilRef.current = performance.now() + 420;
+        notifySelectHour(targetIdx);
+      }
+      const targetSection = document.getElementById("saatlik") ?? rootRef.current;
+      targetSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollerRef.current?.focus({ preventScroll: true });
+    };
+
+    window.addEventListener("atmos:open-convective-lens", handleOpenConvective);
+    return () => {
+      window.removeEventListener("atmos:open-convective-lens", handleOpenConvective);
+    };
+  }, [fullHourly.length, notifySelectHour, setExtendedHorizon]);
 
   // Aktif gün kartını üstteki yatay gün rayında otomatik görünür tut
   useEffect(() => {
@@ -280,34 +443,34 @@ function HourlyForecastStripBase({
       };
     }
 
-    const primaryVals = hourly.map((h) => {
-      if (lens === "wind") return toUnitWind(h.windSpeed, unit);
+    const primaryVals = visibleHours.map((h) => {
+      if (lens === "wind") return convertWindSpeed(h.windSpeed, unit);
       if (lens === "convective") return Math.max(0, h.cape ?? 0);
-      return toUnitTemp(h.temperature, unit);
+      return convertTempValue(h.temperature, unit);
     });
 
-    const secondaryVals = hourly.map((h) => {
-      if (lens === "snow") return toUnitTemp(h.wetBulbC ?? h.dewPoint, unit);
-      if (lens === "thermo") return toUnitTemp(h.apparentTemperature, unit);
+    const secondaryVals = visibleHours.map((h) => {
+      if (lens === "snow") return convertTempValue(h.wetBulbC ?? h.dewPoint, unit);
+      if (lens === "thermo") return convertTempValue(h.apparentTemperature, unit);
       if (lens === "wind") {
-        return toUnitWind(Math.max(h.windGusts, h.gustP90 ?? h.windGusts), unit);
+        return convertWindSpeed(Math.max(h.windGusts, h.gustP90 ?? h.windGusts), unit);
       }
       if (lens === "convective") {
         return (h.lightningProbPct ?? 0) * 12;
       }
-      return toUnitTemp(h.temperature, unit);
+      return convertTempValue(h.temperature, unit);
     });
 
-    const bandLows = hourly.map((h, i) => {
+    const bandLows = visibleHours.map((h, i) => {
       if ((lens === "synoptic" || lens === "snow") && h.tempP10 !== undefined) {
-        return toUnitTemp(h.tempP10, unit);
+        return convertTempValue(h.tempP10, unit);
       }
       return primaryVals[i];
     });
 
-    const bandHighs = hourly.map((h, i) => {
+    const bandHighs = visibleHours.map((h, i) => {
       if ((lens === "synoptic" || lens === "snow") && h.tempP90 !== undefined) {
-        return toUnitTemp(h.tempP90, unit);
+        return convertTempValue(h.tempP90, unit);
       }
       if (lens === "wind") {
         return secondaryVals[i];
@@ -315,10 +478,10 @@ function HourlyForecastStripBase({
       return primaryVals[i];
     });
 
-    const combinedSeries = hourly.map((_, i) =>
+    const combinedSeries = visibleHours.map((_, i) =>
       Math.min(primaryVals[i], secondaryVals[i], bandLows[i])
     );
-    const combinedHighs = hourly.map((_, i) =>
+    const combinedHighs = visibleHours.map((_, i) =>
       Math.max(primaryVals[i], secondaryVals[i], bandHighs[i])
     );
 
@@ -326,7 +489,7 @@ function HourlyForecastStripBase({
     const isTempLens = lens === "synoptic" || lens === "snow" || lens === "thermo";
 
     // Görünür penceredeki hem alt hem üst sınırları kapsayacak adaptif ölçek dizisi
-    const scaleDriver = hourly.map((_, i) =>
+    const scaleDriver = visibleHours.map((_, i) =>
       i % 2 === 0 ? combinedSeries[i] : combinedHighs[i]
     );
     const scale = computeAdaptiveMeteogramScale({
@@ -371,23 +534,34 @@ function HourlyForecastStripBase({
 
     const hasTempBand =
       (lens === "synoptic" || lens === "snow") &&
-      hourly.some((h) => h.tempP10 !== undefined && h.tempP90 !== undefined);
+      visibleHours.some((h) => h.tempP10 !== undefined && h.tempP90 !== undefined);
     const hasBand = lens === "wind" || hasTempBand;
 
     const bandNodes = hasBand
-      ? hourly.map((_, i) => ({
+      ? visibleHours.map((_, i) => ({
           x: i * COL_W + COL_W / 2,
           yHigh: safeY(bandHighs[i]),
           yLow: safeY(bandLows[i])
         }))
       : [];
 
-    const bandPath = hasBand ? buildConfidenceBandPath(bandNodes) : "";
+    const firstSegmentSpanHours =
+      1 - (visibleHours[0]?.subHourOffsetFrac ?? subHourOffsetFrac ?? 0);
+
+    const bandPath = hasBand ? buildConfidenceBandPath(bandNodes, 0.22) : "";
     const bandHighPath = hasTempBand
-      ? buildSmoothCurvePath(bandNodes.map((n) => ({ x: n.x, y: n.yHigh })))
+      ? buildSmoothCurvePath(
+          bandNodes.map((n) => ({ x: n.x, y: n.yHigh })),
+          0.22,
+          firstSegmentSpanHours
+        )
       : "";
     const bandLowPath = hasTempBand
-      ? buildSmoothCurvePath(bandNodes.map((n) => ({ x: n.x, y: n.yLow })))
+      ? buildSmoothCurvePath(
+          bandNodes.map((n) => ({ x: n.x, y: n.yLow })),
+          0.22,
+          firstSegmentSpanHours
+        )
       : "";
 
     const zeroTempY =
@@ -397,10 +571,10 @@ function HourlyForecastStripBase({
 
     return {
       primaryYs: primaryPts.map((p) => p.y),
-      primaryPath: buildSmoothCurvePath(primaryPts),
+      primaryPath: buildSmoothCurvePath(primaryPts, 0.22, firstSegmentSpanHours),
       secondaryPath:
         lens === "thermo" || lens === "snow" || lens === "wind"
-          ? buildSmoothCurvePath(secondaryPts)
+          ? buildSmoothCurvePath(secondaryPts, 0.22, firstSegmentSpanHours)
           : "",
       bandPath,
       bandHighPath,
@@ -408,7 +582,7 @@ function HourlyForecastStripBase({
       zeroTempY,
       ticks: scale.ticks
     };
-  }, [count, hourly, lens, unit, virtWin.endIdx, virtWin.startIdx]);
+  }, [count, lens, subHourOffsetFrac, unit, virtWin.endIdx, virtWin.startIdx, visibleHours]);
 
   // TimeScrubber veya dış tetikleyiciyle seçili saat değiştiğinde yatay konumu ortala
   useEffect(() => {
@@ -425,6 +599,7 @@ function HourlyForecastStripBase({
 
     if (targetCenter < viewLeft + margin || targetCenter > viewRight - margin) {
       const nextScroll = Math.max(0, targetCenter - el.clientWidth * 0.35);
+      programmaticScrollUntilRef.current = performance.now() + 420;
       el.scrollTo({ left: nextScroll, behavior: "smooth" });
     }
   }, [clampedSelected]);
@@ -455,7 +630,7 @@ function HourlyForecastStripBase({
     scrollRafRef.current = window.requestAnimationFrame(() => {
       scrollRafRef.current = 0;
       const el = scrollerRef.current;
-      if (!el || hourly.length === 0) return;
+      if (!el || visibleHours.length === 0) return;
       const sl = el.scrollLeft;
       const vw = el.clientWidth || 1120;
       setScrollMetrics((prev) =>
@@ -463,20 +638,25 @@ function HourlyForecastStripBase({
           ? prev
           : { scrollLeft: sl, viewportWidth: vw }
       );
+      if (performance.now() < programmaticScrollUntilRef.current) {
+        return;
+      }
       const leadVisibleIdx = Math.min(
-        hourly.length - 1,
+        visibleHours.length - 1,
         Math.max(0, Math.floor((sl + COL_W * 2.2) / COL_W))
       );
-      const date = hourly[leadVisibleIdx]?.time.slice(0, 10) ?? null;
+      const date = visibleHours[leadVisibleIdx]?.time.slice(0, 10) ?? null;
       if (date) {
         setScrollDayDate((prev) => (prev === date ? prev : date));
       }
     });
-  }, [hourly]);
+  }, [visibleHours]);
 
   const jumpToHour = useCallback(
     (idx: number, updateSelection = true) => {
       const safe = Math.max(0, Math.min(idx, count - 1));
+      programmaticScrollUntilRef.current = performance.now() + 420;
+      setScrollDayDate(null);
       const el = scrollerRef.current;
       if (el) {
         suppressExternalScrollRef.current = true;
@@ -487,10 +667,10 @@ function HourlyForecastStripBase({
       }
       if (updateSelection) {
         atmosUiSfx.playScrubTick(safe / Math.max(1, count - 1));
-        onSelectIndex(safe);
+        notifySelectHour(safe);
       }
     },
-    [count, onSelectIndex]
+    [count, notifySelectHour]
   );
 
   const scrollByHours = (deltaHours: number) => {
@@ -519,6 +699,7 @@ function HourlyForecastStripBase({
     const dx = e.clientX - st.startX;
     if (!st.moved && Math.abs(dx) > 6) {
       st.moved = true;
+      setHoverIdx(null);
       e.currentTarget.setPointerCapture?.(st.pointerId);
     }
     if (st.moved && scrollerRef.current) {
@@ -529,10 +710,16 @@ function HourlyForecastStripBase({
   const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
     const st = dragRef.current;
     if (!st.active) return;
-    if (st.moved) {
+    const didMove = st.moved;
+    if (didMove) {
       e.currentTarget.releasePointerCapture?.(st.pointerId);
     }
     dragRef.current.active = false;
+    if (didMove) {
+      window.setTimeout(() => {
+        dragRef.current.moved = false;
+      }, 0);
+    }
   };
 
   const handleColumnClick = (idx: number) => {
@@ -541,8 +728,15 @@ function HourlyForecastStripBase({
       return;
     }
     suppressExternalScrollRef.current = true;
+    setScrollDayDate(null);
+    const targetYmd = visibleHours[idx]?.time.slice(0, 10);
+    if (targetYmd) {
+      lastHandledFocusedDateRef.current = targetYmd;
+      setPrevFocusedDateProp(targetYmd);
+      onFocusDate?.(targetYmd);
+    }
     atmosUiSfx.playScrubTick(idx / Math.max(1, count - 1));
-    onSelectIndex(idx);
+    notifySelectHour(idx);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -563,21 +757,29 @@ function HourlyForecastStripBase({
 
   if (count < 2) return null;
 
-  const inspected = hourly[inspectedIdx];
+  const inspected = visibleHours[inspectedIdx];
   const inspectedSem = semanticsList[inspectedIdx] ?? resolveHourlyDisplaySemantics(inspected);
   const inspectedPhaseVis = getPrecipPhaseVisual(
     inspectedSem.isWetActive ? inspectedSem.iconPhase : inspectedSem.potentialPhase,
     inspected.precipType
   );
   const stabMeta = stabilityLabelTr(inspected.stabilityGrade);
-  const hasNearNowcastPrecip =
-    clampedSelected <= 6 &&
-    minutely15.length >= 4 &&
-    minutely15.some((m) => m.precipitation >= 0.04);
+  const inspectedSnowLineRelevant = isSnowLinePhysicallyRelevant({
+    snowLineElevationM: inspected.snowLineElevationM,
+    baseElevationM,
+    temperatureC: inspected.temperature,
+    temp850hPa: inspected.temp850hPa,
+    precipMmHr: inspected.precipitation,
+    precipProbabilityPct: inspected.precipProbability,
+    airSnowProbPct: inspected.airSnowProbPct,
+    snowpackDepthCm: inspected.snowpackDepthCm
+  });
+
+  const isPreviewingOther = hoverIdx !== null && hoverIdx !== clampedSelected;
 
   // Yatay kenarlara veya sol sabit Y-eksenine giren rozetlerin yarım kesilmesini önleyen opaklık fonksiyonu
   const computePillEdgeOpacity = (centerPx: number): number => {
-    const leftGuard = scrollMetrics.scrollLeft + 58;
+    const leftGuard = scrollMetrics.scrollLeft + 42;
     const rightGuard = scrollMetrics.scrollLeft + scrollMetrics.viewportWidth - 34;
     if (centerPx < leftGuard - 18 || centerPx > rightGuard + 18) return 0;
     if (centerPx < leftGuard) return Math.max(0, (centerPx - (leftGuard - 18)) / 18);
@@ -585,8 +787,36 @@ function HourlyForecastStripBase({
     return 1;
   };
 
+  const curveTopUnitLabel =
+    lens === "wind"
+      ? unit === "imperial"
+        ? "mph"
+        : "km/s"
+      : lens === "convective"
+        ? "J/kg"
+        : unit === "imperial"
+          ? "°F"
+          : "°C";
+
+  const band6AxisLabel =
+    lens === "snow"
+      ? unit === "imperial"
+        ? "in"
+        : "cm"
+      : lens === "wind"
+        ? unit === "imperial"
+          ? "inHg"
+          : "hPa"
+        : lens === "convective"
+          ? "⚡%"
+          : unit === "imperial"
+            ? "in"
+            : "mm";
+
+  const windStripUnitLabel = unit === "imperial" ? "mph" : "km/s";
+
   return (
-    <div className="surface-panel p-4 sm:p-6 space-y-4">
+    <div ref={rootRef} className="surface-panel p-4 sm:p-6 space-y-4">
       {/* 1. ÜST RASATHANE BAŞLIĞI + 7G/10G ANAHTARI + 5'Lİ MERCEK SEÇİCİ */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -617,7 +847,6 @@ function HourlyForecastStripBase({
             </button>
           )}
 
-          {/* Gün rayında sıkışıp '+' olarak kesilen buton buraya temiz 7G / 10G segmenti olarak taşındı */}
           {hasExtendedHours && (
             <div
               role="group"
@@ -629,8 +858,8 @@ function HourlyForecastStripBase({
                 aria-pressed={!showExtended}
                 onClick={() => {
                   atmosUiSfx.playNavTick();
-                  setExtended240(false);
-                  if (selectedIndex >= 168) onSelectIndex(167);
+                  setExtendedHorizon(false);
+                  if (selectedIndex >= 168) notifySelectHour(167);
                 }}
                 className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
                   !showExtended
@@ -645,7 +874,7 @@ function HourlyForecastStripBase({
                 aria-pressed={showExtended}
                 onClick={() => {
                   atmosUiSfx.playNavTick();
-                  setExtended240(true);
+                  setExtendedHorizon(true);
                 }}
                 className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
                   showExtended
@@ -663,7 +892,7 @@ function HourlyForecastStripBase({
             aria-label="Saatlik meteogram görünüm merceği"
             className="no-scrollbar flex max-w-full overflow-x-auto rounded-xl border border-white/[0.08] bg-obsidian-950/75 p-1"
           >
-            {LENS_OPTIONS.map((opt) => {
+            {LENS_OPTIONS.map((opt, idx) => {
               const active = lens === opt.key;
               return (
                 <button
@@ -671,6 +900,22 @@ function HourlyForecastStripBase({
                   type="button"
                   role="tab"
                   aria-selected={active}
+                  tabIndex={active ? 0 : -1}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+                    e.preventDefault();
+                    const nextIdx =
+                      e.key === "ArrowRight"
+                        ? (idx + 1) % LENS_OPTIONS.length
+                        : (idx - 1 + LENS_OPTIONS.length) % LENS_OPTIONS.length;
+                    atmosUiSfx.playNavTick();
+                    setLens(LENS_OPTIONS[nextIdx].key);
+                    const tabs =
+                      e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                        '[role="tab"]'
+                      );
+                    tabs?.[nextIdx]?.focus();
+                  }}
                   onClick={() => {
                     atmosUiSfx.playNavTick();
                     setLens(opt.key);
@@ -712,7 +957,9 @@ function HourlyForecastStripBase({
                   }}
                   type="button"
                   onClick={() => {
-                    setScrollDayDate(g.date);
+                    lastHandledFocusedDateRef.current = g.date;
+                    setPrevFocusedDateProp(g.date);
+                    onFocusDate?.(g.date);
                     jumpToHour(g.startIndex, true);
                   }}
                   className={`atmos-btn group flex min-w-[122px] shrink-0 flex-col justify-between rounded-xl border px-3 py-1.5 text-left transition-all tabular ${
@@ -750,7 +997,7 @@ function HourlyForecastStripBase({
                         </span>
                         {g.snowAirSumCm >= 0.2 ? (
                           <span className="text-sky-200">
-                            · ❄{g.snowAirSumCm.toFixed(1)}
+                            · ❄{formatSnowDepth(g.snowAirSumCm, unit)}
                           </span>
                         ) : g.maxPopPct >= 20 ? (
                           <span className="text-[var(--atmos-accent)]">
@@ -799,10 +1046,26 @@ function HourlyForecastStripBase({
         </div>
       </div>
 
-      {/* 3. 6'LI MİKRO-ENSTRÜMAN SEÇİLİ SAAT KOKPİTİ (Düz metin yığını yerine hiyerarşik kartçıklar) */}
+      {/* 3. 6'LI MİKRO-ENSTRÜMAN SEÇİLİ SAAT KOKPİTİ */}
       <div className="rounded-2xl border border-white/[0.08] bg-obsidian-950/70 p-3 space-y-2.5 tabular">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
           <div className="flex flex-wrap items-center gap-2.5">
+            {isPreviewingOther ? (
+              <span className="inline-flex items-center gap-1 rounded-md border border-dashed border-sky-300/55 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] font-medium text-sky-200">
+                ÖNİZLEME · Sabitlemek İçin Tıkla
+              </span>
+            ) : clampedSelected > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-md border border-[rgba(var(--atmos-accent-rgb),0.48)] bg-[rgba(var(--atmos-accent-rgb),0.18)] px-2 py-0.5 font-mono text-[10px] font-semibold text-white">
+                <Lock className="h-2.5 w-2.5 text-[var(--atmos-accent)]" />
+                <span>SAHNE KİLİTLİ (+{clampedSelected}s)</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-signal-emerald/35 bg-signal-emerald/12 px-2 py-0.5 font-mono text-[10px] font-semibold text-signal-emerald">
+                <span className="h-1.5 w-1.5 rounded-full bg-signal-emerald animate-pulse" />
+                <span>CANLI ŞİMDİ</span>
+              </span>
+            )}
+
             <AnimatedWeatherIcon
               code={inspectedSem.effectiveCode}
               isNight={inspected.solarElevationDeg < -3}
@@ -822,16 +1085,19 @@ function HourlyForecastStripBase({
             </span>
           </div>
 
-          <div className="flex items-center gap-2 font-mono text-[10px]">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
             {inspected.stabilityGrade && (
-              <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${stabMeta.cls}`}>
+              <span
+                title="Ardışık model koşuları (dProg/dt) arasındaki sinoptik tutarlılık derecesi"
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${stabMeta.cls}`}
+              >
                 <ShieldCheck className="h-2.5 w-2.5" />
-                {stabMeta.text}
+                <span>{stabMeta.text}</span>
               </span>
             )}
             <span className="hidden md:inline text-ink-muted">
               {lens === "synoptic"
-                ? "Eğri: 2m Sıcaklık + P10–P90 Olasılık Tüneli"
+                ? `Eğri: ${unit === "imperial" ? "Yüzey (6.5ft) Sıcaklık" : "2m Sıcaklık"} + P10–P90 Olasılık Tüneli`
                 : lens === "snow"
                   ? "Kesikli: Islak Hazne Tw · Alt: Havada vs. Zeminde Kar"
                   : lens === "thermo"
@@ -844,14 +1110,18 @@ function HourlyForecastStripBase({
         </div>
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6 font-mono text-xs">
-          {/* Pod 1: 2m Sıcaklık & P10-P90 */}
+          {/* Pod 1: 2m / Yüzey (6.5ft) Sıcaklık & P10-P90 */}
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-2.5 py-2">
             <div className="flex items-center justify-between text-[10px] text-ink-muted">
-              <span>2m Sıcaklık</span>
+              <span>{unit === "imperial" ? "Yüzey (6.5ft) Sıcaklık" : "2m Sıcaklık"}</span>
               <Thermometer className="h-3 w-3 text-[var(--atmos-accent)]" />
             </div>
             <p className="mt-0.5 text-sm font-bold text-white">
-              <AnimatedNumber value={formatTemperature(inspected.temperature, unit)} />
+              {hoverIdx !== null ? (
+                <span>{formatTemperature(inspected.temperature, unit)}</span>
+              ) : (
+                <AnimatedNumber value={formatTemperature(inspected.temperature, unit)} />
+              )}
               {inspected.tempP10 !== undefined && inspected.tempP90 !== undefined && (
                 <span className="ml-1 text-[10px] font-normal text-sky-200/80">
                   [{formatTemperature(inspected.tempP10, unit)}..
@@ -870,7 +1140,10 @@ function HourlyForecastStripBase({
             <p className="mt-0.5 text-xs font-semibold text-ink-primary">
               {formatTemperature(inspected.apparentTemperature, unit)}
               {inspected.wetBulbC !== undefined && (
-                <span className="text-sky-200"> · Tw {inspected.wetBulbC}°C</span>
+                <span className="text-sky-200">
+                  {" "}
+                  · Tw {formatTemperature(inspected.wetBulbC, unit, { decimals: 1, showUnit: true })}
+                </span>
               )}
             </p>
           </div>
@@ -882,7 +1155,7 @@ function HourlyForecastStripBase({
               <Droplets className="h-3 w-3 text-sky-300" />
             </div>
             <p className={`mt-0.5 text-xs font-semibold ${inspectedPhaseVis.badgeTextClass}`}>
-              %{inspected.precipProbability} · {inspected.precipitation.toFixed(1)} mm
+              %{inspected.precipProbability} · {formatPrecip(inspected.precipitation, unit)}
               {inspected.precipConsensus.totalModels > 0 && (
                 <span className="ml-1 text-[10px] font-normal text-ink-muted">
                   ({inspected.precipConsensus.agreeingModels}/
@@ -892,24 +1165,32 @@ function HourlyForecastStripBase({
             </p>
           </div>
 
-          {/* Pod 4: Havada/Zeminde Kar & Kar Sınırı */}
+          {/* Pod 4: Havada/Zeminde Saatlik Kar & Fiziksel Kar Sınırı Kapısı */}
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-2.5 py-2">
             <div className="flex items-center justify-between text-[10px] text-ink-muted">
               <span>Kar & Sınır</span>
               <Snowflake className="h-3 w-3 text-sky-200" />
             </div>
-            {(inspected.airSnowCm ?? 0) > 0 || (inspected.airSnowProbPct ?? 0) >= 15 ? (
+            {(inspected.airSnowCm ?? 0) > 0 || (inspected.groundSnowCm ?? 0) > 0 ? (
               <p className="mt-0.5 text-xs font-semibold text-white">
-                H {(inspected.airSnowCm ?? 0).toFixed(1)} · Y{" "}
-                {(inspected.groundSnowCm ?? 0).toFixed(1)} cm
+                Saatlik: H {formatSnowDepth(inspected.airSnowCm ?? 0, unit, { showUnit: false })} · Y{" "}
+                {formatSnowDepth(inspected.groundSnowCm ?? 0, unit)}
+              </p>
+            ) : (inspected.airSnowProbPct ?? 0) >= 15 ? (
+              <p className="mt-0.5 text-xs font-semibold text-sky-200">
+                Saatlik: %{inspected.airSnowProbPct} · {formatSnowDepth(0, unit)}
+              </p>
+            ) : (inspected.snowpackDepthCm ?? 0) >= 0.2 ? (
+              <p className="mt-0.5 text-xs font-semibold text-sky-100">
+                Örtü: {formatSnowDepth(inspected.snowpackDepthCm, unit)}
+              </p>
+            ) : inspectedSnowLineRelevant ? (
+              <p className="mt-0.5 text-xs font-semibold text-sky-200">
+                Kar Sınırı: {formatElevation(inspected.snowLineElevationM, unit)}
               </p>
             ) : (
-              <p className="mt-0.5 text-xs font-semibold text-sky-200">
-                Sınır{" "}
-                {inspected.snowLineElevationM !== null &&
-                inspected.snowLineElevationM !== undefined
-                  ? `${inspected.snowLineElevationM} m`
-                  : "—"}
+              <p className="mt-0.5 text-xs font-medium text-ink-muted">
+                Kar / Don Riski Yok
               </p>
             )}
           </div>
@@ -925,7 +1206,7 @@ function HourlyForecastStripBase({
               {formatWindSpeed(inspected.windSpeed, unit)}
               {inspected.windGusts >= inspected.windSpeed + 7 && (
                 <span className="ml-1 text-[10px] text-amber-200">
-                  (G {Math.round(toUnitWind(inspected.windGusts, unit))})
+                  (G {formatWindSpeed(inspected.windGusts, unit, { showUnit: false })})
                 </span>
               )}
             </p>
@@ -942,7 +1223,7 @@ function HourlyForecastStripBase({
               )}
             </div>
             <p className="mt-0.5 text-xs font-semibold text-ink-primary">
-              {Math.round(inspected.pressure)} hPa
+              {formatPressure(inspected.pressure, unit)}
               {(inspected.lightningProbPct ?? 0) >= 15 ? (
                 <span className="ml-1 text-amber-200">
                   · ⚡%{inspected.lightningProbPct}
@@ -955,43 +1236,6 @@ function HourlyForecastStripBase({
             </p>
           </div>
         </div>
-
-        {/* İlk 6 saatte yağış sinyali varsa entegre 15-dakikalık mikro-nowcast şeridi */}
-        {hasNearNowcastPrecip && (
-          <div className="border-t border-white/[0.07] pt-2 flex flex-wrap items-center gap-3">
-            <span className="font-mono text-[10px] uppercase tracking-wider text-signal-sky shrink-0">
-              15dk Radar Akışı (6s)
-            </span>
-            <div className="flex flex-1 min-w-[220px] items-end gap-0.5 h-6">
-              {minutely15.slice(0, 24).map((m) => {
-                const hPct = Math.min(100, Math.max(12, (m.precipitation / 2.5) * 100));
-                const mVis = getPrecipPhaseVisual(m.precipPhase);
-                return (
-                  <div
-                    key={m.time}
-                    title={`${m.label} · ${m.precipitation.toFixed(2)} mm/15dk · ${formatTemperature(m.temperature, unit)}`}
-                    className="flex-1 h-full flex items-end"
-                  >
-                    <span
-                      className="block w-full rounded-t-[2px] transition-all"
-                      style={{
-                        height: `${m.precipitation >= 0.02 ? hPct : 10}%`,
-                        backgroundColor:
-                          m.precipitation >= 0.02
-                            ? mVis.barFocusFill
-                            : "rgba(255, 255, 255, 0.08)"
-                      }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-            <div className="font-mono text-[10px] text-ink-muted">
-              {minutely15[0]?.label} →{" "}
-              {minutely15[Math.min(23, minutely15.length - 1)]?.label}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* 4. 8-ŞERİTLİ SİNOPTİK METEOGRAM TUVALİ + SABİT SOL Y-EKSENİ CETVELİ */}
@@ -1001,6 +1245,9 @@ function HourlyForecastStripBase({
           aria-hidden="true"
           className="pointer-events-none absolute inset-y-0 left-0 z-30 w-12 bg-gradient-to-r from-[#060a13] via-[#060a13]/92 to-transparent"
         >
+          <span className="absolute left-2 top-[96px] font-mono text-[8px] tracking-wider text-slate-500">
+            {curveTopUnitLabel}
+          </span>
           {geometry.ticks.map((tk) => (
             <span
               key={`ytick-${tk.value}`}
@@ -1014,11 +1261,11 @@ function HourlyForecastStripBase({
               {tk.label}
             </span>
           ))}
-          <span className="absolute left-2 top-[232px] font-mono text-[8px] uppercase tracking-wider text-slate-500">
-            {lens === "snow" ? "cm" : lens === "wind" ? "hPa" : lens === "convective" ? "⚡%" : "Yağış"}
+          <span className="absolute left-2 top-[232px] font-mono text-[8px] tracking-wider text-slate-500">
+            {band6AxisLabel}
           </span>
-          <span className="absolute left-2 bottom-3 font-mono text-[8px] uppercase tracking-wider text-slate-500">
-            Rüzg
+          <span className="absolute left-2 bottom-3 font-mono text-[8px] tracking-wider text-slate-500">
+            {windStripUnitLabel}
           </span>
         </div>
 
@@ -1039,8 +1286,13 @@ function HourlyForecastStripBase({
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
+          onPointerLeave={(e) => {
+            if (e.pointerType === "mouse") {
+              setHoverIdx((prev) => (prev === null ? prev : null));
+            }
+          }}
           onMouseLeave={() => setHoverIdx((prev) => (prev === null ? prev : null))}
-          className="no-scrollbar relative overflow-x-auto overflow-y-hidden cursor-grab active:cursor-grabbing select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--atmos-accent)]"
+          className="no-scrollbar relative overflow-x-auto overflow-y-hidden pl-4 cursor-grab active:cursor-grabbing select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--atmos-accent)]"
         >
           <div
             className="relative"
@@ -1075,7 +1327,7 @@ function HourlyForecastStripBase({
 
               {/* Şerit 1 (y=0..6px): Gökyüzü Işık Kuşağı + Saat Meridyenleri */}
               {visibleIndices.map((i) => {
-                const h = hourly[i];
+                const h = visibleHours[i];
                 const xLeft = i * COL_W;
                 const isMidnight = i > 0 && h.hourLabel === "00:00";
                 const isSelected = i === clampedSelected;
@@ -1149,7 +1401,7 @@ function HourlyForecastStripBase({
                 />
               ))}
 
-              {/* 0°C Donma İzotermi (tick üstüne düşmemişse ayrıca çiz) */}
+              {/* 0°C / 32°F Donma İzotermi (tick üstüne düşmemişse ayrıca çiz) */}
               {geometry.zeroTempY !== null &&
                 !geometry.ticks.some((tk) => tk.isZero) && (
                   <line
@@ -1202,7 +1454,7 @@ function HourlyForecastStripBase({
                 );
               })}
 
-              {/* P10–P90 Olasılık Zarfı Dolgusu + Üst/Alt Kontur Çizgileri (Artık Net Görünür!) */}
+              {/* P10–P90 Olasılık Zarfı Dolgusu + Üst/Alt Kontur Çizgileri */}
               {geometry.bandPath && (
                 <path d={geometry.bandPath} fill="url(#meteogramShroudGrad)" />
               )}
@@ -1272,9 +1524,9 @@ function HourlyForecastStripBase({
                 />
               )}
 
-              {/* Şerit 7 (y=258..316px): P50 Dolu Bar + P90 Bıyık Çizgisi VEYA 0.0mm Kesikli Olasılık Hayalet Çerçevesi */}
+              {/* Şerit 7 (y=258..316px): P50 Dolu Bar + P90 Bıyık Çizgisi VEYA Kesikli Olasılık Hayalet Çerçevesi */}
               {visibleIndices.map((i) => {
-                const h = hourly[i];
+                const h = visibleHours[i];
                 const sem = semanticsList[i] ?? resolveHourlyDisplaySemantics(h);
                 const cx = i * COL_W + COL_W / 2;
                 const isFocus = i === clampedSelected || i === hoverIdx;
@@ -1363,7 +1615,7 @@ function HourlyForecastStripBase({
                 }
 
                 // Standart Yağış Hyetografı:
-                // 1) `0.0 mm` ama olasılık >= %18 -> Kesikli Hayalet Olasılık Çerçevesi (Yanıltıcı dolu bar çizmez!)
+                // 1) Kuru ama olasılık >= %20 -> Kesikli Hayalet Olasılık Çerçevesi
                 if (!sem.isWetActive) {
                   if (!sem.isProbabilisticGhost) return null;
                   const potVis = getPrecipPhaseVisual(sem.potentialPhase, h.precipType);
@@ -1436,7 +1688,7 @@ function HourlyForecastStripBase({
 
               {/* Sütun Merkez Düğümleri ve Seçili Saat Odak Halkası */}
               {visibleIndices.map((i) => {
-                const h = hourly[i];
+                const h = visibleHours[i];
                 const cx = i * COL_W + COL_W / 2;
                 const cy = geometry.primaryYs[i] ?? (CURVE_TOP + CURVE_BOT) / 2;
                 const isSelected = i === clampedSelected;
@@ -1547,7 +1799,7 @@ function HourlyForecastStripBase({
               style={{ transform: `translate3d(${virtWin.offsetLeftPx}px, 0, 0)` }}
             >
               {visibleIndices.map((i) => {
-                const h = hourly[i];
+                const h = visibleHours[i];
                 const sem = semanticsList[i] ?? resolveHourlyDisplaySemantics(h);
                 const isSelected = i === clampedSelected;
                 const isMidnight = i > 0 && h.hourLabel === "00:00";
@@ -1561,10 +1813,20 @@ function HourlyForecastStripBase({
                   h.precipType
                 );
                 const windVis = beaufortWindVisual(h.windSpeed, h.windGusts, isSelected);
+                const snowLineRelevant = isSnowLinePhysicallyRelevant({
+                  snowLineElevationM: h.snowLineElevationM,
+                  baseElevationM,
+                  temperatureC: h.temperature,
+                  temp850hPa: h.temp850hPa,
+                  precipMmHr: h.precipitation,
+                  precipProbabilityPct: h.precipProbability,
+                  airSnowProbPct: h.airSnowProbPct,
+                  snowpackDepthCm: h.snowpackDepthCm
+                });
 
                 const primaryReadout =
                   lens === "wind"
-                    ? `${Math.round(toUnitWind(h.windSpeed, unit))}`
+                    ? formatWindSpeed(h.windSpeed, unit, { showUnit: false })
                     : lens === "convective"
                       ? `${Math.round(h.cape ?? 0)}`
                       : formatTemperature(h.temperature, unit);
@@ -1579,7 +1841,16 @@ function HourlyForecastStripBase({
                   <button
                     key={h.time}
                     type="button"
-                    onMouseEnter={() => setHoverIdx((prev) => (prev === i ? prev : i))}
+                    onPointerEnter={(e) => {
+                      if (
+                        e.pointerType !== "mouse" ||
+                        dragRef.current.active ||
+                        dragRef.current.moved
+                      ) {
+                        return;
+                      }
+                      setHoverIdx(i);
+                    }}
                     onClick={() => handleColumnClick(i)}
                     aria-pressed={isSelected}
                     aria-label={`${h.dayLabel} ${h.hourLabel}, ${sem.statusLabelTr}, ${formatTemperature(h.temperature, unit)}, yağış olasılığı yüzde ${h.precipProbability}`}
@@ -1685,40 +1956,57 @@ function HourlyForecastStripBase({
                         (h.airSnowCm ?? 0) >= 0.05 || (h.airSnowProbPct ?? 0) >= 15 ? (
                           <>
                             <span className="text-[10px] font-semibold text-sky-200">
-                              H {(h.airSnowCm ?? 0).toFixed(1)}
+                              H {formatSnowDepth(h.airSnowCm ?? 0, unit, { showUnit: false })}
                             </span>
                             <span className="text-[9px] font-semibold text-white">
-                              Y {(h.groundSnowCm ?? 0).toFixed(1)}
+                              Y {formatSnowDepth(h.groundSnowCm ?? 0, unit, { showUnit: false })}
                             </span>
                           </>
                         ) : h.icingRisk === "black_ice" ? (
                           <span className="text-[9px] font-semibold text-rose-300">
                             Buz!
                           </span>
-                        ) : h.snowLineElevationM !== null &&
-                          h.snowLineElevationM !== undefined ? (
+                        ) : snowLineRelevant ? (
                           <>
                             <span className="text-[9px] text-sky-300">
-                              ❄{h.snowLineElevationM}m
+                              ❄{formatElevation(h.snowLineElevationM, unit)}
                             </span>
                             <span className="text-[9px] text-ink-muted">
-                              Tw {h.wetBulbC ?? 0}°
+                              Tw{" "}
+                              {formatTemperature(h.wetBulbC ?? h.dewPoint, unit, {
+                                decimals: 0,
+                                showUnit: false
+                              })}
                             </span>
                           </>
-                        ) : null
+                        ) : (
+                          <span className="text-[9px] text-ink-muted">
+                            Tw{" "}
+                            {formatTemperature(h.wetBulbC ?? h.dewPoint, unit, {
+                              decimals: 0,
+                              showUnit: false
+                            })}
+                          </span>
+                        )
                       ) : lens === "thermo" ? (
                         <>
                           <span className="text-[10px] text-ink-secondary">
-                            Tw {h.wetBulbC ?? Math.round(h.dewPoint)}°
+                            Tw{" "}
+                            {formatTemperature(h.wetBulbC ?? h.dewPoint, unit, {
+                              decimals: 0,
+                              showUnit: false
+                            })}
                           </span>
                           <span className="text-[9px] text-ink-muted">%{h.humidity}</span>
                         </>
                       ) : lens === "wind" ? (
                         <>
                           <span className="text-[10px] text-ink-secondary">
-                            {Math.round(h.pressure)}
+                            {formatPressure(h.pressure, unit, { showUnit: false })}
                           </span>
-                          <span className="text-[9px] text-ink-muted">hPa</span>
+                          <span className="text-[9px] text-ink-muted">
+                            {unit === "imperial" ? "inHg" : "hPa"}
+                          </span>
                         </>
                       ) : sem.isWetActive ? (
                         <>
@@ -1727,13 +2015,17 @@ function HourlyForecastStripBase({
                           </span>
                           {(h.airSnowCm ?? 0) >= 0.1 ? (
                             <span className="text-[9px] text-sky-200">
-                              ❄{(h.groundSnowCm ?? 0) >= 0.1
-                                ? (h.groundSnowCm ?? 0).toFixed(1)
-                                : (h.airSnowCm ?? 0).toFixed(1)}cm
+                              ❄
+                              {formatSnowDepth(
+                                (h.groundSnowCm ?? 0) >= 0.1
+                                  ? h.groundSnowCm
+                                  : h.airSnowCm,
+                                unit
+                              )}
                             </span>
                           ) : (
                             <span className="text-[9px] text-ink-secondary">
-                              {h.precipitation.toFixed(1)}
+                              {formatPrecip(h.precipitation, unit, { showUnit: false })}
                             </span>
                           )}
                         </>
@@ -1742,7 +2034,7 @@ function HourlyForecastStripBase({
                           <span className="text-[10px] text-ink-muted">
                             %{h.precipProbability}
                           </span>
-                          <span className="text-[8px] text-white/35">iz</span>
+                          <span className="text-[9.5px] text-white/55">iz</span>
                         </>
                       ) : null}
                     </div>
@@ -1766,10 +2058,10 @@ function HourlyForecastStripBase({
                         />
                       </svg>
                       <span className={`text-[10px] ${windVis.speedCls}`}>
-                        {Math.round(toUnitWind(h.windSpeed, unit))}
+                        {formatWindSpeed(h.windSpeed, unit, { showUnit: false })}
                         {h.windGusts >= h.windSpeed + 12 && (
                           <span className="text-[8px] opacity-75">
-                            ·{Math.round(toUnitWind(h.windGusts, unit))}
+                            ·{formatWindSpeed(h.windGusts, unit, { showUnit: false })}
                           </span>
                         )}
                       </span>
@@ -1803,7 +2095,7 @@ function HourlyForecastStripBase({
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2.5 rounded-sm border border-dashed border-sky-300/65 bg-sky-400/10" />
-            Olasılık İzi (0 mm)
+            Olasılık İzi ({formatPrecip(0, unit)})
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-[1.5px] bg-sky-300/80" />

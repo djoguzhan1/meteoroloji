@@ -14,6 +14,7 @@ import { PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
 import { computeAdaptiveDpr, computeSkyScrollRig } from "@/lib/perf-budgets";
 import type { SceneAtmosphereInput } from "@/lib/weather-types";
+import { extractStormSceneDrive } from "../lib/temporal-view";
 
 type ErrorBoundaryState = { hasError: boolean };
 
@@ -211,7 +212,7 @@ function AdaptiveDprMonitor({
  * ATMOS SKY ENGINE 3.0 (Hardware LUT Accelerated)
  * Preserves identical Rayleigh/Mie sky, cirrus + cumulus relief, silver-lining, stars, meteor,
  * and dual-strike lightning while cutting fragment ALU instructions by ~85%.
- * Updates a dedicated `#atmos-lightning-flash` overlay opacity instead of mutating `:root` CSS vars!
+ * Updates a dedicated `#atmos-lightning-flash` overlay opacity without mutating `:root` styles!
  */
 function PhysicalAtmosphericSky({
   atmosphere,
@@ -227,6 +228,11 @@ function PhysicalAtmosphericSky({
   const doubleStrikeTimerRef = useRef(0);
 
   const noiseTex = useMemo(() => getSkyNoiseTexture(), []);
+  const initialDrive = useMemo(
+    () => extractStormSceneDrive(atmosphere),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   const uniforms = useMemo(
     () => ({
@@ -235,10 +241,16 @@ function PhysicalAtmosphericSky({
       uResolution: { value: new THREE.Vector2(size.width, size.height) },
       uCloudCover: { value: atmosphere.cloudCover / 100 },
       uSolarElev: { value: atmosphere.solarElevationDeg },
-      uStorm: { value: atmosphere.isStorm ? 1 : 0 },
+      uSunX: { value: initialDrive.sunNormX },
+      uStorm: { value: initialDrive.stormCloudFactor },
       uLightning: { value: 0 },
       uLightningPos: { value: new THREE.Vector2(0.2, 0.72) },
-      uWind: { value: new THREE.Vector2(0.15, 0.0) },
+      uWind: {
+        value: new THREE.Vector2(
+          initialDrive.windFlowX * 0.15,
+          initialDrive.windFlowY * 0.04
+        )
+      },
       uPointer: { value: new THREE.Vector2(0, 0) }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -263,61 +275,67 @@ function PhysicalAtmosphericSky({
   useFrame((state, delta) => {
     if (!materialRef.current) return;
     const u = materialRef.current.uniforms;
+    const drive = extractStormSceneDrive(atmosphere);
+
     u.uTime.value += delta;
     u.uCloudCover.value = THREE.MathUtils.lerp(
       u.uCloudCover.value,
       atmosphere.cloudCover / 100,
       0.035
     );
-    u.uSolarElev.value = THREE.MathUtils.lerp(
-      u.uSolarElev.value,
-      atmosphere.solarElevationDeg,
-      0.04
-    );
+
+    // Instant solar snap on trans-meridian city switches; smooth lerp on hourly scrubbing
+    if (Math.abs(atmosphere.solarElevationDeg - u.uSolarElev.value) > 32) {
+      u.uSolarElev.value = atmosphere.solarElevationDeg;
+      u.uSunX.value = drive.sunNormX;
+    } else {
+      u.uSolarElev.value = THREE.MathUtils.lerp(
+        u.uSolarElev.value,
+        atmosphere.solarElevationDeg,
+        0.045
+      );
+      u.uSunX.value = THREE.MathUtils.lerp(
+        u.uSunX.value,
+        drive.sunNormX,
+        0.045
+      );
+    }
+
+    // Wind storms (`atmosphere.isStorm`) intensify cloud density & turbulence only — never lightning!
     u.uStorm.value = THREE.MathUtils.lerp(
       u.uStorm.value,
-      atmosphere.isStorm ? 1 : 0,
+      drive.stormCloudFactor,
       0.04
     );
 
-    const windRad = (atmosphere.windDirection * Math.PI) / 180;
-    const windSpeedNorm = Math.max(0.09, atmosphere.windSpeed / 48);
+    const turbulenceBoost = atmosphere.isStorm ? 1.24 : 1.0;
+    const windSpeedNorm = Math.max(0.09, (atmosphere.windSpeed / 48) * turbulenceBoost);
     u.uWind.value.x = THREE.MathUtils.lerp(
       u.uWind.value.x,
-      Math.cos(windRad) * windSpeedNorm,
+      drive.windFlowX * windSpeedNorm,
       0.03
     );
     u.uWind.value.y = THREE.MathUtils.lerp(
       u.uWind.value.y,
-      Math.sin(windRad) * windSpeedNorm * 0.28,
+      drive.windFlowY * windSpeedNorm * 0.28,
       0.03
     );
 
     u.uPointer.value.x = THREE.MathUtils.lerp(u.uPointer.value.x, state.pointer.x, 0.05);
     u.uPointer.value.y = THREE.MathUtils.lerp(u.uPointer.value.y, state.pointer.y, 0.05);
 
-    const flashRate = atmosphere.lightningFlashRatePerMin ?? 0;
-    const stormTrigger =
-      atmosphere.isStorm ||
-      Boolean(atmosphere.isThundersnow) ||
-      flashRate >= 0.2 ||
-      atmosphere.cape >= 1200
-        ? 1
-        : 0;
-    // Calibrate visual flash cadence from physical `flashesPerMin` (`0.12 .. 0.65 Hz` visual envelope)
-    const flashHz =
-      flashRate > 0
-        ? Math.min(0.65, Math.max(0.14, 0.12 + flashRate * 0.06))
-        : 0.26;
-    if (doubleStrikeTimerRef.current > 0) {
+    // Lightning shield: ONLY `drive.canFlashLightning` triggers flashes (never dry Lodos or 0% CAPE!)
+    const stormTrigger = drive.canFlashLightning ? 1 : 0;
+    if (stormTrigger === 0) {
+      doubleStrikeTimerRef.current = 0;
+    } else if (doubleStrikeTimerRef.current > 0) {
       doubleStrikeTimerRef.current -= delta;
       if (doubleStrikeTimerRef.current <= 0) {
         lightningRef.current = 0.92;
       }
     } else if (
-      stormTrigger > 0 &&
       lightningRef.current <= 0.02 &&
-      Math.random() < delta * flashHz
+      Math.random() < delta * drive.flashFrequencyHz
     ) {
       lightningRef.current = 0.75 + Math.random() * 0.25;
       lightningCenterRef.current.set(
@@ -368,6 +386,7 @@ function PhysicalAtmosphericSky({
           uniform vec2 uResolution;
           uniform float uCloudCover;
           uniform float uSolarElev;
+          uniform float uSunX;
           uniform float uStorm;
           uniform float uLightning;
           uniform vec2 uLightningPos;
@@ -402,9 +421,9 @@ function PhysicalAtmosphericSky({
             float aspect = uResolution.x / max(1.0, uResolution.y);
             vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
 
-            float dayFactor = smoothstep(-4.0, 22.0, uSolarElev);
+            float dayFactor = smoothstep(-3.0, 22.0, uSolarElev);
             float goldenFactor = smoothstep(-8.0, 1.5, uSolarElev) * (1.0 - smoothstep(4.5, 19.0, uSolarElev));
-            float nightFactor = 1.0 - smoothstep(-12.0, -2.0, uSolarElev);
+            float nightFactor = 1.0 - smoothstep(-12.0, -3.0, uSolarElev);
 
             vec3 nightZenith = vec3(0.015, 0.024, 0.052);
             vec3 nightHorizon = vec3(0.042, 0.068, 0.125);
@@ -459,7 +478,7 @@ function PhysicalAtmosphericSky({
             }
 
             float sunY = clamp((uSolarElev / 52.0) * 0.46 - 0.05, -0.14, 0.36);
-            vec2 sunPos = vec2(0.24 * aspect, sunY) - uPointer * 0.04;
+            vec2 sunPos = vec2(uSunX * aspect, sunY) - uPointer * 0.04;
             vec2 sunUv = sunPos / vec2(aspect, 1.0) + 0.5;
             float dSun = length(p - sunPos);
             vec3 sunCol = mix(vec3(0.98, 0.56, 0.28), vec3(1.0, 0.97, 0.90), dayFactor);
@@ -473,7 +492,8 @@ function PhysicalAtmosphericSky({
             }
 
             float t = uTime * 0.022;
-            vec2 flow = uWind * t;
+            // Negative UV offset translates cloud masses visually along +uWind (windFlowX)
+            vec2 flow = -uWind * t;
             vec2 cirrusUv = vec2((uv.x - 0.5) * aspect * 1.15, uv.y * 2.4) + flow * 0.35 + uPointer * 0.02;
             float cirrus = fbmLut(cirrusUv * vec2(1.4, 3.6));
             float cirrusAlpha = smoothstep(0.54, 0.84, cirrus) * (0.12 + uCloudCover * 0.24) * smoothstep(0.25, 0.82, uv.y);
@@ -575,20 +595,22 @@ function RealPrecipitationParticles({
     const mesh = meshRef.current;
     if (!mesh) return;
 
-    const isRain = atmosphere.precipType === "rain";
-    const isSnow = atmosphere.precipType === "snow";
-    const isWindStream = !isRain && !isSnow && atmosphere.windSpeed >= 18;
+    const drive = extractStormSceneDrive(atmosphere);
+    const hasWetPrecip = drive.effectivePrecipIntensity > 0;
+    const isRain = hasWetPrecip && drive.effectivePrecipType === "rain";
+    const isSnow = hasWetPrecip && drive.effectivePrecipType === "snow";
+    const isWindStream = !hasWetPrecip && atmosphere.windSpeed >= 38;
 
     const activeCount =
       isRain || isSnow
-        ? Math.floor(maxCount * Math.min(1, 0.38 + atmosphere.precipIntensity * 0.62))
+        ? Math.min(maxCount, Math.max(1, Math.round(maxCount * drive.effectivePrecipIntensity)))
         : isWindStream
-          ? Math.min(72, Math.floor((atmosphere.windSpeed - 14) * 2.0))
+          ? drive.windStreakCount
           : 0;
 
     // Zero CPU matrix loop & zero GPU buffer upload when sky is calm/dry!
     if (activeCount <= 0) {
-      if (mesh.visible) {
+      if (mesh.visible || mesh.count !== 0) {
         mesh.visible = false;
         mesh.count = 0;
       }
@@ -603,8 +625,7 @@ function RealPrecipitationParticles({
     const dummy = dummyRef.current;
     const seeds = seedsRef.current;
 
-    const windRad = (atmosphere.windDirection * Math.PI) / 180;
-    const windDriftX = Math.sin(windRad) * (atmosphere.windSpeed / 16);
+    const windDriftX = drive.windFlowX * (atmosphere.windSpeed / 16);
     const t = state.clock.elapsedTime;
 
     for (let i = 0; i < activeCount; i++) {
@@ -623,7 +644,7 @@ function RealPrecipitationParticles({
         seeds[idx + 0] +=
           delta * (windDriftX * 0.44 + Math.sin(t * 1.45 + i) * flutterAmp);
       } else {
-        const dirSign = windDriftX >= 0 ? 1 : -1;
+        const dirSign = drive.windFlowX === 0 ? 1 : Math.sign(drive.windFlowX);
         seeds[idx + 0] += delta * (2.6 + atmosphere.windSpeed * 0.09) * mult * dirSign;
         seeds[idx + 1] += Math.sin(t * 0.9 + i) * delta * 0.22;
       }
@@ -635,7 +656,7 @@ function RealPrecipitationParticles({
 
       dummy.position.set(seeds[idx + 0], seeds[idx + 1], seeds[idx + 2]);
       if (isRain) {
-        dummy.rotation.set(0, 0, -Math.atan2(windDriftX * 0.14, 1));
+        dummy.rotation.set(0, 0, Math.atan2(windDriftX * 0.14, 1));
         dummy.scale.set(0.0055, 0.38 + mult * 0.12, 0.0055);
       } else if (isSnow) {
         dummy.rotation.set(t * 0.45 + i, t * 0.32, 0);
@@ -653,14 +674,16 @@ function RealPrecipitationParticles({
     mesh.instanceMatrix.needsUpdate = true;
   });
 
-  const isSnow = atmosphere.precipType === "snow";
-  const isRain = atmosphere.precipType === "rain";
+  const drive = extractStormSceneDrive(atmosphere);
+  const isSnow = drive.effectivePrecipType === "snow";
+  const isRain = drive.effectivePrecipType === "rain";
 
   return (
     <instancedMesh
       ref={meshRef}
       args={[undefined, undefined, maxCount]}
       frustumCulled={false}
+      visible={false}
     >
       <boxGeometry args={[1, 1, 1]} />
       <meshBasicMaterial
@@ -726,7 +749,8 @@ function VisibilityMist({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
 }
 
 function StaticSkyFallback({ atmosphere }: { atmosphere: SceneAtmosphereInput }) {
-  const isDay = atmosphere.solarElevationDeg > 4;
+  const isNight = atmosphere.solarElevationDeg <= -3;
+  const isDay = !isNight;
   const cls =
     atmosphere.cloudCover > 75
       ? isDay

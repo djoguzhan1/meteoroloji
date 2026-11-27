@@ -29,6 +29,10 @@ export type HourlyStormEvalInput = {
   pressureDelta6h: number;
   lightningPotential: number | null; // DWD ICON LPI (J/kg) varsa
   liveMetarWx?: MetarWxFlags | null;
+  /** Tekil otorite `evaluateHourLightningPhysics` şimşek olasılığı (%) */
+  canonicalLightningProbPct?: number;
+  /** Soğuk-mevsim gökgürültülü kar (Thundersnow) bayrağı */
+  isThundersnow?: boolean;
 };
 
 export type HourlyStormEvalResult = {
@@ -53,6 +57,7 @@ export type HourlyStormEvalResult = {
 };
 
 function clamp(v: number, lo: number, hi: number): number {
+  if (!Number.isFinite(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
 }
 
@@ -116,6 +121,81 @@ export function classifyStormLevel(
 }
 
 /**
+ * Herhangi bir saatin `stormScore` (`0..100`) ve fiziksel bileşenlerinden tutarlı
+ * `{ level, label, color }` fırtına çipi üretir (`4/100` skor asla kırmızı `"Şiddetli Oraj"` alamaz!).
+ */
+export function classifyHourlyStormChip(
+  score: number,
+  opts?: {
+    isThundersnow?: boolean;
+    lightningProbPct?: number;
+    windGustsKmh?: number;
+    precipMmHr?: number;
+  }
+): {
+  level: StormThreatLevel;
+  label: string;
+  color: string;
+} {
+  const s = clamp(Math.round(score), 0, 100);
+  if (s < 20) {
+    return { level: "calm", label: "Sakin Atmosfer", color: "#10b981" };
+  }
+
+  const ltProb = clamp(opts?.lightningProbPct ?? 0, 0, 100);
+  const gust = Math.max(0, opts?.windGustsKmh ?? 0);
+  const precip = Math.max(0, opts?.precipMmHr ?? 0);
+  const isTsnow = Boolean(opts?.isThundersnow);
+
+  if (isTsnow && (ltProb >= 20 || opts?.lightningProbPct === undefined)) {
+    if (s >= 80) {
+      return {
+        level: "extreme",
+        label: "Ekstrem Gökgürültülü Kar",
+        color: "#e11d48"
+      };
+    }
+    if (s >= 60) {
+      return {
+        level: "severe",
+        label: "Şiddetli Gökgürültülü Kar",
+        color: "#ef4444"
+      };
+    }
+    if (s >= 40) {
+      return {
+        level: "thunderstorm",
+        label: "Gökgürültülü Kar (Thundersnow)",
+        color: "#f97316"
+      };
+    }
+    return {
+      level: "watch",
+      label: "Gökgürültülü Kar İzleme",
+      color: "#eab308"
+    };
+  }
+
+  if (!opts) {
+    return classifyStormLevel(s, {
+      convective: 0,
+      wind: 0,
+      rainfall: 0,
+      synoptic: s
+    });
+  }
+
+  const convective = Math.round(clamp(ltProb * 0.95, 0, 100));
+  const wind =
+    gust >= 35 ? Math.round(clamp(((gust - 35) / 55) * 85 + 15, 0, 100)) : 0;
+  const rainfall =
+    precip >= 1.5 ? Math.round(clamp((precip / 16) * 85 + 10, 0, 100)) : 0;
+  const synoptic = Math.round(s * 0.65);
+
+  return classifyStormLevel(s, { convective, wind, rainfall, synoptic });
+}
+
+/**
  * Operasyonel SPC / ESTOFEX bileşik fiziğine dayalı saatlik fırtına risk hesaplaması:
  * 4 bağımsız bileşen: Konvektif/Şimşek · Rüzgar/Microburst · Sağanak/Ani Sel · Sinoptik Cephe/SCP
  */
@@ -133,10 +213,19 @@ export function evaluateHourlyStormRisk(
   const dcape = s?.dcape ?? 0;
   const sigSevere = s?.sigSevere ?? 0;
 
+  const hasCanonicalLt =
+    input.canonicalLightningProbPct !== undefined &&
+    Number.isFinite(input.canonicalLightningProbPct);
+  const canonicalLtPct = hasCanonicalLt
+    ? Math.round(clamp(input.canonicalLightningProbPct!, 0, 99))
+    : null;
+  const isThundersnow = Boolean(input.isThundersnow);
+
   // Güçlü konvektif kapak (CIN < -140 J/kg) varsa ve aktif oraj yoksa yanlış alarmı bastır
   const activeStormCode =
     input.weatherCode >= 95 ||
     input.wmoStormAgreeCount >= 2 ||
+    isThundersnow ||
     Boolean(input.liveMetarWx?.isThunderstorm);
   const cinSuppression =
     !activeStormCode && cin < -120 ? clamp(1 - (-cin - 120) / 180, 0.35, 1) : 1;
@@ -153,12 +242,30 @@ export function evaluateHourlyStormRisk(
       ? clamp(input.lightningPotential * 3.2, 0, 40)
       : 0;
   const metarTsBoost = input.liveMetarWx?.isThunderstorm ? 58 : 0;
+  const thundersnowBoost = isThundersnow
+    ? clamp(Math.max(44, (canonicalLtPct ?? 48) * 0.92), 40, 82)
+    : 0;
+  const canonicalConvAnchor =
+    canonicalLtPct !== null ? clamp(canonicalLtPct * 0.88, 0, 92) : 0;
 
-  const convectiveRaw = Math.max(
+  let convectiveRaw = Math.max(
     capeTerm + liTerm * 0.65 + wmoTerm * 0.6 + lpiTerm * 0.4,
     ensCapeTerm + wmoTerm * 0.75 + lpiTerm * 0.5,
-    metarTsBoost + capeTerm * 0.5
+    metarTsBoost + capeTerm * 0.5,
+    thundersnowBoost,
+    canonicalConvAnchor
   );
+
+  // Kanonik şimşek fiziği bulutun buzlanmadığını / elektriksiz olduğunu doğruladıysa (<= %10) sahte konvektif tavanı sınırla
+  if (
+    canonicalLtPct !== null &&
+    canonicalLtPct <= 10 &&
+    !isThundersnow &&
+    !input.liveMetarWx?.isThunderstorm
+  ) {
+    convectiveRaw = Math.min(convectiveRaw, 26);
+  }
+
   const convective = Math.round(clamp(convectiveRaw, 0, 100));
 
   // 2. RÜZGAR & MICROBURST HAMLE BİLEŞENİ (0..100)
@@ -169,7 +276,6 @@ export function evaluateHourlyStormRisk(
   const windTerm =
     input.windSpeedKmh >= 30 ? clamp(((input.windSpeedKmh - 30) / 45) * 65, 0, 75) : 0;
   const ensWindTerm = input.ensGustProb55 * 0.45 + input.ensGustProb75 * 0.55;
-  // DCAPE sadece konvektif aktivite eşlik ettiğinde microburst hamle katkısı verir
   const dcapeBoost =
     convective >= 30 && dcape >= 600 ? clamp(((dcape - 600) / 700) * 24, 0, 24) : 0;
   const squallBoost = input.liveMetarWx?.hasSquall ? 35 : 0;
@@ -189,7 +295,8 @@ export function evaluateHourlyStormRisk(
     input.precip3hAccumMm >= 6.0
       ? clamp(((input.precip3hAccumMm - 6) / 30) * 68, 0, 75)
       : 0;
-  const kTerm = kIdx >= 28 && input.precipitationMm >= 0.5 ? clamp((kIdx - 26) * 1.4, 0, 16) : 0;
+  const kTerm =
+    kIdx >= 28 && input.precipitationMm >= 0.5 ? clamp((kIdx - 26) * 1.4, 0, 16) : 0;
   const heavyMetarBoost = input.liveMetarWx?.heavyPrecip ? 32 : 0;
 
   const rainfall = Math.round(
@@ -203,11 +310,10 @@ export function evaluateHourlyStormRisk(
   // 4. SİNOPTİK CEPHE, BAROMETRİK DÜŞÜŞ & SÜPER HÜCRE BİLEŞENİ (0..100)
   const pDrop3 = Math.max(0, -input.pressureDelta3h);
   const pDrop6 = Math.max(0, -input.pressureDelta6h);
-  const baroTerm =
-    Math.max(
-      pDrop3 >= 2.0 ? ((pDrop3 - 1.5) / 5.0) * 62 : 0,
-      pDrop6 >= 4.0 ? ((pDrop6 - 3.0) / 8.0) * 68 : 0
-    );
+  const baroTerm = Math.max(
+    pDrop3 >= 2.0 ? ((pDrop3 - 1.5) / 5.0) * 62 : 0,
+    pDrop6 >= 4.0 ? ((pDrop6 - 3.0) / 8.0) * 68 : 0
+  );
   const scpTerm = scp >= 0.6 ? clamp(scp * 24, 0, 72) : 0;
   const sigSevTerm =
     sigSevere >= 12000 ? clamp(((sigSevere - 10000) / 25000) * 55, 0, 60) : 0;
@@ -218,7 +324,7 @@ export function evaluateHourlyStormRisk(
     clamp(Math.max(baroTerm, scpTerm, sigSevTerm) + shearBoost, 0, 100)
   );
 
-  // Bileşik 0–100 Tehdit Skoru: Baskın tehlikeyi korur, çoklu tehlikede (örn. rüzgar + oraj) yükselir
+  // Bileşik 0–100 Tehdit Skoru
   const peakComp = Math.max(convective, wind, rainfall, synoptic);
   const weightedAvg =
     convective * 0.34 + wind * 0.28 + rainfall * 0.22 + synoptic * 0.16;
@@ -230,25 +336,34 @@ export function evaluateHourlyStormRisk(
   const score = Math.round(
     clamp(peakComp * 0.64 + weightedAvg * 0.36 + synergyBonus, 0, 100)
   );
-  const { level } = classifyStormLevel(score, { convective, wind, rainfall, synoptic });
+  const { level } = classifyStormLevel(score, {
+    convective,
+    wind,
+    rainfall,
+    synoptic
+  });
 
-  // Şimşek Olasılığı (%)
-  const lightningProbPct = Math.round(
-    clamp(
-      Math.max(
-        convective * 0.92,
-        wmoRatio * 90,
-        input.liveMetarWx?.isThunderstorm ? 92 : 0,
-        lpiTerm * 2.1
-      ),
-      0,
-      99
-    )
-  );
+  // Şimşek Olasılığı (%): kanonik değer verildiğinde ikincil formül uydurulmaz!
+  const lightningProbPct =
+    canonicalLtPct !== null
+      ? canonicalLtPct
+      : Math.round(
+          clamp(
+            Math.max(
+              convective * 0.92,
+              wmoRatio * 90,
+              input.liveMetarWx?.isThunderstorm ? 92 : 0,
+              lpiTerm * 2.1
+            ),
+            0,
+            99
+          )
+        );
 
   // Dolu Riski
   const hailRisk: HourlyStormEvalResult["hailRisk"] =
-    input.liveMetarWx?.hasHail || (mucape >= 2000 && shear06Kt >= 35 && sigSevere >= 25000)
+    input.liveMetarWx?.hasHail ||
+    (mucape >= 2000 && shear06Kt >= 35 && sigSevere >= 25000)
       ? "Yüksek"
       : mucape >= 1200 && shear06Kt >= 28 && convective >= 45
         ? "Orta"
@@ -260,27 +375,37 @@ export function evaluateHourlyStormRisk(
   const flashFloodRisk: HourlyStormEvalResult["flashFloodRisk"] =
     input.precipitationMm >= 18 || input.precip3hAccumMm >= 35
       ? "Yüksek"
-      : input.precipitationMm >= 9 || input.precip3hAccumMm >= 20 || input.precipP90Mm >= 18
+      : input.precipitationMm >= 9 ||
+          input.precip3hAccumMm >= 20 ||
+          input.precipP90Mm >= 18
         ? "Orta"
         : input.precipitationMm >= 4 || input.precip3hAccumMm >= 10
           ? "Düşük"
           : "Yok";
 
   const drivers: string[] = [];
-  if (input.liveMetarWx?.isThunderstorm) drivers.push("Canlı METAR aktif oraj (TS)");
+  if (input.liveMetarWx?.isThunderstorm)
+    drivers.push("Canlı METAR aktif oraj (TS)");
+  if (isThundersnow) drivers.push("Gökgürültülü kar (Thundersnow)");
   if (mucape >= 600) drivers.push(`MUCAPE ${Math.round(mucape)} J/kg`);
-  if (scp >= 1.0) drivers.push(`Süper Hücre SCP ${scp.toFixed(1)} (SRH ${srh03} m²/s²)`);
+  if (scp >= 1.0)
+    drivers.push(`Süper Hücre SCP ${scp.toFixed(1)} (SRH ${srh03} m²/s²)`);
   if (gustP90 >= 55) drivers.push(`Hamle P90 ${Math.round(gustP90)} km/s`);
-  if (dcape >= 700 && convective >= 30) drivers.push(`DCAPE ${dcape} J/kg (downburst)`);
-  if (pDrop3 >= 2.8) drivers.push(`Basınç düşüşü -${pDrop3.toFixed(1)} hPa/3s`);
+  if (dcape >= 700 && convective >= 30)
+    drivers.push(`DCAPE ${dcape} J/kg (downburst)`);
+  if (pDrop3 >= 2.8)
+    drivers.push(`Basınç düşüşü -${pDrop3.toFixed(1)} hPa/3s`);
   if (input.precipitationMm >= 4)
     drivers.push(`Sağanak ${input.precipitationMm.toFixed(1)} mm/sa`);
   if (wmoRatio >= 0.4 && input.wmoTotalModels >= 3) {
-    drivers.push(`Oraj uzlaşısı ${input.wmoStormAgreeCount}/${input.wmoTotalModels} model`);
+    drivers.push(
+      `Oraj uzlaşısı ${input.wmoStormAgreeCount}/${input.wmoTotalModels} model`
+    );
   }
 
   const isStorm =
     score >= 42 ||
+    isThundersnow ||
     input.windSpeedKmh >= 50 ||
     input.windGustsKmh >= 72 ||
     input.weatherCode >= 95 ||
@@ -328,7 +453,6 @@ export function buildStormAssessment(
     };
   }
 
-  // Önümüzdeki 48 saatte score >= 35 olan ilk kesintisiz fırtına penceresini bul
   let nextWindow: StormWindow | null = null;
   const THRESH = 35;
   let winStart = -1;
@@ -365,7 +489,6 @@ export function buildStormAssessment(
     };
   }
 
-  // Anlık veya yaklaşan 12 saatlik zirve tehdit skorunu öne çıkar
   const next12 = hourlyEvals.slice(0, 12);
   let headline = cur;
   for (const h of next12) {

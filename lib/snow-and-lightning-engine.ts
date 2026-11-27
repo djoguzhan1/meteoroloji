@@ -1,17 +1,18 @@
 import { wetBulbStullC } from "./thermo-cape";
-import type {
-  BlowingSnowRisk,
-  DekSnowStatus,
-  ElevationSnowBand,
-  LightningCellVector,
-  LightningProximityRadar,
-  LightningRangeRingSummary,
-  LightningSafetyLevel,
-  MetarObservation,
-  PrecipPhase,
-  RoadIcingRisk,
-  SnowQualityLabelTr,
-  SoundingLevel
+import {
+  type BlowingSnowRisk,
+  type DekSnowStatus,
+  type ElevationSnowBand,
+  type LightningCellVector,
+  type LightningProximityRadar,
+  type LightningRangeRingSummary,
+  type LightningSafetyLevel,
+  type MetarObservation,
+  PRECIP_WETNESS_CONTRACT,
+  type PrecipPhase,
+  type RoadIcingRisk,
+  type SnowQualityLabelTr,
+  type SoundingLevel
 } from "./weather-types";
 
 /**
@@ -23,15 +24,18 @@ import type {
  *  2. Dynamic Kuchera + Cobb-Waldstreicher (-12..-18°C Dendritic Growth Zone) Snow-to-Liquid Ratio (SLR)
  *     with surface wet-bulb riming, graupel habit detection, and mechanical wind fragmentation.
  *  3. Coupled 2-Surface Energy-Balance Snow Budget (In-Air Snowfall vs. Grass/Soil vs. Asphalt/Road):
- *     Tracks 24-48h antecedent ground/pavement thermal memory (`T_soil`, `T_road`), shortwave solar
- *     albedo contrast (bare asphalt 0.12 vs. fresh snow 0.74), latent fusion heat extraction
- *     (`L_f = 3.34e5 J/kg`) chilling warm pavement during heavy bursts, snowpack compaction, and melt.
- *  4. 4-Tier Topographic Snow Cross-Section (`Kıyı / Merkez / Yamaç / Zirve`) per hour & per date.
+ *     Tracks 24-48h antecedent ground/pavement thermal & snowpack memory (`T_soil`, `T_road`, `SWE`),
+ *     shortwave solar albedo contrast (bare asphalt 0.12 vs. fresh snow 0.74), latent fusion heat
+ *     extraction (`L_f = 3.34e5 J/kg`) chilling warm pavement during heavy bursts, compaction, and melt.
+ *  4. Reference-Relative Orographic Profile `W_oro(z)` & Unclamped Strictly-Monotonic 4-Tier
+ *     Topographic Snow Cross-Section (`Kıyı / Merkez / Yamaç / Zirve`) with `0.0 cm / 0%` identity
+ *     for the selected reference elevation band (`isReferenceBand === true`).
  *  5. DEK (Sea-Effect Snow: `SST - T850 >= 13°C` + onshore fetch), Black Ice (`T_road <= 0°C` + wet film),
  *     and Li-Pomeroy (1997) Blowing Snow / Blizzard diagnostics.
  *  6. Takahashi-Saunders Mixed-Phase (-10..-20°C) Graupel Ice-Flux Lightning Threat Index + DWD ICON LPI,
- *     cold-top glaciation gate (`T_EL <= -8°C`), cold-season Thundersnow detection, and 3-Ring
- *     (`0-15 km` / `15-40 km` / `40-100 km`) Doppler + METAR proximity scanner with 30-30 safety guidance.
+ *     non-circular cold-top glaciation gate (`T_EL <= -8.5°C`), cold-season Thundersnow detection,
+ *     3-Ring (`0-15 km` / `15-40 km` / `40-100 km`) Doppler + METAR proximity scanner, and
+ *     `reconcileNowLightningWithRadar` live radar reconciliation.
  *
  * Pure TypeScript module — zero `node:*` imports so both Server and Client bundles stay clean.
  */
@@ -48,7 +52,7 @@ function clamp(v: number, lo: number, hi: number): number {
 const COMPASS_8_TR = ["K", "KD", "D", "GD", "G", "GB", "B", "KB"] as const;
 
 export function bearingToCompassTr(deg: number): string {
-  const norm = (((deg % 360) + 360) % 360);
+  const norm = ((deg % 360) + 360) % 360;
   const idx = Math.round(norm / 45) % 8;
   return COMPASS_8_TR[idx];
 }
@@ -170,31 +174,24 @@ export function solveBourgouinSnowLine(
       zFrz = elevM + input.surfaceTempC / lapsePerM;
     }
 
-    // Dry sub-cloud evaporative depression lowers Tw=0 relative to T=0
     const dryTwDepressionM = Math.max(0, (input.surfaceTempC - twSfc) / lapsePerM);
     const wetBulbZeroRaw = Math.max(0, zFrz - dryTwDepressionM - heavyDiabaticDropM * 0.45);
 
-    // Integrate positive Tw triangle from `wetBulbZeroRaw` down to `elevM` if `twSfc > 0`
     let meJkg = 0;
     if (wetBulbZeroRaw > elevM && twSfc > 0) {
       const dzWarm = wetBulbZeroRaw - elevM;
-      // Mean Tw across linear profile is `0.5 * twSfc`
       meJkg = (G0 * (0.5 * twSfc) * dzWarm) / 273.15;
     }
-    // Apply heavy-rate diabatic reduction to melting energy
     const diabaticMeCredit = heavyDiabaticDropM * 0.032;
     meJkg = Math.max(0, meJkg - diabaticMeCredit);
 
-    // Solve altitude `z_snow` below `wetBulbZeroRaw` where `ME(z_snow) = 7.5 J/kg`:
-    // `(G0 * 0.5 * lapseTw * dz^2) / 273.15 = 7.5` -> `dz = sqrt((7.5 * 273.15 * 2) / (G0 * lapseTw))`
     const lapseTw = clamp(lapsePerM * 0.86, 0.0042, 0.0078);
-    const survivalDropM = Math.sqrt((7.5 * 273.15 * 2) / (G0 * lapseTw)) + heavyDiabaticDropM * 0.55;
+    const survivalDropM =
+      Math.sqrt((7.5 * 273.15 * 2) / (G0 * lapseTw)) + heavyDiabaticDropM * 0.55;
     const snowLineM = Math.max(0, Math.round(wetBulbZeroRaw - survivalDropM));
 
     const iceFrac =
-      twSfc <= -0.15
-        ? 1
-        : clamp(1 - (meJkg - 4.2) / 11.2, 0, 1);
+      twSfc <= -0.15 ? 1 : clamp(1 - (meJkg - 4.2) / 11.2, 0, 1);
 
     const columnPhase: BourgouinSnowLineResult["columnPhase"] =
       iceFrac >= 0.68 ? "snow" : iceFrac >= 0.14 ? "sleet" : "rain";
@@ -210,7 +207,6 @@ export function solveBourgouinSnowLine(
   }
 
   // Full multi-layer sounding integration from top of troposphere (`~5500 m`) down to surface!
-  // Step on a fine 25 m vertical grid so elevated warm noses (+Tw aloft over -Tw surface) are resolved exactly.
   const topZ = Math.min(6000, nodes[nodes.length - 1].zM);
   const stepM = 25;
   const gridAsc: Array<{ zM: number; twC: number }> = [];
@@ -228,7 +224,6 @@ export function solveBourgouinSnowLine(
     gridAsc.push({ zM: z, twC: twInterp });
   }
 
-  // Integrate downward from top to surface
   let positiveMeJkg = 0;
   let negativeRefreezeJkg = 0;
   let wetBulbZeroM = gridAsc[gridAsc.length - 1].twC <= 0 ? 0 : topZ;
@@ -236,7 +231,6 @@ export function solveBourgouinSnowLine(
   let snowLineM = 0;
   let foundSnowLine = false;
 
-  // Heavy precipitation diabatic cooling credit in J/kg
   const diabaticCreditJkg = heavyDiabaticDropM * 0.034;
 
   for (let k = gridAsc.length - 1; k >= 1; k--) {
@@ -254,7 +248,6 @@ export function solveBourgouinSnowLine(
     if (meanTw > 0) {
       positiveMeJkg += (G0 * meanTw * dz) / 273.15;
     } else if (positiveMeJkg > 2.0 && meanTw < 0) {
-      // Sub-freezing cold wedge underneath an elevated warm nose!
       negativeRefreezeJkg += (G0 * meanTw * dz) / 273.15;
     }
 
@@ -266,14 +259,18 @@ export function solveBourgouinSnowLine(
   }
 
   if (!foundWb0) {
-    wetBulbZeroM = gridAsc[0].twC <= 0 ? Math.max(0, elevM - Math.abs(gridAsc[0].twC) / 0.0055) : topZ;
+    wetBulbZeroM =
+      gridAsc[0].twC <= 0
+        ? Math.max(0, elevM - Math.abs(gridAsc[0].twC) / 0.0055)
+        : topZ;
   }
   const finalMeJkg = Math.max(0, positiveMeJkg - diabaticCreditJkg);
   if (!foundSnowLine) {
-    // Even at `elevM`, `ME < 7.5 J/kg` -> extrapolate snow line below `elevM` if `twSfc > -1.0`
     if (twSfc <= 0) {
-      // Sub-freezing at surface: snow line is at sea level (0m) or below surface along moist lapse
-      const extraMarginM = Math.max(0, ((7.5 - finalMeJkg) * 273.15) / (G0 * 1.1) + Math.abs(twSfc) * 145);
+      const extraMarginM = Math.max(
+        0,
+        ((7.5 - finalMeJkg) * 273.15) / (G0 * 1.1) + Math.abs(twSfc) * 145
+      );
       snowLineM = Math.max(0, elevM - extraMarginM);
     } else {
       const remJ = Math.max(0, 7.5 - finalMeJkg);
@@ -286,11 +283,9 @@ export function solveBourgouinSnowLine(
   let iceSurvival = 1;
 
   if (finalMeJkg > 13.2 && negativeRefreezeJkg <= -14 && twSfc <= 0.1) {
-    // Classic freezing rain (`FZRA`) warm nose aloft + shallow cold wedge at ground
     columnPhase = "freezing_rain";
     iceSurvival = 0;
   } else if (finalMeJkg > 13.2 && negativeRefreezeJkg <= -45) {
-    // Deep cold wedge refreezes raindrops into ice pellets (`PL / sleet`)
     columnPhase = "sleet";
     iceSurvival = 0.35;
   } else if (finalMeJkg <= 5.6 && twSfc <= 1.25) {
@@ -358,7 +353,6 @@ export function computeDynamicSnowLiquidRatio(
     };
   }
 
-  // 1. Maximum lower-tropospheric column temperature below ~500 hPa (`z <= 5600 m`) for Kuchera baseline
   let tMaxColC = input.surfaceTempC;
   let dgzRhIceMax = 0;
   let hasSoundingDgz = false;
@@ -378,14 +372,12 @@ export function computeDynamicSnowLiquidRatio(
     }
   } else if (input.temp850hPa !== null && Number.isFinite(input.temp850hPa)) {
     tMaxColC = Math.max(input.surfaceTempC, input.temp850hPa);
-    // Proxy DGZ saturation at ~700-650 hPa when 850 hPa is between -6°C and -14°C
     const estT700 = input.temp850hPa - 8.5;
     if (estT700 <= -10.5 && estT700 >= -19.5) {
       dgzRhIceMax = 104;
     }
   }
 
-  // Kuchera formula in Kelvin relative to `271.16 K` (`-1.99°C`)
   const tMaxK = tMaxColC + 273.15;
   let slr =
     tMaxK > 271.16
@@ -394,23 +386,23 @@ export function computeDynamicSnowLiquidRatio(
 
   slr = clamp(slr, 4.2, 20.5);
 
-  // 2. Cobb-Waldstreicher (-12..-18°C) Dendritic Growth Zone (DGZ) ice-supersaturation boost
-  const dgzBoostActive = dgzRhIceMax >= 96 || (!hasSoundingDgz && (input.temp850hPa ?? 5) <= -7.5 && input.surfaceTempC <= -0.5);
+  const dgzBoostActive =
+    dgzRhIceMax >= 96 ||
+    (!hasSoundingDgz &&
+      (input.temp850hPa ?? 5) <= -7.5 &&
+      input.surfaceTempC <= -0.5);
   if (dgzBoostActive && input.surfaceWetBulbC <= 0.2) {
     const dgzMult = dgzRhIceMax >= 108 ? 1.26 : 1.15;
     slr *= dgzMult;
   }
 
-  // 3. Convective / DEK Graupel riming habit adjustment
   const isGraupelRegime =
     (input.capeJkg >= 110 || (input.isDekActive && input.capeJkg >= 45)) &&
     input.surfaceWetBulbC <= 0.8;
   if (isGraupelRegime) {
-    // Rimed graupel / snow pellets pack slightly denser than pure stellar dendrites (`9.5..14.5:1`)
     slr = 0.65 * slr + 0.35 * 11.5;
   }
 
-  // 4. Warm boundary-layer riming & wet-snow partial melt (`Tw > -0.5°C`)
   if (input.precipPhase === "sleet") {
     const wetFactor = clamp(1 - (input.surfaceWetBulbC + 0.3) * 0.42, 0.35, 0.78);
     slr = Math.min(slr, 8.2) * wetFactor;
@@ -419,7 +411,6 @@ export function computeDynamicSnowLiquidRatio(
     slr *= warmDamp;
   }
 
-  // 5. Mechanical wind crystal fragmentation during saltation (`>= 26 km/h`)
   if (input.surfaceWindKmh > 26) {
     const fragFactor = clamp(1 - (input.surfaceWindKmh - 26) * 0.0055, 0.78, 1);
     slr *= fragFactor;
@@ -463,13 +454,21 @@ export function evaluateSeaEffectSnow(params: {
   windDirDeg: number;
   precipMmHr: number;
 }): { status: DekSnowStatus; deltaTSst850C: number | null } {
-  const { lat, lon, seaSurfaceTempC, temp850hPa, surfaceTempC, windSpeedKmh, windDirDeg } = params;
+  const {
+    lat,
+    lon,
+    seaSurfaceTempC,
+    temp850hPa,
+    surfaceTempC,
+    windSpeedKmh,
+    windDirDeg
+  } = params;
   if (temp850hPa === null || !Number.isFinite(temp850hPa)) {
     return { status: "none", deltaTSst850C: null };
   }
 
-  // Marmara / Black Sea / Aegean-Northern Anatolian coastal corridor check
-  const isMarmaraBlackSeaBelt = lat >= 39.6 && lat <= 42.6 && lon >= 26.2 && lon <= 41.8;
+  const isMarmaraBlackSeaBelt =
+    lat >= 39.6 && lat <= 42.6 && lon >= 26.2 && lon <= 41.8;
   const effSst =
     seaSurfaceTempC !== null && Number.isFinite(seaSurfaceTempC)
       ? seaSurfaceTempC
@@ -482,15 +481,18 @@ export function evaluateSeaEffectSnow(params: {
   }
 
   const deltaT = Number((effSst - temp850hPa).toFixed(1));
-  // Onshore northerly sector (`305°..70°`: Karayel, Yıldız, Poyraz)
-  const normDir = (((windDirDeg % 360) + 360) % 360);
+  const normDir = ((windDirDeg % 360) + 360) % 360;
   const isNortherlyFetch = normDir >= 305 || normDir <= 70;
 
   if (!isNortherlyFetch || surfaceTempC > 4.5 || windSpeedKmh < 9 || deltaT < 11.5) {
     return { status: "none", deltaTSst850C: deltaT };
   }
 
-  if (deltaT >= 16.0 && surfaceTempC <= 2.5 && (params.precipMmHr >= 0.25 || windSpeedKmh >= 18)) {
+  if (
+    deltaT >= 16.0 &&
+    surfaceTempC <= 2.5 &&
+    (params.precipMmHr >= 0.25 || windSpeedKmh >= 18)
+  ) {
     return { status: "heavy_dek", deltaTSst850C: deltaT };
   }
   if (deltaT >= 13.0 && surfaceTempC <= 3.5) {
@@ -542,7 +544,9 @@ export interface AntecedentThermalHour {
   temp2mC: number;
   shortwaveWm2: number;
   cloudCoverPct: number;
-  precipMmHr: number;
+  precipMmHr?: number;
+  snowfallCm?: number;
+  wetBulbC?: number;
 }
 
 export interface SnowSimulationHourInput {
@@ -578,12 +582,20 @@ export interface SnowSimulationHourInput {
   ensembleTempMembersC?: number[] | null;
 }
 
+export interface SimulateSnowTimelineInput {
+  hours: SnowSimulationHourInput[];
+  antecedentHours?: AntecedentThermalHour[];
+  initialSnowpackCm?: number;
+}
+
 export interface SimulatedSnowHourOutput {
   snowLineElevationM: number;
   wetBulbZeroM: number;
   meltingEnergyJkg: number;
-  /** Refined hydrometeor phase (fixes warm sleet misclassified as pure snow) */
+  /** Refined active hydrometeor phase (`"none"` whenever `precipMmHr < 0.05`) */
   refinedPhase: PrecipPhase;
+  /** Thermodynamic potential phase if precipitation were active in this column */
+  potentialPhase: PrecipPhase;
   /** Probability (%) of observing snowflakes in the air during this hour */
   airSnowProbPct: number;
   /** In-air snowfall during this hour (cm) */
@@ -596,6 +608,17 @@ export interface SimulatedSnowHourOutput {
   groundSnowP90Cm: number;
   /** New snow sticking on untreated asphalt / road this hour (cm) */
   roadSnowCm: number;
+  /** Unrounded raw hourly snow metrics to eliminate premature `toFixed(1)` daily/cumulative drift */
+  rawAirSnowCm: number;
+  rawAirSnowP90Cm: number;
+  rawGroundSnowCm: number;
+  rawGroundSnowP90Cm: number;
+  rawRoadSnowCm: number;
+  airSnowCmRaw: number;
+  airSnowP90CmRaw: number;
+  groundSnowCmRaw: number;
+  groundSnowP90CmRaw: number;
+  roadSnowCmRaw: number;
   /** Surviving snowpack depth on grass/soil at end of hour after melt & compaction (cm) */
   snowpackDepthCm: number;
   /** Surviving snow depth on asphalt/road at end of hour (cm) */
@@ -658,45 +681,57 @@ function stepSurfaceSnowEnergyBalance(
   const windMs = Math.max(0.5, windSpeedKmh / 3.6);
   const cloudFrac = clamp(cloudCoverPct / 100, 0, 1);
 
-  // Net longwave radiative cooling (`W/m^2`): clear skies radiate strongly to space (~68 W/m^2), overcast ~10 W/m^2
   const netLongwaveLossWm2 = 68 * (1 - 0.84 * Math.pow(cloudFrac, 1.25));
 
-  // Albedo switches sharply once snow covers the surface!
-  const soilAlbedo = state.soilDepthCm >= 1.2 ? 0.74 : state.soilDepthCm > 0.15 ? 0.52 : 0.24;
-  const roadAlbedo = state.roadDepthCm >= 1.0 ? 0.66 : state.roadDepthCm > 0.15 ? 0.42 : 0.12;
+  const soilAlbedo =
+    state.soilDepthCm >= 1.2 ? 0.74 : state.soilDepthCm > 0.15 ? 0.52 : 0.24;
+  const roadAlbedo =
+    state.roadDepthCm >= 1.0 ? 0.66 : state.roadDepthCm > 0.15 ? 0.42 : 0.12;
 
   const swSoilWm2 = shortwaveWm2 * (1 - soilAlbedo);
   const swRoadWm2 = shortwaveWm2 * (1 - roadAlbedo);
 
-  // Sensible convective exchange (`W / (m^2 · K)`)
   const hConvSoil = 5.5 + 2.4 * Math.pow(windMs, 0.8);
   const hConvRoad = 6.5 + 2.8 * Math.pow(windMs, 0.8);
 
-  // Rain-on-snow advective heat (`c_w = 4186 J/(kg·K)` -> `1.16 W·h/(m^2·K)` per mm of rain)
-  const rainHeatWh = liquidRainMm > 0 && temp2mC > 0 ? liquidRainMm * temp2mC * 1.16 : 0;
+  const rainHeatWh =
+    liquidRainMm > 0 && temp2mC > 0 ? liquidRainMm * temp2mC * 1.16 : 0;
 
   // --- 1. EVOLVE UNCOVERED / SUB-SNOW SKIN TEMPERATURES BEFORE PRECIPITATION ---
   if (state.soilDepthCm < 0.25) {
-    const netForcingSoil = swSoilWm2 - netLongwaveLossWm2 + hConvSoil * (temp2mC - state.soilTempC);
-    // Effective thermal heat capacity of top 4 cm grass/soil skin (~1.45e5 J/(m^2·K) -> ~40.3 W·h/(m^2·K))
+    const netForcingSoil =
+      swSoilWm2 - netLongwaveLossWm2 + hConvSoil * (temp2mC - state.soilTempC);
     state.soilTempC = clamp(state.soilTempC + netForcingSoil / 40.3, -24, 48);
   } else {
-    // Under insulating snowpack, soil skin relaxes gently toward `0.0°C` from below
-    state.soilTempC = clamp(state.soilTempC + (0.15 - state.soilTempC) * 0.08, -8, 2.5);
+    state.soilTempC = clamp(
+      state.soilTempC + (0.15 - state.soilTempC) * 0.08,
+      -8,
+      2.5
+    );
   }
 
   if (state.roadDepthCm < 0.25) {
-    // Urban / traffic + subsurface conductive heat keeps bare asphalt slightly warmer than grass (~5 W/m^2 baseline)
-    const netForcingRoad = 4.5 + swRoadWm2 - netLongwaveLossWm2 + hConvRoad * (temp2mC - state.roadTempC);
-    // Top 5 cm dense asphalt skin (~1.95e5 J/(m^2·K) -> ~54.2 W·h/(m^2·K))
+    const netForcingRoad =
+      4.5 + swRoadWm2 - netLongwaveLossWm2 + hConvRoad * (temp2mC - state.roadTempC);
     state.roadTempC = clamp(state.roadTempC + netForcingRoad / 54.2, -22, 56);
   } else {
-    state.roadTempC = clamp(state.roadTempC + (0.25 - state.roadTempC) * 0.09, -8, 3.0);
+    state.roadTempC = clamp(
+      state.roadTempC + (0.25 - state.roadTempC) * 0.09,
+      -8,
+      3.0
+    );
   }
 
-  // Track wet film on road from rain or recent melt (evaporates gradually)
-  const evapRoadMm = clamp(0.06 + windMs * 0.02 + swRoadWm2 * 0.0006, 0.04, 0.45);
-  state.roadWetFilmMm = clamp(state.roadWetFilmMm + liquidRainMm - evapRoadMm, 0, 3.5);
+  const evapRoadMm = clamp(
+    0.06 + windMs * 0.02 + swRoadWm2 * 0.0006,
+    0.04,
+    0.45
+  );
+  state.roadWetFilmMm = clamp(
+    state.roadWetFilmMm + liquidRainMm - evapRoadMm,
+    0,
+    3.5
+  );
 
   // --- 2. INCOMING SNOWFALL STICKING vs. CONTACT MELTING ---
   let groundSnowNewCm = 0;
@@ -704,19 +739,21 @@ function stepSurfaceSnowEnergyBalance(
   const effSlr = slr > 0 ? slr : 10;
 
   if (fallingSnowSweMm > 0.005) {
-    // Available melt energy on grass/soil (`W·h/m^2`)
     const soilCondHeatWh = state.soilTempC > 0 ? state.soilTempC * 26.5 : 0;
     const soilAirHeatWh = wetBulbC > 0 ? wetBulbC * hConvSoil * 0.75 : 0;
     const soilSolarMeltWh = swSoilWm2 * 0.55;
     const totalSoilMeltWh = Math.max(
       0,
-      soilCondHeatWh + soilAirHeatWh + soilSolarMeltWh + rainHeatWh - (state.soilTempC <= 0 ? netLongwaveLossWm2 * 0.35 : 0)
+      soilCondHeatWh +
+        soilAirHeatWh +
+        soilSolarMeltWh +
+        rainHeatWh -
+        (state.soilTempC <= 0 ? netLongwaveLossWm2 * 0.35 : 0)
     );
     const soilMeltCapSweMm = totalSoilMeltWh / MELT_ENERGY_PER_MM_WH;
     const meltedOnSoilMm = Math.min(fallingSnowSweMm, soilMeltCapSweMm);
     const survivingSoilSweMm = Math.max(0, fallingSnowSweMm - meltedOnSoilMm);
 
-    // CRITICAL LATENT HEAT EXTRACTION: melting snow chills the warm soil skin directly!
     if (meltedOnSoilMm > 0) {
       const latentChillingC = (meltedOnSoilMm * MELT_ENERGY_PER_MM_WH) / 40.3;
       state.soilTempC = Math.max(-0.2, state.soilTempC - latentChillingC);
@@ -726,13 +763,17 @@ function stepSurfaceSnowEnergyBalance(
     state.soilSweMm += survivingSoilSweMm;
     state.soilDepthCm += groundSnowNewCm;
 
-    // Available melt energy on asphalt/road (`W·h/m^2` — higher thermal inertia + lower albedo!)
     const roadCondHeatWh = state.roadTempC > 0 ? state.roadTempC * 38.0 : 0;
     const roadAirHeatWh = wetBulbC > 0 ? wetBulbC * hConvRoad * 0.85 : 0;
     const roadSolarMeltWh = swRoadWm2 * 0.72;
     const totalRoadMeltWh = Math.max(
       0,
-      roadCondHeatWh + roadAirHeatWh + roadSolarMeltWh + rainHeatWh + 3.5 - (state.roadTempC <= 0 ? netLongwaveLossWm2 * 0.3 : 0)
+      roadCondHeatWh +
+        roadAirHeatWh +
+        roadSolarMeltWh +
+        rainHeatWh +
+        3.5 -
+        (state.roadTempC <= 0 ? netLongwaveLossWm2 * 0.3 : 0)
     );
     const roadMeltCapSweMm = totalRoadMeltWh / MELT_ENERGY_PER_MM_WH;
     const meltedOnRoadMm = Math.min(fallingSnowSweMm, roadMeltCapSweMm);
@@ -751,7 +792,6 @@ function stepSurfaceSnowEnergyBalance(
 
   // --- 3. SNOWPACK SETTLING (COMPACTION) & EXISTING PACK ABLATION ---
   if (state.soilSweMm > 0.01) {
-    // Metamorphic + overburden settling approaches max density (~3.5:1 equivalent depth-to-SWE)
     const minCompactedDepthCm = state.soilSweMm * 0.36;
     const settleRate = temp2mC >= 0 ? 0.032 : 0.014;
     state.soilDepthCm = Math.max(
@@ -759,13 +799,15 @@ function stepSurfaceSnowEnergyBalance(
       state.soilDepthCm - (state.soilDepthCm - minCompactedDepthCm) * settleRate
     );
 
-    // Ablation when air/solar/rain energy is positive and snow isn't actively accumulating faster
     const packMeltWh =
       (temp2mC > 0.2 ? (temp2mC - 0.2) * hConvSoil * 0.52 : 0) +
       Math.max(0, swSoilWm2 - netLongwaveLossWm2 * 0.6) * 0.42 +
       rainHeatWh;
     if (packMeltWh > 4) {
-      const packMeltMm = Math.min(state.soilSweMm, packMeltWh / MELT_ENERGY_PER_MM_WH);
+      const packMeltMm = Math.min(
+        state.soilSweMm,
+        packMeltWh / MELT_ENERGY_PER_MM_WH
+      );
       const fracLost = packMeltMm / Math.max(0.01, state.soilSweMm);
       state.soilSweMm = Math.max(0, state.soilSweMm - packMeltMm);
       state.soilDepthCm = Math.max(0, state.soilDepthCm * (1 - fracLost));
@@ -788,7 +830,10 @@ function stepSurfaceSnowEnergyBalance(
       rainHeatWh +
       4.0;
     if (roadPackMeltWh > 4) {
-      const meltMm = Math.min(state.roadSweMm, roadPackMeltWh / MELT_ENERGY_PER_MM_WH);
+      const meltMm = Math.min(
+        state.roadSweMm,
+        roadPackMeltWh / MELT_ENERGY_PER_MM_WH
+      );
       const fracLost = meltMm / Math.max(0.01, state.roadSweMm);
       state.roadSweMm = Math.max(0, state.roadSweMm - meltMm);
       state.roadDepthCm = Math.max(0, state.roadDepthCm * (1 - fracLost));
@@ -804,79 +849,230 @@ function stepSurfaceSnowEnergyBalance(
   let icingRisk: RoadIcingRisk = "none";
   if (isFreezingRain && liquidRainMm >= 0.08) {
     icingRisk = "black_ice";
-  } else if (state.roadTempC <= -0.2 && state.roadWetFilmMm >= 0.12 && state.roadDepthCm < 0.8) {
-    // Classic invisible Black Ice: wet road film refreezing with little/no visible white snow cover!
+  } else if (
+    state.roadTempC <= -0.2 &&
+    state.roadWetFilmMm >= 0.12 &&
+    state.roadDepthCm < 0.8
+  ) {
     icingRisk = "black_ice";
-  } else if (state.roadTempC <= 0.1 && (state.roadDepthCm >= 0.4 || state.roadWetFilmMm >= 0.08)) {
+  } else if (
+    state.roadTempC <= 0.1 &&
+    (state.roadDepthCm >= 0.4 || state.roadWetFilmMm >= 0.08)
+  ) {
     icingRisk = state.roadTempC <= -1.2 ? "high" : "low";
-  } else if (temp2mC <= 1.0 && state.roadTempC <= 0.6 && state.roadWetFilmMm >= 0.15) {
+  } else if (
+    temp2mC <= 1.0 &&
+    state.roadTempC <= 0.6 &&
+    state.roadWetFilmMm >= 0.15
+  ) {
     icingRisk = "low";
   }
 
   return {
-    groundSnowNewCm: Number(groundSnowNewCm.toFixed(2)),
-    roadSnowNewCm: Number(roadSnowNewCm.toFixed(2)),
+    groundSnowNewCm: groundSnowNewCm < 0.004 ? 0 : groundSnowNewCm,
+    roadSnowNewCm: roadSnowNewCm < 0.004 ? 0 : roadSnowNewCm,
     icingRisk
   };
 }
 
 // ============================================================================
-// 5. 4-TIER TOPOGRAPHIC SNOW CROSS-SECTION (`Kıyı / Merkez / Yamaç / Zirve`)
+// 5. REFERENCE-RELATIVE OROGRAPHIC PROFILE `W_oro(z)` & 4-TIER CROSS-SECTION
 // ============================================================================
+
+const OROGRAPHIC_PROFILE_KNOTS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0.91],
+  [15, 0.92],
+  [100, 1.0],
+  [550, 1.18],
+  [1850, 1.52],
+  [2500, 1.64]
+];
+
+/**
+ * Continuous piecewise-linear orographic precipitation weight `W_oro(z)` anchored to Bursa Ova (`100 m -> 1.00`).
+ */
+export function computeOrographicWeight(elevationM: number): number {
+  const z = Number.isFinite(elevationM) ? Math.max(0, elevationM) : 100;
+  if (z <= OROGRAPHIC_PROFILE_KNOTS[0][0]) {
+    return OROGRAPHIC_PROFILE_KNOTS[0][1];
+  }
+  for (let i = 0; i < OROGRAPHIC_PROFILE_KNOTS.length - 1; i++) {
+    const [z0, w0] = OROGRAPHIC_PROFILE_KNOTS[i];
+    const [z1, w1] = OROGRAPHIC_PROFILE_KNOTS[i + 1];
+    if (z <= z1) {
+      const frac = (z - z0) / Math.max(1e-6, z1 - z0);
+      return w0 + (w1 - w0) * frac;
+    }
+  }
+  const [zLast, wLast] =
+    OROGRAPHIC_PROFILE_KNOTS[OROGRAPHIC_PROFILE_KNOTS.length - 1];
+  return Math.min(1.8, wLast + ((z - zLast) / 1500) * 0.12);
+}
+
+export interface ElevationBandSpec {
+  id: string;
+  labelTr: string;
+  elevationM: number;
+  orographicBoost: number;
+  isReferenceBand: boolean;
+}
 
 export function buildElevationBandSpecs(
   lat: number,
   lon: number,
   cityElevationM: number
-): Array<{ id: string; labelTr: string; elevationM: number; orographicBoost: number }> {
-  const isBursaDomain = lat >= 39.85 && lat <= 40.55 && lon >= 28.35 && lon <= 29.75;
+): ElevationBandSpec[] {
+  const refElev = Number.isFinite(cityElevationM)
+    ? Math.max(0, Math.round(cityElevationM))
+    : 100;
+  const wRef = computeOrographicWeight(refElev);
+  const relBoost = (zBand: number, isRef: boolean): number =>
+    isRef
+      ? 1.0
+      : Number(clamp(computeOrographicWeight(zBand) / wRef, 0.55, 1.75).toFixed(4));
+
+  const isBursaDomain =
+    lat >= 39.85 && lat <= 40.55 && lon >= 28.35 && lon <= 29.75;
   if (isBursaDomain) {
+    const refSlot: "coast" | "center" | "foothill" | "summit" =
+      refElev < 55
+        ? "coast"
+        : refElev <= 360
+          ? "center"
+          : refElev <= 1150
+            ? "foothill"
+            : "summit";
+
+    const coastElev = refSlot === "coast" ? refElev : 15;
+    const centerElev = refSlot === "center" ? refElev : 100;
+    const foothillElev = refSlot === "foothill" ? refElev : 550;
+    const summitElev = refSlot === "summit" ? refElev : 1850;
+
     return [
-      { id: "coast", labelTr: "Mudanya / Kıyı", elevationM: 15, orographicBoost: 0.92 },
+      {
+        id: "coast",
+        labelTr:
+          refSlot === "coast" && Math.abs(refElev - 15) > 20
+            ? "Seçili Kıyı Noktası"
+            : "Mudanya / Kıyı",
+        elevationM: coastElev,
+        orographicBoost: relBoost(coastElev, refSlot === "coast"),
+        isReferenceBand: refSlot === "coast"
+      },
       {
         id: "center",
         labelTr:
-          Math.abs((cityElevationM || 100) - 100) <= 25
-            ? "Bursa Merkez (17116 · Ova)"
-            : "Seçili Bursa Noktası",
-        elevationM: clamp(Math.round(cityElevationM || 100), 65, 320),
-        orographicBoost: 1.0
+          refSlot === "center"
+            ? Math.abs(refElev - 100) <= 25
+              ? "Bursa Merkez (17116 · Ova)"
+              : "Seçili Bursa Noktası"
+            : "Bursa Merkez (17116 · Ova)",
+        elevationM: centerElev,
+        orographicBoost: relBoost(centerElev, refSlot === "center"),
+        isReferenceBand: refSlot === "center"
       },
-      { id: "foothill", labelTr: "Çekirge – İnkaya Yamaç", elevationM: 550, orographicBoost: 1.18 },
-      { id: "summit", labelTr: "Uludağ Oteller / Zirve", elevationM: 1850, orographicBoost: 1.52 }
+      {
+        id: "foothill",
+        labelTr:
+          refSlot === "foothill" && Math.abs(refElev - 550) > 120
+            ? "Seçili Yamaç Noktası"
+            : "Çekirge – İnkaya Yamaç",
+        elevationM: foothillElev,
+        orographicBoost: relBoost(foothillElev, refSlot === "foothill"),
+        isReferenceBand: refSlot === "foothill"
+      },
+      {
+        id: "summit",
+        labelTr:
+          refSlot === "summit" && Math.abs(refElev - 1850) > 150
+            ? "Seçili Zirve Noktası"
+            : "Uludağ Oteller / Zirve",
+        elevationM: summitElev,
+        orographicBoost: relBoost(summitElev, refSlot === "summit"),
+        isReferenceBand: refSlot === "summit"
+      }
     ];
   }
 
-  const baseElev = Math.max(0, Math.round(cityElevationM));
-  const lowElev = baseElev >= 140 ? Math.max(0, Math.round((baseElev - 140) / 10) * 10) : 0;
+  if (refElev < 45) {
+    const e0 = refElev;
+    const e1 = Math.max(refElev + 85, 120);
+    const e2 = Math.max(refElev + 380, 450);
+    const e3 = Math.max(refElev + 1200, 1300);
+    return [
+      {
+        id: "low",
+        labelTr: refElev <= 15 ? "Kıyı / Şehir Merkezi" : "Alt Havza / Merkez",
+        elevationM: e0,
+        orographicBoost: 1.0,
+        isReferenceBand: true
+      },
+      {
+        id: "center",
+        labelTr: "İç Kesim / Plato",
+        elevationM: e1,
+        orographicBoost: relBoost(e1, false),
+        isReferenceBand: false
+      },
+      {
+        id: "foothill",
+        labelTr: "Yüksek Semt / Yamaç",
+        elevationM: e2,
+        orographicBoost: relBoost(e2, false),
+        isReferenceBand: false
+      },
+      {
+        id: "summit",
+        labelTr: "Dağ / Zirve Kuşağı",
+        elevationM: e3,
+        orographicBoost: relBoost(e3, false),
+        isReferenceBand: false
+      }
+    ];
+  }
+
+  const lowElev =
+    refElev >= 160 ? Math.max(0, Math.round((refElev - 150) / 10) * 10) : 0;
+  const foothillElev = refElev + 350;
+  const summitElev = refElev + 1200;
   return [
     {
       id: "low",
       labelTr: lowElev === 0 ? "Kıyı / Deniz Seviyesi" : "Alt Havza",
       elevationM: lowElev,
-      orographicBoost: 0.95
+      orographicBoost: relBoost(lowElev, false),
+      isReferenceBand: false
     },
-    { id: "center", labelTr: "Şehir Merkezi", elevationM: baseElev, orographicBoost: 1.0 },
+    {
+      id: "center",
+      labelTr: "Şehir Merkezi",
+      elevationM: refElev,
+      orographicBoost: 1.0,
+      isReferenceBand: true
+    },
     {
       id: "foothill",
       labelTr: "Yüksek Semt / Yamaç",
-      elevationM: baseElev + 350,
-      orographicBoost: 1.15
+      elevationM: foothillElev,
+      orographicBoost: relBoost(foothillElev, false),
+      isReferenceBand: false
     },
     {
       id: "summit",
       labelTr: "Dağ / Zirve Kuşağı",
-      elevationM: baseElev + 1200,
-      orographicBoost: 1.42
+      elevationM: summitElev,
+      orographicBoost: relBoost(summitElev, false),
+      isReferenceBand: false
     }
   ];
 }
 
 /**
- * Computes falling snow liquid-water equivalent (`SWE_mm`), snow probability (`%`), and refined phase
- * at any elevation given thermal & Bourgouin parameters.
+ * Computes falling snow liquid-water equivalent (`SWE_mm`), snow probability (`%`), active `refinedPhase`,
+ * and thermodynamic `potentialPhase`. Enforces `PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM` (`0.05 mm`)
+ * so `0.00 mm` dry hours NEVER produce phantom snow regardless of `rawModelSnowfallCm`.
  */
-function diagnoseFallingSnowAtPoint(params: {
+export function diagnoseFallingSnowAtPoint(params: {
   tempC: number;
   rhPct: number;
   wetBulbC: number;
@@ -888,9 +1084,12 @@ function diagnoseFallingSnowAtPoint(params: {
   ensembleTempMembersC?: number[] | null;
   tempP10C?: number;
   tempP90C?: number;
+  slr?: number;
 }): {
   refinedPhase: PrecipPhase;
+  potentialPhase: PrecipPhase;
   airSnowSweMm: number;
+  airSnowCm: number;
   liquidRainMm: number;
   airSnowProbPct: number;
 } {
@@ -904,26 +1103,26 @@ function diagnoseFallingSnowAtPoint(params: {
     basePhase,
     ensembleTempMembersC,
     tempP10C,
-    tempP90C
+    tempP90C,
+    slr
   } = params;
 
-  // Compute thermal probability `P(snow phase | wet)` from 212-member ensemble or P10-P90 spread
   let thermalSnowProb = 0;
   if (ensembleTempMembersC && ensembleTempMembersC.length >= 6) {
     const dewSpread = Math.max(0, tempC - wetBulbC);
-    const coldMembers = ensembleTempMembersC.filter((tM) => tM - dewSpread * 0.75 <= 1.25).length;
+    const coldMembers = ensembleTempMembersC.filter(
+      (tM) => tM - dewSpread * 0.75 <= 1.25
+    ).length;
     thermalSnowProb = coldMembers / ensembleTempMembersC.length;
   } else {
     const sigmaT =
       tempP10C !== undefined && tempP90C !== undefined
         ? Math.max(0.65, (tempP90C - tempP10C) / 2.56)
         : 1.1;
-    // Logistic approximation to Gaussian CDF around `Tw = 0.85°C`
     const z = (0.85 - wetBulbC) / sigmaT;
     thermalSnowProb = 1 / (1 + Math.exp(-1.7 * z));
   }
 
-  // Modulate by Bourgouin ice survival if warm nose aloft exists
   if (bourgouin.columnPhase === "freezing_rain") {
     thermalSnowProb *= 0.15;
   } else if (bourgouin.meltingEnergyJkg > 15) {
@@ -934,98 +1133,181 @@ function diagnoseFallingSnowAtPoint(params: {
     clamp((precipProbPct / 100) * thermalSnowProb * 100, 0, 99)
   );
 
-  if (precipMmHr < 0.04 && rawModelSnowfallCm < 0.04) {
+  // Diagnose thermodynamic potential phase of the column independent of wetness
+  let potentialPhase: PrecipPhase;
+  let snowFraction = 0;
+
+  if (basePhase === "hail") {
+    potentialPhase = "hail";
+    snowFraction = 0;
+  } else if (
+    basePhase === "freezing_rain" ||
+    bourgouin.columnPhase === "freezing_rain"
+  ) {
+    potentialPhase = "freezing_rain";
+    snowFraction = 0;
+  } else if (wetBulbC <= 0.15 && bourgouin.meltingEnergyJkg <= 6.8) {
+    snowFraction = clamp(bourgouin.iceSurvivalFraction, 0.85, 1.0);
+    potentialPhase = "snow";
+  } else if (wetBulbC <= 0.85 && bourgouin.meltingEnergyJkg <= 10.5) {
+    const twFrac = clamp(1 - (wetBulbC - 0.05) * 0.62, 0.42, 0.92);
+    snowFraction = Math.min(twFrac, Math.max(0.35, bourgouin.iceSurvivalFraction));
+    potentialPhase = snowFraction >= 0.65 ? "snow" : "sleet";
+  } else if (wetBulbC <= 1.65 && bourgouin.meltingEnergyJkg <= 14.2) {
+    snowFraction = clamp(0.42 - (wetBulbC - 0.85) * 0.38, 0.08, 0.42);
+    potentialPhase = "sleet";
+  } else {
+    snowFraction = 0;
+    potentialPhase = "rain";
+  }
+
+  // PHANTOM SNOW BAN: strictly gate active snow/phase on PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM (0.05 mm)
+  if (
+    !Number.isFinite(precipMmHr) ||
+    precipMmHr < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM
+  ) {
     return {
       refinedPhase: "none",
+      potentialPhase,
       airSnowSweMm: 0,
+      airSnowCm: 0,
       liquidRainMm: 0,
-      airSnowProbPct
+      airSnowProbPct:
+        potentialPhase === "hail" ? Math.min(12, airSnowProbPct) : airSnowProbPct
     };
   }
 
-  if (basePhase === "hail") {
+  if (potentialPhase === "hail") {
     return {
       refinedPhase: "hail",
+      potentialPhase: "hail",
       airSnowSweMm: 0,
+      airSnowCm: 0,
       liquidRainMm: precipMmHr,
       airSnowProbPct: Math.min(12, airSnowProbPct)
     };
   }
 
-  if (basePhase === "freezing_rain" || bourgouin.columnPhase === "freezing_rain") {
+  if (potentialPhase === "freezing_rain") {
     return {
       refinedPhase: "freezing_rain",
+      potentialPhase: "freezing_rain",
       airSnowSweMm: 0,
+      airSnowCm: 0,
       liquidRainMm: precipMmHr,
       airSnowProbPct
     };
   }
 
-  // Determine exact frozen snow crystal fraction (`0..1`) vs liquid rain fraction!
-  // Eliminates the legacy bug where `+1.5°C` wet sleet added `precip * 0.8` directly to snow!
-  let snowFraction = 0;
-  let refinedPhase: PrecipPhase = basePhase;
+  const refinedPhase: PrecipPhase = potentialPhase;
 
-  if (wetBulbC <= 0.15 && bourgouin.meltingEnergyJkg <= 6.8) {
-    snowFraction = clamp(bourgouin.iceSurvivalFraction, 0.85, 1.0);
-    refinedPhase = "snow";
-  } else if (wetBulbC <= 0.85 && bourgouin.meltingEnergyJkg <= 10.5) {
-    // Wet snow / snow-dominant mix
-    const twFrac = clamp(1 - (wetBulbC - 0.05) * 0.62, 0.42, 0.92);
-    snowFraction = Math.min(twFrac, Math.max(0.35, bourgouin.iceSurvivalFraction));
-    refinedPhase = snowFraction >= 0.65 ? "snow" : "sleet";
-  } else if (wetBulbC <= 1.65 && bourgouin.meltingEnergyJkg <= 14.2) {
-    // Rain-dominant sleet (`karla karışık yağmur`): visible flakes in air (`12%..40%`), mostly liquid!
-    snowFraction = clamp(0.42 - (wetBulbC - 0.85) * 0.38, 0.08, 0.42);
-    refinedPhase = "sleet";
-  } else {
-    snowFraction = 0;
-    refinedPhase = "rain";
-  }
-
-  // Cross-check with NWP `rawModelSnowfallCm` ONLY when column thermally permits snow (`Tw <= 1.65°C` and `ME <= 14.5`)
   let airSnowSweMm = precipMmHr * snowFraction;
   if (snowFraction > 0.25 && rawModelSnowfallCm > 0.05 && wetBulbC <= 1.1) {
-    const impliedModelSwe = rawModelSnowfallCm * 0.95; // Open-Meteo `snowfall` uses 7:1..10:1 cm convention
-    airSnowSweMm = Math.max(airSnowSweMm, Math.min(precipMmHr * 1.05, impliedModelSwe * snowFraction));
+    const impliedModelSwe = rawModelSnowfallCm * 0.95;
+    airSnowSweMm = Math.max(
+      airSnowSweMm,
+      Math.min(precipMmHr * 1.05, impliedModelSwe * snowFraction)
+    );
   }
 
+  const effSlr = slr && slr > 0 ? slr : 10;
+  const airSnowCm =
+    airSnowSweMm > 0 ? Number((airSnowSweMm * (effSlr / 10)).toFixed(2)) : 0;
   const liquidRainMm = Math.max(0, precipMmHr - airSnowSweMm);
 
   return {
     refinedPhase,
+    potentialPhase,
     airSnowSweMm,
+    airSnowCm,
     liquidRainMm,
     airSnowProbPct: Math.max(
       airSnowProbPct,
-      airSnowSweMm >= 0.08 ? Math.min(96, Math.round(precipProbPct * Math.max(0.55, snowFraction))) : 0
+      airSnowSweMm >= 0.08
+        ? Math.min(96, Math.round(precipProbPct * Math.max(0.55, snowFraction)))
+        : 0
     )
   };
+}
+
+function resolveAntecedentPrecipSplit(params: {
+  precipMmHr: number;
+  wetBulbC: number;
+  snowfallCm?: number;
+}): { fallingSnowSweMm: number; liquidRainMm: number; slr: number } {
+  const safePrecip = Number.isFinite(params.precipMmHr)
+    ? Math.max(0, params.precipMmHr)
+    : 0;
+  const safeRawSnowCm =
+    params.snowfallCm !== undefined && Number.isFinite(params.snowfallCm)
+      ? Math.max(0, params.snowfallCm)
+      : 0;
+
+  if (safePrecip < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM) {
+    return { fallingSnowSweMm: 0, liquidRainMm: 0, slr: 10 };
+  }
+
+  const wb = params.wetBulbC;
+  const snowFrac =
+    wb <= 0.2
+      ? 1.0
+      : wb <= 1.0
+        ? clamp(1 - (wb - 0.2) * 0.75, 0.35, 1.0)
+        : wb <= 1.65
+          ? clamp(0.4 - (wb - 1.0) * 0.5, 0.08, 0.4)
+          : 0;
+
+  let snowSwe = safePrecip * snowFrac;
+  if (safeRawSnowCm > 0.05 && wb <= 1.4 && snowFrac > 0) {
+    const modelSwe = Math.min(safePrecip, safeRawSnowCm * 0.95);
+    snowSwe = Math.max(snowSwe, modelSwe * Math.max(0.4, snowFrac));
+  }
+  snowSwe = clamp(snowSwe, 0, safePrecip);
+  const liquidRainMm = Math.max(0, safePrecip - snowSwe);
+
+  let slr = wb <= -3 ? 14 : wb <= -0.5 ? 11.5 : wb <= 0.5 ? 9.5 : 7.5;
+  if (safeRawSnowCm > 0.1 && snowSwe > 0.05) {
+    slr = clamp((safeRawSnowCm / snowSwe) * 10, 6.5, 18);
+  }
+
+  return { fallingSnowSweMm: snowSwe, liquidRainMm, slr };
+}
+
+function roundDisplaySnowCm(rawCm: number): number {
+  if (!Number.isFinite(rawCm) || rawCm < 0.04) return 0;
+  return Number(rawCm.toFixed(1));
 }
 
 /**
  * Runs the complete coupled multi-day hourly snow simulation across all forecast hours (`0..359h`).
  */
-export function simulateCoupledSnowTimeline(params: {
-  hours: SnowSimulationHourInput[];
-  antecedentHours?: AntecedentThermalHour[];
-}): SimulatedSnowHourOutput[] {
-  const { hours, antecedentHours = [] } = params;
+export function simulateCoupledSnowTimeline(
+  params: SimulateSnowTimelineInput
+): SimulatedSnowHourOutput[] {
+  const { hours, antecedentHours = [], initialSnowpackCm } = params;
   if (hours.length === 0) return [];
 
   const first = hours[0];
-  const bandSpecs = buildElevationBandSpecs(first.lat, first.lon, first.elevationM);
+  const bandSpecs = buildElevationBandSpecs(
+    first.lat,
+    first.lon,
+    first.elevationM
+  );
 
-  // Initialize antecedent thermal memory from past 24-48h observations/models!
   let initSoilT = clamp(first.temp2mC * 0.85 + 1.0, -6, 28);
   let initRoadT = clamp(first.temp2mC * 0.9 + 1.6, -5, 32);
 
   if (antecedentHours.length >= 4) {
     const meanPastT =
-      antecedentHours.reduce((acc, h) => acc + h.temp2mC, 0) / antecedentHours.length;
+      antecedentHours.reduce((acc, h) => acc + h.temp2mC, 0) /
+      antecedentHours.length;
     initSoilT = clamp(meanPastT * 0.78 + first.temp2mC * 0.22 + 0.5, -8, 30);
     initRoadT = clamp(meanPastT * 0.72 + first.temp2mC * 0.28 + 1.1, -7, 34);
   }
+
+  const recentWetAntecedent = antecedentHours
+    .slice(-6)
+    .some((h) => (h.precipMmHr ?? 0) >= 0.15);
 
   const mainState: SurfaceThermalState = {
     soilTempC: initSoilT,
@@ -1034,11 +1316,14 @@ export function simulateCoupledSnowTimeline(params: {
     soilDepthCm: 0,
     roadSweMm: 0,
     roadDepthCm: 0,
-    roadWetFilmMm: antecedentHours.slice(-6).some((h) => h.precipMmHr >= 0.15) ? 0.45 : 0
+    roadWetFilmMm: recentWetAntecedent ? 0.45 : 0
   };
 
-  // Independent coupled surface states for each of the 4 topographic elevation bands!
-  const lapseInitPerM = clamp((first.lapseRateCPerKm ?? 6.2) / 1000, 0.0045, 0.0082);
+  const lapseInitPerM = clamp(
+    (first.lapseRateCPerKm ?? 6.2) / 1000,
+    0.0045,
+    0.0082
+  );
   const bandStates: SurfaceThermalState[] = bandSpecs.map((b) => {
     const dz = b.elevationM - first.elevationM;
     const dTemp = -dz * lapseInitPerM;
@@ -1053,30 +1338,107 @@ export function simulateCoupledSnowTimeline(params: {
     };
   });
 
-  // Warm up `mainState` over the last 24 antecedent hours if provided so daytime solar pavement heat is exact!
+  // Warm up `mainState` AND all 3 non-reference `bandStates` over the last 24 antecedent hours,
+  // preserving overnight snowfall SWE so morning snowpack is never falsely reset to `0.0 cm`!
   const warmupSlice = antecedentHours.slice(-24);
   for (const ah of warmupSlice) {
-    const wb = wetBulbStullC(ah.temp2mC, 72);
+    const ahPrecip = Math.max(0, ah.precipMmHr ?? 0);
+    const baseRh = ahPrecip >= 0.1 ? 88 : 72;
+    const wb =
+      ah.wetBulbC !== undefined && Number.isFinite(ah.wetBulbC)
+        ? ah.wetBulbC
+        : wetBulbStullC(ah.temp2mC, baseRh);
+    const mainSplit = resolveAntecedentPrecipSplit({
+      precipMmHr: ahPrecip,
+      wetBulbC: wb,
+      snowfallCm: ah.snowfallCm
+    });
+
     stepSurfaceSnowEnergyBalance(mainState, {
       temp2mC: ah.temp2mC,
       wetBulbC: wb,
       windSpeedKmh: 10,
       cloudCoverPct: ah.cloudCoverPct,
       shortwaveWm2: ah.shortwaveWm2,
-      liquidRainMm: ah.temp2mC > 1 ? ah.precipMmHr : 0,
-      fallingSnowSweMm: 0,
-      slr: 10,
+      liquidRainMm: mainSplit.liquidRainMm,
+      fallingSnowSweMm: mainSplit.fallingSnowSweMm,
+      slr: mainSplit.slr,
       isFreezingRain: false
     });
+
+    for (let bIdx = 0; bIdx < bandSpecs.length; bIdx++) {
+      const spec = bandSpecs[bIdx];
+      if (spec.isReferenceBand) continue;
+      const dz = spec.elevationM - first.elevationM;
+      const bTemp = ah.temp2mC - dz * lapseInitPerM;
+      const bRh = clamp(
+        Math.round(
+          baseRh + (dz > 0 ? Math.min(18, dz * 0.012) : dz * 0.008)
+        ),
+        20,
+        100
+      );
+      const bWb = wetBulbStullC(bTemp, bRh);
+      const bPrecip =
+        ahPrecip < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM
+          ? 0
+          : ahPrecip * spec.orographicBoost;
+      const bSplit = resolveAntecedentPrecipSplit({
+        precipMmHr: bPrecip,
+        wetBulbC: bWb
+      });
+
+      stepSurfaceSnowEnergyBalance(bandStates[bIdx], {
+        temp2mC: bTemp,
+        wetBulbC: bWb,
+        windSpeedKmh: 10 * (dz > 500 ? 1.22 : 1),
+        cloudCoverPct: ah.cloudCoverPct,
+        shortwaveWm2: ah.shortwaveWm2,
+        liquidRainMm: bSplit.liquidRainMm,
+        fallingSnowSweMm: bSplit.fallingSnowSweMm,
+        slr: bSplit.slr,
+        isFreezingRain: false
+      });
+    }
   }
 
-  let cumulativeAirSnowCm = 0;
-  let cumulativeGroundSnowCm = 0;
+  // Assimilate live observed initial snowpack (`initialSnowpackCm`) if provided
+  const initPackCm =
+    initialSnowpackCm !== undefined && Number.isFinite(initialSnowpackCm)
+      ? Math.max(0, initialSnowpackCm)
+      : 0;
+  if (initPackCm > 0) {
+    if (mainState.soilDepthCm < initPackCm) {
+      mainState.soilDepthCm = initPackCm;
+      mainState.soilSweMm = Math.max(mainState.soilSweMm, initPackCm * 1.25);
+      mainState.soilTempC = Math.min(mainState.soilTempC, 0.15);
+    }
+    for (let bIdx = 0; bIdx < bandSpecs.length; bIdx++) {
+      const spec = bandSpecs[bIdx];
+      if (spec.isReferenceBand) continue;
+      const dz = spec.elevationM - first.elevationM;
+      if (dz >= 0 && bandStates[bIdx].soilDepthCm < initPackCm) {
+        bandStates[bIdx].soilDepthCm = initPackCm;
+        bandStates[bIdx].soilSweMm = Math.max(
+          bandStates[bIdx].soilSweMm,
+          initPackCm * 1.25
+        );
+        bandStates[bIdx].soilTempC = Math.min(bandStates[bIdx].soilTempC, 0.15);
+      }
+    }
+  }
+
+  let cumulativeAirSnowRawCm = 0;
+  let cumulativeGroundSnowRawCm = 0;
   const outputs: SimulatedSnowHourOutput[] = [];
 
   for (let idx = 0; idx < hours.length; idx++) {
     const h = hours[idx];
-    const lapsePerM = clamp((h.lapseRateCPerKm ?? 6.2) / 1000, 0.0042, 0.0085);
+    const lapsePerM = clamp(
+      (h.lapseRateCPerKm ?? 6.2) / 1000,
+      0.0042,
+      0.0085
+    );
 
     const bourgouin = solveBourgouinSnowLine({
       elevationM: h.elevationM,
@@ -1120,13 +1482,15 @@ export function simulateCoupledSnowTimeline(params: {
       surfaceWindKmh: h.windSpeedKmh,
       temp850hPa: h.temp850hPa,
       capeJkg: h.capeJkg,
-      isDekActive: dekEval.status === "moderate_dek" || dekEval.status === "heavy_dek",
+      isDekActive:
+        dekEval.status === "moderate_dek" || dekEval.status === "heavy_dek",
       precipPhase: snowDiag.refinedPhase,
       levels: h.soundingLevels
     });
 
     const effSlr = slrEval.slr > 0 ? slrEval.slr : 10;
-    const airSnowCm = Number((snowDiag.airSnowSweMm * (effSlr / 10)).toFixed(2));
+    const rawAirSnowCm =
+      snowDiag.airSnowSweMm > 0 ? snowDiag.airSnowSweMm * (effSlr / 10) : 0;
 
     // P90 upper-bound snow (accounts for cold-tail ensemble member + P90 precip intensity)
     const p90WetBulb =
@@ -1134,11 +1498,17 @@ export function simulateCoupledSnowTimeline(params: {
         ? wetBulbStullC(h.tempP10C, Math.min(98, h.rh2mPct + 8))
         : h.wetBulbC - 1.2;
     const p90SnowFrac =
-      p90WetBulb <= 0.3 ? 1.0 : p90WetBulb <= 1.5 ? clamp(1 - (p90WetBulb - 0.3) * 0.7, 0.15, 0.95) : 0;
+      p90WetBulb <= 0.3
+        ? 1.0
+        : p90WetBulb <= 1.5
+          ? clamp(1 - (p90WetBulb - 0.3) * 0.7, 0.15, 0.95)
+          : 0;
     const p90Slr = Math.min(20, Math.max(effSlr, p90WetBulb <= -2 ? 14 : 10.5));
-    const airSnowP90Cm = Number(
-      Math.max(airSnowCm, h.precipP90MmHr * p90SnowFrac * (p90Slr / 10)).toFixed(2)
-    );
+    const p90CandidateCm =
+      h.precipP90MmHr >= PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM
+        ? h.precipP90MmHr * p90SnowFrac * (p90Slr / 10)
+        : 0;
+    const rawAirSnowP90Cm = Math.max(rawAirSnowCm, p90CandidateCm);
 
     const stepRes = stepSurfaceSnowEnergyBalance(mainState, {
       temp2mC: h.temp2mC,
@@ -1152,133 +1522,207 @@ export function simulateCoupledSnowTimeline(params: {
       isFreezingRain: snowDiag.refinedPhase === "freezing_rain"
     });
 
+    const rawGroundSnowCm = stepRes.groundSnowNewCm;
+    const rawRoadSnowCm = stepRes.roadSnowNewCm;
+
     const stickRatioP90 =
-      airSnowCm > 0.05
-        ? clamp(stepRes.groundSnowNewCm / airSnowCm, p90WetBulb <= 0.1 ? 0.65 : 0.25, 1)
+      rawAirSnowCm > 0.05
+        ? clamp(
+            rawGroundSnowCm / rawAirSnowCm,
+            p90WetBulb <= 0.1 ? 0.65 : 0.25,
+            1
+          )
         : p90WetBulb <= 0.0 && mainState.soilTempC <= 1.2
           ? 0.78
           : p90WetBulb <= 0.8
             ? 0.42
             : 0;
-    const groundSnowP90Cm = Number(
-      Math.max(stepRes.groundSnowNewCm, airSnowP90Cm * stickRatioP90).toFixed(2)
+    const rawGroundSnowP90Cm = Math.max(
+      rawGroundSnowCm,
+      rawAirSnowP90Cm * stickRatioP90
     );
 
-    // Step all 4 elevation bands in lockstep!
-    const hourElevationBands: ElevationSnowBand[] = bandSpecs.map((spec, bIdx) => {
-      const dz = spec.elevationM - h.elevationM;
-      const bTemp = Number((h.temp2mC - dz * lapsePerM).toFixed(1));
-      const bRh = clamp(Math.round(h.rh2mPct + (dz > 0 ? Math.min(18, dz * 0.012) : dz * 0.008)), 20, 100);
-      const bTw = Number(wetBulbStullC(bTemp, bRh).toFixed(1));
-      const bPrecip = Number((h.precipMmHr * (dz > 0 ? spec.orographicBoost : spec.orographicBoost)).toFixed(2));
+    const outAirSnowCm = roundDisplaySnowCm(rawAirSnowCm);
+    const outAirSnowP90Cm = roundDisplaySnowCm(rawAirSnowP90Cm);
+    const outGroundSnowCm = roundDisplaySnowCm(rawGroundSnowCm);
+    const outGroundSnowP90Cm = roundDisplaySnowCm(rawGroundSnowP90Cm);
+    const outRoadSnowCm = roundDisplaySnowCm(rawRoadSnowCm);
+    const outSnowpackDepthCm = Number(mainState.soilDepthCm.toFixed(1));
+    const outRoadSnowDepthCm = Number(mainState.roadDepthCm.toFixed(1));
 
-      const bBourgouin = solveBourgouinSnowLine({
-        elevationM: spec.elevationM,
-        surfaceTempC: bTemp,
-        surfaceRhPct: bRh,
-        precipMmHr: bPrecip,
-        freezingLevelM: h.freezingLevelM,
-        temp850hPa: h.temp850hPa,
-        levels: h.soundingLevels,
-        lapseRateCPerKm: h.lapseRateCPerKm
-      });
+    // Step all 4 elevation bands: `isReferenceBand` copies `mainState` outputs with 0.0 cm / 0% drift!
+    const hourElevationBands: ElevationSnowBand[] = bandSpecs.map(
+      (spec, bIdx) => {
+        if (spec.isReferenceBand) {
+          return {
+            id: spec.id,
+            labelTr: spec.labelTr,
+            elevationM: spec.elevationM,
+            tempMeanC: Number(h.temp2mC.toFixed(1)),
+            wetBulbMeanC: Number(h.wetBulbC.toFixed(1)),
+            precipPhase: snowDiag.refinedPhase,
+            snowProbPct: snowDiag.airSnowProbPct,
+            airSnowCm: outAirSnowCm,
+            groundSnowCm: outGroundSnowCm,
+            roadSnowCm: outRoadSnowCm,
+            maxSnowpackCm: outSnowpackDepthCm,
+            slr: slrEval.slr,
+            snowQualityTr: slrEval.snowQualityTr
+          };
+        }
 
-      const bBasePhase: PrecipPhase =
-        bPrecip < 0.04
-          ? "none"
-          : bBourgouin.columnPhase === "freezing_rain"
-            ? "freezing_rain"
-            : bTw <= 0.4
-              ? "snow"
-              : bTw <= 1.6
-                ? "sleet"
-                : "rain";
+        const dz = spec.elevationM - h.elevationM;
+        const tempShiftC = -dz * lapsePerM;
+        const bTemp = Number((h.temp2mC + tempShiftC).toFixed(1));
+        const bRh = clamp(
+          Math.round(
+            h.rh2mPct + (dz > 0 ? Math.min(18, dz * 0.012) : dz * 0.008)
+          ),
+          20,
+          100
+        );
+        const bTw = Number(wetBulbStullC(bTemp, bRh).toFixed(1));
+        const bPrecip =
+          h.precipMmHr < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM
+            ? 0
+            : Number((h.precipMmHr * spec.orographicBoost).toFixed(3));
 
-      const bDiag = diagnoseFallingSnowAtPoint({
-        tempC: bTemp,
-        rhPct: bRh,
-        wetBulbC: bTw,
-        precipMmHr: bPrecip,
-        precipProbPct: clamp(Math.round(h.precipProbPct * (dz > 250 ? 1.12 : 1)), 0, 99),
-        rawModelSnowfallCm: 0,
-        bourgouin: bBourgouin,
-        basePhase: bBasePhase,
-        tempP10C: h.tempP10C !== undefined ? h.tempP10C - dz * lapsePerM : undefined,
-        tempP90C: h.tempP90C !== undefined ? h.tempP90C - dz * lapsePerM : undefined
-      });
+        const bBourgouin = solveBourgouinSnowLine({
+          elevationM: spec.elevationM,
+          surfaceTempC: bTemp,
+          surfaceRhPct: bRh,
+          precipMmHr: bPrecip,
+          freezingLevelM: h.freezingLevelM,
+          temp850hPa: h.temp850hPa,
+          levels: h.soundingLevels,
+          lapseRateCPerKm: h.lapseRateCPerKm
+        });
 
-      const bSlrEval = computeDynamicSnowLiquidRatio({
-        surfaceTempC: bTemp,
-        surfaceWetBulbC: bTw,
-        surfaceWindKmh: h.windSpeedKmh * (dz > 500 ? 1.25 : 1),
-        temp850hPa: h.temp850hPa,
-        capeJkg: h.capeJkg,
-        isDekActive: dekEval.status === "moderate_dek" || dekEval.status === "heavy_dek",
-        precipPhase: bDiag.refinedPhase,
-        levels: h.soundingLevels
-      });
+        const bBasePhase: PrecipPhase =
+          bPrecip < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM
+            ? "none"
+            : bBourgouin.columnPhase === "freezing_rain"
+              ? "freezing_rain"
+              : bTw <= 0.4
+                ? "snow"
+                : bTw <= 1.6
+                  ? "sleet"
+                  : "rain";
 
-      const bEffSlr = bSlrEval.slr > 0 ? bSlrEval.slr : 10;
-      const bAirSnowCm = Number((bDiag.airSnowSweMm * (bEffSlr / 10)).toFixed(2));
-      const bStep = stepSurfaceSnowEnergyBalance(bandStates[bIdx], {
-        temp2mC: bTemp,
-        wetBulbC: bTw,
-        windSpeedKmh: h.windSpeedKmh * (dz > 500 ? 1.22 : 1),
-        cloudCoverPct: h.cloudCoverPct,
-        shortwaveWm2: h.shortwaveWm2,
-        liquidRainMm: bDiag.liquidRainMm,
-        fallingSnowSweMm: bDiag.airSnowSweMm,
-        slr: bEffSlr,
-        isFreezingRain: bDiag.refinedPhase === "freezing_rain"
-      });
+        const shiftedEnsembleMembers = h.ensembleTempMembersC
+          ? h.ensembleTempMembersC.map((tM) => tM + tempShiftC)
+          : h.ensembleTempMembersC;
 
-      return {
-        id: spec.id,
-        labelTr: spec.labelTr,
-        elevationM: spec.elevationM,
-        tempMeanC: bTemp,
-        wetBulbMeanC: bTw,
-        precipPhase: bDiag.refinedPhase,
-        snowProbPct: bDiag.airSnowProbPct,
-        airSnowCm: bAirSnowCm,
-        groundSnowCm: Number(bStep.groundSnowNewCm.toFixed(1)),
-        roadSnowCm: Number(bStep.roadSnowNewCm.toFixed(1)),
-        maxSnowpackCm: Number(bandStates[bIdx].soilDepthCm.toFixed(1)),
-        slr: bSlrEval.slr,
-        snowQualityTr: bSlrEval.snowQualityTr
-      };
-    });
+        const bDiag = diagnoseFallingSnowAtPoint({
+          tempC: bTemp,
+          rhPct: bRh,
+          wetBulbC: bTw,
+          precipMmHr: bPrecip,
+          precipProbPct: clamp(
+            Math.round(h.precipProbPct * (dz > 250 ? 1.12 : 1)),
+            0,
+            99
+          ),
+          rawModelSnowfallCm: 0,
+          bourgouin: bBourgouin,
+          basePhase: bBasePhase,
+          ensembleTempMembersC: shiftedEnsembleMembers,
+          tempP10C:
+            h.tempP10C !== undefined ? h.tempP10C + tempShiftC : undefined,
+          tempP90C:
+            h.tempP90C !== undefined ? h.tempP90C + tempShiftC : undefined
+        });
+
+        const bSlrEval = computeDynamicSnowLiquidRatio({
+          surfaceTempC: bTemp,
+          surfaceWetBulbC: bTw,
+          surfaceWindKmh: h.windSpeedKmh * (dz > 500 ? 1.25 : 1),
+          temp850hPa: h.temp850hPa,
+          capeJkg: h.capeJkg,
+          isDekActive:
+            dekEval.status === "moderate_dek" || dekEval.status === "heavy_dek",
+          precipPhase: bDiag.refinedPhase,
+          levels: h.soundingLevels
+        });
+
+        const bEffSlr = bSlrEval.slr > 0 ? bSlrEval.slr : 10;
+        const bRawAirSnowCm =
+          bDiag.airSnowSweMm > 0 ? bDiag.airSnowSweMm * (bEffSlr / 10) : 0;
+        const bStep = stepSurfaceSnowEnergyBalance(bandStates[bIdx], {
+          temp2mC: bTemp,
+          wetBulbC: bTw,
+          windSpeedKmh: h.windSpeedKmh * (dz > 500 ? 1.22 : 1),
+          cloudCoverPct: h.cloudCoverPct,
+          shortwaveWm2: h.shortwaveWm2,
+          liquidRainMm: bDiag.liquidRainMm,
+          fallingSnowSweMm: bDiag.airSnowSweMm,
+          slr: bEffSlr,
+          isFreezingRain: bDiag.refinedPhase === "freezing_rain"
+        });
+
+        return {
+          id: spec.id,
+          labelTr: spec.labelTr,
+          elevationM: spec.elevationM,
+          tempMeanC: bTemp,
+          wetBulbMeanC: bTw,
+          precipPhase: bDiag.refinedPhase,
+          snowProbPct: bDiag.airSnowProbPct,
+          airSnowCm: roundDisplaySnowCm(bRawAirSnowCm),
+          groundSnowCm: roundDisplaySnowCm(bStep.groundSnowNewCm),
+          roadSnowCm: roundDisplaySnowCm(bStep.roadSnowNewCm),
+          maxSnowpackCm: Number(bandStates[bIdx].soilDepthCm.toFixed(1)),
+          slr: bSlrEval.slr,
+          snowQualityTr: bSlrEval.snowQualityTr
+        };
+      }
+    );
 
     // Li & Pomeroy (1997) Blowing Snow / Blizzard threshold
     let blowingSnowRisk: BlowingSnowRisk = "none";
     const hasLooseSnow =
-      airSnowCm >= 0.25 || (mainState.soilDepthCm >= 1.5 && h.temp2mC <= 0.4);
+      rawAirSnowCm >= 0.25 ||
+      (mainState.soilDepthCm >= 1.5 && h.temp2mC <= 0.4);
     if (hasLooseSnow) {
-      if (h.windGustsKmh >= 52 && (airSnowCm >= 0.8 || h.windSpeedKmh >= 34)) {
+      if (
+        h.windGustsKmh >= 52 &&
+        (rawAirSnowCm >= 0.8 || h.windSpeedKmh >= 34)
+      ) {
         blowingSnowRisk = "blizzard";
       } else if (h.windGustsKmh >= 36 || h.windSpeedKmh >= 26) {
         blowingSnowRisk = "drifting";
       }
     }
 
-    cumulativeAirSnowCm += airSnowCm;
-    cumulativeGroundSnowCm += stepRes.groundSnowNewCm;
+    cumulativeAirSnowRawCm += rawAirSnowCm;
+    cumulativeGroundSnowRawCm += rawGroundSnowCm;
 
     outputs.push({
       snowLineElevationM: bourgouin.snowLineElevationM,
       wetBulbZeroM: bourgouin.wetBulbZeroM,
       meltingEnergyJkg: bourgouin.meltingEnergyJkg,
       refinedPhase: snowDiag.refinedPhase,
+      potentialPhase: snowDiag.potentialPhase,
       airSnowProbPct: snowDiag.airSnowProbPct,
-      airSnowCm: Number(airSnowCm.toFixed(1)),
-      airSnowP90Cm: Number(airSnowP90Cm.toFixed(1)),
-      groundSnowCm: Number(stepRes.groundSnowNewCm.toFixed(1)),
-      groundSnowP90Cm: Number(groundSnowP90Cm.toFixed(1)),
-      roadSnowCm: Number(stepRes.roadSnowNewCm.toFixed(1)),
-      snowpackDepthCm: Number(mainState.soilDepthCm.toFixed(1)),
-      roadSnowDepthCm: Number(mainState.roadDepthCm.toFixed(1)),
-      cumulativeAirSnowCm: Number(cumulativeAirSnowCm.toFixed(1)),
-      cumulativeGroundSnowCm: Number(cumulativeGroundSnowCm.toFixed(1)),
+      airSnowCm: outAirSnowCm,
+      airSnowP90Cm: outAirSnowP90Cm,
+      groundSnowCm: outGroundSnowCm,
+      groundSnowP90Cm: outGroundSnowP90Cm,
+      roadSnowCm: outRoadSnowCm,
+      rawAirSnowCm,
+      rawAirSnowP90Cm,
+      rawGroundSnowCm,
+      rawGroundSnowP90Cm,
+      rawRoadSnowCm,
+      airSnowCmRaw: rawAirSnowCm,
+      airSnowP90CmRaw: rawAirSnowP90Cm,
+      groundSnowCmRaw: rawGroundSnowCm,
+      groundSnowP90CmRaw: rawGroundSnowP90Cm,
+      roadSnowCmRaw: rawRoadSnowCm,
+      snowpackDepthCm: outSnowpackDepthCm,
+      roadSnowDepthCm: outRoadSnowDepthCm,
+      cumulativeAirSnowCm: Number(cumulativeAirSnowRawCm.toFixed(1)),
+      cumulativeGroundSnowCm: Number(cumulativeGroundSnowRawCm.toFixed(1)),
       soilTempC: Number(mainState.soilTempC.toFixed(1)),
       roadTempC: Number(mainState.roadTempC.toFixed(1)),
       slr: slrEval.slr,
@@ -1309,6 +1753,8 @@ export interface LightningHourPhysicsInput {
   lpiJkg: number | null;
   stormLightningProbPct: number;
   wmoCode: number;
+  wmoStormAgreeCount?: number;
+  rawWmoCode?: number;
   temp850hPa: number | null;
   dekStatus: DekSnowStatus;
   dekDeltaTC: number | null;
@@ -1328,17 +1774,22 @@ export interface LightningHourPhysicsResult {
 export function evaluateHourLightningPhysics(
   input: LightningHourPhysicsInput
 ): LightningHourPhysicsResult {
-  // 1. Diagnose cloud-top glaciation & `-10..-20°C` mixed-phase charging depth
   let coldestCloudTempC = -22;
   let mixedPhaseMoisture = 0.65;
   let midLevelLapseCPerKm = 6.3;
 
   if (input.soundingLevels && input.soundingLevels.length >= 3) {
-    const moistCloudLevels = input.soundingLevels.filter((lv) => lv.humidity >= 68);
+    const moistCloudLevels = input.soundingLevels.filter(
+      (lv) => lv.humidity >= 68
+    );
     if (moistCloudLevels.length > 0) {
-      coldestCloudTempC = Math.min(...moistCloudLevels.map((lv) => lv.temperature));
+      coldestCloudTempC = Math.min(
+        ...moistCloudLevels.map((lv) => lv.temperature)
+      );
     } else {
-      coldestCloudTempC = Math.min(...input.soundingLevels.map((lv) => lv.temperature));
+      coldestCloudTempC = Math.min(
+        ...input.soundingLevels.map((lv) => lv.temperature)
+      );
     }
 
     const chargingLevels = input.soundingLevels.filter(
@@ -1354,19 +1805,37 @@ export function evaluateHourLightningPhysics(
     const lv500 = input.soundingLevels.find((lv) => lv.pressure === 500);
     if (lv850 && lv500 && lv500.altitudeM > lv850.altitudeM + 500) {
       midLevelLapseCPerKm =
-        ((lv850.temperature - lv500.temperature) / (lv500.altitudeM - lv850.altitudeM)) * 1000;
+        ((lv850.temperature - lv500.temperature) /
+          (lv500.altitudeM - lv850.altitudeM)) *
+        1000;
     }
   } else if (input.temp850hPa !== null && Number.isFinite(input.temp850hPa)) {
-    // Estimate cloud top temperature from CAPE/precip depth when full sounding is absent
-    const depthKm = input.capeJkg >= 800 ? 8.5 : input.capeJkg >= 250 ? 6.5 : input.precipMmHr >= 2.0 ? 5.2 : 3.2;
+    const depthKm =
+      input.capeJkg >= 800
+        ? 8.5
+        : input.capeJkg >= 250
+          ? 6.5
+          : input.precipMmHr >= 2.0
+            ? 5.2
+            : 3.2;
     coldestCloudTempC = input.temp850hPa - (depthKm - 1.5) * 6.4;
   }
 
-  const rawLpi = input.lpiJkg !== null && Number.isFinite(input.lpiJkg) ? Math.max(0, input.lpiJkg) : 0;
+  const rawLpi =
+    input.lpiJkg !== null && Number.isFinite(input.lpiJkg)
+      ? Math.max(0, input.lpiJkg)
+      : 0;
 
-  // 2. Cold-top glaciation gate: warm-rain clouds (`coldestCloudTempC > -8°C`) lack ice/graupel collisions!
+  // Non-circular cold-top glaciation gate: derived `wmoCode >= 95` alone cannot pierce `-8.5°C`!
+  const effectiveStormAgree =
+    input.wmoStormAgreeCount ??
+    (input.rawWmoCode !== undefined && input.rawWmoCode >= 95 ? 2 : 0);
+
   const isGlaciated =
-    coldestCloudTempC <= -8.5 || rawLpi >= 0.4 || Boolean(input.liveMetarTs) || input.wmoCode >= 95;
+    coldestCloudTempC <= -8.5 ||
+    rawLpi >= 0.4 ||
+    Boolean(input.liveMetarTs) ||
+    (effectiveStormAgree >= 2 && coldestCloudTempC <= -5.5);
 
   if (!isGlaciated) {
     return {
@@ -1378,22 +1847,31 @@ export function evaluateHourLightningPhysics(
     };
   }
 
-  // 3. Detect Cold-Season Thundersnow (`Gökgürültülü Kar / DEK Orajı`)
   const isColdSnowEnv =
     input.precipPhase === "snow" ||
     input.precipPhase === "sleet" ||
     input.wetBulbC <= 1.2;
 
   const dekConvectiveSignal =
-    (input.dekStatus === "heavy_dek" && (input.dekDeltaTC ?? 0) >= 15.5 && input.precipMmHr >= 0.8) ||
-    (input.dekStatus === "moderate_dek" && (input.dekDeltaTC ?? 0) >= 14.5 && input.capeJkg >= 70);
+    (input.dekStatus === "heavy_dek" &&
+      (input.dekDeltaTC ?? 0) >= 15.5 &&
+      input.precipMmHr >= 0.8) ||
+    (input.dekStatus === "moderate_dek" &&
+      (input.dekDeltaTC ?? 0) >= 14.5 &&
+      input.capeJkg >= 70);
   const steepColdLapseSignal =
     isColdSnowEnv &&
     input.precipMmHr >= 1.4 &&
-    (midLevelLapseCPerKm >= 7.0 || input.capeJkg >= 90 || (input.liftedIndex ?? 4) <= -0.5);
+    (midLevelLapseCPerKm >= 7.0 ||
+      input.capeJkg >= 90 ||
+      (input.liftedIndex ?? 4) <= -0.5);
 
   const thundersnowBoost =
-    isColdSnowEnv && (dekConvectiveSignal || steepColdLapseSignal || rawLpi >= 0.8 || input.liveMetarTs)
+    isColdSnowEnv &&
+    (dekConvectiveSignal ||
+      steepColdLapseSignal ||
+      rawLpi >= 0.8 ||
+      input.liveMetarTs)
       ? clamp(
           18 +
             (dekConvectiveSignal ? 22 : 0) +
@@ -1404,10 +1882,15 @@ export function evaluateHourLightningPhysics(
         )
       : 0;
 
-  // 4. Takahashi-Saunders Graupel Ice-Flux LTI (`0..100`)
   const capeCharging =
     input.capeJkg > 40
-      ? clamp(Math.pow(input.capeJkg / 1650, 0.62) * 78 * (0.55 + 0.45 * mixedPhaseMoisture), 0, 92)
+      ? clamp(
+          Math.pow(input.capeJkg / 1650, 0.62) *
+            78 *
+            (0.55 + 0.45 * mixedPhaseMoisture),
+          0,
+          92
+        )
       : 0;
   const lpiSignal = rawLpi > 0.05 ? clamp(Math.sqrt(rawLpi) * 26, 0, 96) : 0;
   const precipCoreFactor =
@@ -1424,39 +1907,60 @@ export function evaluateHourLightningPhysics(
     thundersnowBoost
   );
 
+  const hasRawWmoStormSupport =
+    effectiveStormAgree >= 2 ||
+    (input.wmoStormAgreeCount === undefined &&
+      input.rawWmoCode === undefined &&
+      input.wmoCode >= 95);
+
   if (input.liveMetarTs) {
     prob = Math.max(prob, 92);
-  } else if (input.wmoCode >= 95 && prob < 48) {
+  } else if (hasRawWmoStormSupport && prob < 48) {
     prob = Math.max(prob, 54);
   }
 
   const lightningProbPct = Math.round(clamp(prob, 0, 99));
-  const isThundersnow = isColdSnowEnv && lightningProbPct >= 24 && (input.precipMmHr >= 0.2 || Boolean(input.liveMetarTs));
+  const isThundersnow =
+    isColdSnowEnv &&
+    lightningProbPct >= 24 &&
+    (input.precipMmHr >= 0.2 || Boolean(input.liveMetarTs));
 
-  // Effective LPI (`J/kg`) synthesized when model LPI is absent
   const synthLpi =
     lightningProbPct >= 15
-      ? Number(((Math.pow(lightningProbPct / 100, 2.1) * 14) + (input.capeJkg / 650) * (input.precipMmHr / 4)).toFixed(2))
+      ? Number(
+          (
+            Math.pow(lightningProbPct / 100, 2.1) * 14 +
+            (input.capeJkg / 650) * (input.precipMmHr / 4)
+          ).toFixed(2)
+        )
       : 0;
   const lpiEffectiveJkg = Number(Math.max(rawLpi, synthLpi).toFixed(2));
 
-  // Expected local flash rate (`flashes/min` within 25 km radius, calibrated to McCaul 2009 / Price-Rind)
   let flashesPerMin = 0;
   if (lightningProbPct >= 18) {
     const rawRate =
       0.18 * lpiEffectiveJkg +
-      (input.capeJkg >= 150 ? Math.pow(input.capeJkg / 900, 1.25) * (0.4 + input.precipMmHr * 0.16) : 0) +
+      (input.capeJkg >= 150
+        ? Math.pow(input.capeJkg / 900, 1.25) *
+          (0.4 + input.precipMmHr * 0.16)
+        : 0) +
       (isThundersnow ? 0.35 : 0);
-    // Thundersnow produces fewer, high-amplitude +CG bolts (typically 0.2 .. 2.5 flashes/min), whereas summer supercells hit 8..35/min
     const capRate = isThundersnow ? 3.8 : 42;
-    flashesPerMin = Number(clamp(rawRate * (lightningProbPct / 85), 0.1, capRate).toFixed(1));
+    flashesPerMin = Number(
+      clamp(rawRate * (lightningProbPct / 85), 0.1, capRate).toFixed(1)
+    );
   }
 
-  // Cloud-to-Ground (`CG%`) fraction: lower freezing levels / cold charging zones yield higher CG% (35-55%)
   const cgFractionPct = Math.round(
     isThundersnow
       ? clamp(48 - input.wetBulbC * 3, 36, 58)
-      : clamp(34 - Math.max(0, input.temp2mC - 12) * 0.55 - Math.min(8, flashesPerMin * 0.35), 16, 44)
+      : clamp(
+          34 -
+            Math.max(0, input.temp2mC - 12) * 0.55 -
+            Math.min(8, flashesPerMin * 0.35),
+          16,
+          44
+        )
   );
 
   return {
@@ -1509,7 +2013,6 @@ export function buildLightningProximityRadar(params: {
     dekStatus === "heavy_dek" ||
     surfaceTempC <= 2.5;
 
-  // Cold-season / DEK convective cells electrify at lower radar reflectivity (`>= 29 dBZ`) than warm summer storms (`>= 37 dBZ`)
   const minConvectiveDbz = isColdSnow ? 29 : 36;
   const chargingScale = clamp(
     Math.max(
@@ -1523,14 +2026,13 @@ export function buildLightningProximityRadar(params: {
 
   const cells: LightningCellVector[] = [];
 
-  // 1. Live METAR station thunderstorm reports (`TS`, `+TSRA`, `TSSN`, `VCTS`)
   let metarConfirmedTs = false;
   for (const st of metarStations) {
     if (st.wxFlags?.isThunderstorm && st.distanceKm <= 100 && st.ageMinutes <= 90) {
       metarConfirmedTs = true;
-      // Place station on deterministic bearing if not already covered
       const pseudoBearing =
-        st.icaoId.split("").reduce((acc, ch) => acc * 31 + ch.charCodeAt(0), 7) % 360;
+        st.icaoId.split("").reduce((acc, ch) => acc * 31 + ch.charCodeAt(0), 7) %
+        360;
       cells.push({
         id: `metar-${st.icaoId}`,
         bearingDeg: pseudoBearing,
@@ -1546,18 +2048,17 @@ export function buildLightningProximityRadar(params: {
     }
   }
 
-  // 2. Live RainViewer Zoom-7 512px polar convective reflectivity cells (`0..100 km`)
   for (let i = 0; i < radarCells.length; i++) {
     const rc = radarCells[i];
     if (rc.distanceKm > 100 || rc.peakDbz < minConvectiveDbz) continue;
 
-    // Require either atmospheric charging support OR genuinely intense radar graupel core (`>= 45 dBZ`)
     if (chargingScale < 0.16 && rc.peakDbz < 45 && !metarConfirmedTs) continue;
 
     const dbzExcess = Math.max(0, rc.peakDbz - minConvectiveDbz);
     const cellFlashRate = Number(
       clamp(
-        (0.15 + Math.pow(dbzExcess / 11, 1.65) * 2.4) * Math.max(0.35, chargingScale),
+        (0.15 + Math.pow(dbzExcess / 11, 1.65) * 2.4) *
+          Math.max(0.35, chargingScale),
         0.1,
         36
       ).toFixed(1)
@@ -1581,7 +2082,6 @@ export function buildLightningProximityRadar(params: {
     });
   }
 
-  // Sort cells nearest-first and cap at 8 cleanest cells
   cells.sort((a, b) => a.distanceKm - b.distanceKm || b.peakDbz - a.peakDbz);
   const topCells = cells.slice(0, 8);
 
@@ -1590,8 +2090,13 @@ export function buildLightningProximityRadar(params: {
     maxKm: 15 | 40 | 100,
     labelTr: string
   ): LightningRangeRingSummary => {
-    const inRing = topCells.filter((c) => c.distanceKm >= minKm && c.distanceKm <= maxKm);
-    const maxDbz = inRing.reduce((m, c) => Math.max(m, c.peakDbz), maxKm === 15 ? currentRadarDbz : 0);
+    const inRing = topCells.filter(
+      (c) => c.distanceKm >= minKm && c.distanceKm <= maxKm
+    );
+    const maxDbz = inRing.reduce(
+      (m, c) => Math.max(m, c.peakDbz),
+      maxKm === 15 ? currentRadarDbz : 0
+    );
     const estFlashes = Number(
       inRing.reduce((s, c) => s + c.estFlashesPerMin, 0).toFixed(1)
     );
@@ -1602,23 +2107,32 @@ export function buildLightningProximityRadar(params: {
             Math.round(
               Math.max(
                 hour0Lightning.lightningProbPct,
-                32 + (maxDbz - minConvectiveDbz) * 3.4 + (metarConfirmedTs && maxKm <= 40 ? 35 : 0)
+                32 +
+                  (maxDbz - minConvectiveDbz) * 3.4 +
+                  (metarConfirmedTs && maxKm <= 40 ? 35 : 0)
               )
             ),
             15,
             99
           )
         : maxKm === 15
-          ? hour0Lightning.lightningProbPct
+          ? metarConfirmedTs
+            ? Math.max(hour0Lightning.lightningProbPct, 65)
+            : hour0Lightning.lightningProbPct
           : Math.round(
               Math.max(
                 hour0Lightning.lightningProbPct * (maxKm === 40 ? 0.9 : 0.78),
-                (hour1Lightning?.lightningProbPct ?? 0) * (maxKm === 100 ? 0.95 : 0.75)
+                (hour1Lightning?.lightningProbPct ?? 0) *
+                  (maxKm === 100 ? 0.95 : 0.75)
               )
             );
 
-    if (inRing.length === 0 && radarAvailable && currentRadarDbz < 20 && !metarConfirmedTs) {
-      // Live radar confirms clear sky right now inside the inner 15 km ring!
+    if (
+      inRing.length === 0 &&
+      radarAvailable &&
+      currentRadarDbz < 20 &&
+      !metarConfirmedTs
+    ) {
       if (maxKm === 15) prob = Math.min(prob, 14);
       if (maxKm === 40) prob = Math.min(prob, 28);
     }
@@ -1655,9 +2169,9 @@ export function buildLightningProximityRadar(params: {
   const ring100 = summarizeRing(40.01, 100, "40–100 km · Erken Uyarı Ufku");
 
   const nearest = topCells[0] ?? null;
-  const approachingCell = topCells.find((c) => c.approaching && c.etaMinutes !== null) ?? null;
+  const approachingCell =
+    topCells.find((c) => c.approaching && c.etaMinutes !== null) ?? null;
 
-  // WMO / NFPA 30-30 Lightning Safety Protocol (~10-15 km acoustic/strike danger zone)
   let safetyLevel: LightningSafetyLevel = "safe";
   let safetyTitleTr = "Açık Alan Güvenli (Aktif Deşarj Yok)";
   let safetyDetailTr =
@@ -1684,12 +2198,22 @@ export function buildLightningProximityRadar(params: {
     safetyDetailTr = approachingCell?.etaMinutes
       ? `${approachingCell.compassTr} yönünden yaklaşan konvektif hücre (~${approachingCell.distanceKm} km, tahmini varış ~${approachingCell.etaMinutes} dk). Açık alan planlarını sığınak mesafesinde tutun.`
       : `${nearest?.compassTr ?? "Çevre"} sektöründe ${nearest?.distanceKm ?? 28} km mesafede elektrik yüklü hücre izleniyor; rüzgar hamlesi ve ani yıldırım sıçramasına karşı hazırlıklı olun.`;
-  } else if (ring100.status !== "clear" || ring15.probabilityPct >= 20 || ring40.probabilityPct >= 22) {
+  } else if (
+    ring100.status !== "clear" ||
+    ring15.probabilityPct >= 20 ||
+    ring40.probabilityPct >= 22
+  ) {
     safetyLevel = "awareness";
     safetyTitleTr = "Uzak Ufuk / Konvektif Kararsızlık İzlemesi";
     safetyDetailTr =
       "40–100 km ufkunda veya atmosferik buz-graupel kuşağında orta düzey şarj potansiyeli mevcut; radar gelişimini takip edin.";
   }
+
+  const innerClearByRadar =
+    radarAvailable &&
+    ring15.activeCellCount === 0 &&
+    currentRadarDbz < 20 &&
+    !metarConfirmedTs;
 
   return {
     updatedAtIso,
@@ -1701,11 +2225,177 @@ export function buildLightningProximityRadar(params: {
     nearestCellKm: nearest ? nearest.distanceKm : null,
     nearestBearingTr: nearest ? nearest.compassTr : null,
     approachingEtaMin: approachingCell?.etaMinutes ?? null,
-    currentFlashesPerMin: Math.max(ring15.estFlashesPerMin, hour0Lightning.flashesPerMin),
+    currentFlashesPerMin: innerClearByRadar
+      ? ring15.estFlashesPerMin
+      : Math.max(ring15.estFlashesPerMin, hour0Lightning.flashesPerMin),
     currentLpiJkg: hour0Lightning.lpiEffectiveJkg,
     currentCgFractionPct: hour0Lightning.cgFractionPct,
     isThundersnowNow: hour0Lightning.isThundersnow,
     rings: [ring15, ring40, ring100],
     cells: topCells
+  };
+}
+
+export interface ReconcileNowLightningInput {
+  modelHour0ProbPct: number;
+  modelHour0FlashesPerMin: number;
+  lightningRadar: LightningProximityRadar;
+  radarAvailable?: boolean;
+  currentRadarDbz?: number;
+}
+
+export interface ReconcileNowLightningResult {
+  nowProbPct: number;
+  hour0ProbPct: number;
+  nowFlashesPerMin: number;
+  hour0FlashesPerMin: number;
+  regime:
+    | "active_inner"
+    | "approaching_cell"
+    | "clear_radar_suppressed"
+    | "model_fallback";
+}
+
+/**
+ * Reconciles NWP Hour-0 lightning diagnostics with live 3-ring Doppler radar & METAR TS observations:
+ *  1. Active 0-15 km convective cell or confirmed METAR TS -> `ring15` becomes the floor for both `now` and `hour0`.
+ *  2. Radar online, 0-15 km clear (`activeCellCount === 0 && dBZ < 20 && !metarConfirmedTs`), and no cell
+ *     approaching within 45 min -> `nowProbPct = ring15.probabilityPct` (`<= 14%`, no `Math.max` override!).
+ *  3. Approaching cell in 15-40 km with `approachingEtaMin <= 45` -> smooth ETA-weighted transition.
+ */
+export function reconcileNowLightningWithRadar(
+  params: ReconcileNowLightningInput
+): ReconcileNowLightningResult {
+  const { lightningRadar } = params;
+  const ring15 = lightningRadar.rings[0];
+  const ring40 = lightningRadar.rings[1];
+  const radarActive = params.radarAvailable ?? lightningRadar.radarBacked;
+  const dbzNow = params.currentRadarDbz ?? ring15.maxDbz ?? 0;
+  const metarTs = Boolean(lightningRadar.metarConfirmedTs);
+  const baseProb = clamp(Math.round(params.modelHour0ProbPct || 0), 0, 99);
+  const baseFlashes = Math.max(0, Number(params.modelHour0FlashesPerMin) || 0);
+
+  // (1) 0-15 km active convective cell OR confirmed live METAR TS
+  if (ring15.activeCellCount > 0 || metarTs) {
+    const ringFloorProb = clamp(Math.round(ring15.probabilityPct), 0, 99);
+    const mergedProb = Math.max(baseProb, ringFloorProb);
+    const mergedFlashes = Number(
+      Math.max(baseFlashes, ring15.estFlashesPerMin).toFixed(1)
+    );
+    return {
+      nowProbPct: mergedProb,
+      hour0ProbPct: mergedProb,
+      nowFlashesPerMin: mergedFlashes,
+      hour0FlashesPerMin: mergedFlashes,
+      regime: "active_inner"
+    };
+  }
+
+  // Check for approaching 15-40 km convective cell arriving within <= 45 minutes
+  const cellEta40 = lightningRadar.cells
+    .filter(
+      (c) =>
+        c.distanceKm > 15 &&
+        c.distanceKm <= 40 &&
+        c.approaching &&
+        c.etaMinutes !== null &&
+        c.etaMinutes <= 45
+    )
+    .reduce<number | null>(
+      (best, c) =>
+        c.etaMinutes === null
+          ? best
+          : best === null
+            ? c.etaMinutes
+            : Math.min(best, c.etaMinutes),
+      null
+    );
+  const ringEta40 =
+    ring40.activeCellCount > 0 &&
+    lightningRadar.approachingEtaMin !== null &&
+    lightningRadar.approachingEtaMin <= 45
+      ? lightningRadar.approachingEtaMin
+      : null;
+  const approachingEtaMin = cellEta40 ?? ringEta40;
+
+  // (3) 15-40 km approaching cell with `approachingEtaMin <= 45` -> ETA-weighted transition
+  if (approachingEtaMin !== null) {
+    const etaClamped = clamp(approachingEtaMin, 0, 45);
+    const wEta = clamp(1 - etaClamped / 45, 0.15, 0.95);
+    const innerBase =
+      radarActive && dbzNow < 20
+        ? Math.min(14, ring15.probabilityPct)
+        : ring15.probabilityPct;
+    const outerTarget = Math.max(ring40.probabilityPct, innerBase);
+    const nowProbPct = clamp(
+      Math.round(innerBase + (outerTarget - innerBase) * wEta),
+      0,
+      99
+    );
+    const hour0ProbPct = clamp(
+      Math.round(
+        Math.max(baseProb, nowProbPct, outerTarget * (0.65 + 0.35 * wEta))
+      ),
+      0,
+      99
+    );
+    const nowFlashesPerMin = Number(
+      (ring40.estFlashesPerMin * wEta * 0.6).toFixed(1)
+    );
+    const hour0FlashesPerMin = Number(
+      Math.max(
+        baseFlashes,
+        ring40.estFlashesPerMin * (0.5 + 0.5 * wEta)
+      ).toFixed(1)
+    );
+    return {
+      nowProbPct,
+      hour0ProbPct,
+      nowFlashesPerMin,
+      hour0FlashesPerMin,
+      regime: "approaching_cell"
+    };
+  }
+
+  // (2) Radar online and 0-15 km clear (`activeCellCount === 0 && dBZ < 20 && !metarConfirmedTs`)
+  // with NO cell approaching within 45 min -> `nowProbPct = ring15.probabilityPct` (`<= 14%`, NO Math.max!)
+  if (radarActive && ring15.activeCellCount === 0 && dbzNow < 20 && !metarTs) {
+    const clearNowProb = clamp(Math.min(14, Math.round(ring15.probabilityPct)), 0, 14);
+    const dampedHour0Prob = clamp(
+      Math.min(24, Math.max(clearNowProb, Math.round(baseProb * 0.35))),
+      0,
+      99
+    );
+    return {
+      nowProbPct: clearNowProb,
+      hour0ProbPct: dampedHour0Prob,
+      nowFlashesPerMin: 0,
+      hour0FlashesPerMin: 0,
+      regime: "clear_radar_suppressed"
+    };
+  }
+
+  // (4) Radar offline or non-convective stratiform echo (`dBZ >= 20`, `0` convective cores)
+  if (!radarActive) {
+    return {
+      nowProbPct: baseProb,
+      hour0ProbPct: baseProb,
+      nowFlashesPerMin: baseFlashes,
+      hour0FlashesPerMin: baseFlashes,
+      regime: "model_fallback"
+    };
+  }
+
+  const stratiformNowProb = clamp(
+    Math.round(Math.min(baseProb, Math.max(ring15.probabilityPct, 22))),
+    0,
+    99
+  );
+  return {
+    nowProbPct: stratiformNowProb,
+    hour0ProbPct: baseProb,
+    nowFlashesPerMin: ring15.estFlashesPerMin,
+    hour0FlashesPerMin: baseFlashes,
+    regime: "model_fallback"
   };
 }

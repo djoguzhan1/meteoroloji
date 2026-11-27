@@ -10,6 +10,7 @@ import {
 } from "./model-registry";
 import type { LedgerStationPoint } from "./state-ledger";
 import { computeRuralBasinToUrbanOffsetC } from "./topographic-cressman";
+import { createFastZonedTimeResolver } from "./weather-client";
 import type {
   CoreModelKey,
   HybridModelSnapshot,
@@ -123,7 +124,9 @@ export function buildCressmanMetarTimeline(
   envLapseRateCPerM: number,
   cityLat?: number,
   cityLon?: number,
-  ledgerStationHistory?: LedgerStationPoint[]
+  ledgerStationHistory?: LedgerStationPoint[],
+  timezone?: string,
+  utcOffsetSeconds = 10800
 ): Map<string, CressmanHourlyObs> {
   const isBursaOvaTarget =
     cityLat !== undefined &&
@@ -132,6 +135,7 @@ export function buildCressmanMetarTimeline(
     cityElevationM <= 450 &&
     cityLon < 29.35;
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
+  const tzResolver = createFastZonedTimeResolver(timezone, utcOffsetSeconds);
 
   type StationSample = {
     weight: number;
@@ -202,7 +206,7 @@ export function buildCressmanMetarTimeline(
         continue;
       }
 
-      const localH = (new Date(roundedMs).getUTCHours() + 3) % 24;
+      const localH = tzResolver.epochMsToLocalParts(roundedMs).hour;
       const isNightOb = localH >= 18 || localH <= 8;
       const ltbrBasinUnbias =
         isBursaOvaTarget && net.station.icaoId === "LTBR"
@@ -350,6 +354,7 @@ export function trainKalmanMos({
   utcTimeIndex,
   nowUtcMs,
   utcOffsetSeconds,
+  timezone,
   ensembleMembers = 0,
   ledgerStationHistory
 }: {
@@ -362,17 +367,21 @@ export function trainKalmanMos({
   utcTimeIndex: Map<string, number>;
   nowUtcMs: number;
   utcOffsetSeconds: number;
+  timezone?: string;
   ensembleMembers?: number;
   ledgerStationHistory?: LedgerStationPoint[];
 }): KalmanMosModel {
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
+  const tzResolver = createFastZonedTimeResolver(timezone, utcOffsetSeconds);
   const timeline = buildCressmanMetarTimeline(
     network,
     cityElevationM,
     safeLapse,
     cityLat,
     cityLon,
-    ledgerStationHistory
+    ledgerStationHistory,
+    timezone,
+    utcOffsetSeconds
   );
 
   const isBursaWmo100mGrid =
@@ -413,9 +422,7 @@ export function trainKalmanMos({
       matchedHours++;
       if (obs.hasPrecip) observedRainHours++;
 
-      const localHour = Math.floor(
-        (((obs.obsTimeMs + utcOffsetSeconds * 1000) / 3600000) % 24 + 24) % 24
-      );
+      const localHour = tzResolver.epochMsToLocalParts(obs.obsTimeMs).hour;
       const bin = Math.min(3, Math.floor(localHour / 6));
 
       const obsTempForModel =

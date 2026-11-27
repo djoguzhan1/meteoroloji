@@ -29,6 +29,7 @@ import {
   EXTENDED_SYNOPTIC_PRIOR_WEIGHTS
 } from "./model-registry";
 import { quantileSorted } from "./precip-engine";
+import { formatTempDelta } from "./weather-client";
 import type {
   DailyBimodalSplit,
   DailyPoint,
@@ -36,7 +37,8 @@ import type {
   PrecipitationConsensus,
   SubseasonalDayPoint,
   SubseasonalOutlookBundle,
-  SubseasonalWeekSummary
+  SubseasonalWeekSummary,
+  UnitSystem
 } from "./weather-types";
 
 const MONTH_NAMES_SHORT_TR = [
@@ -640,6 +642,48 @@ function formatShortRangeTr(startYmd: string, endYmd: string): string {
   const eDay = Number(endYmd.slice(8, 10));
   const eMonth = MONTH_NAMES_SHORT_TR[Number(endYmd.slice(5, 7)) - 1] ?? "";
   return sMonth === eMonth ? `${sDay}–${eDay} ${sMonth}` : `${sDay} ${sMonth} – ${eDay} ${eMonth}`;
+}
+
+/**
+ * Alt-mevsimsel hafta özet metnini seçili birim sistemine (`metric` / `imperial`) göre biçimlendirir;
+ * `wk.summaryNoteTr` alanını değiştirmeden anomali farkını `formatTempDelta` (`1.8 * ΔT`, `+32` yok!) ile üretir.
+ */
+export function formatSubseasonalWeekNoteTr(
+  wk: SubseasonalWeekSummary,
+  unit: UnitSystem = "metric"
+): string {
+  if (unit === "metric" && wk.summaryNoteTr) {
+    return wk.summaryNoteTr;
+  }
+
+  if (wk.summaryNoteTr && wk.summaryNoteTr.includes("°C")) {
+    return wk.summaryNoteTr.replace(
+      /([+-]?\d+(?:\.\d+)?)\s*°C/g,
+      (_full, rawNumStr: string) => {
+        const parsed = Number(rawNumStr);
+        const deltaC =
+          Math.abs(parsed - wk.meanAnomalyC) < 0.05 ? wk.meanAnomalyC : parsed;
+        return formatTempDelta(deltaC, unit, {
+          decimals: 1,
+          signed: true,
+          showUnit: true
+        });
+      }
+    );
+  }
+
+  const anomLabel = formatTempDelta(wk.meanAnomalyC, unit, {
+    decimals: 1,
+    signed: true,
+    showUnit: true
+  });
+  if (wk.meanAnomalyC >= 1.8) {
+    return `Mevsim normallerinin ortalama ${anomLabel} üzerinde ılık hava kütlesi olasılığı önde; ~${wk.wetDaysExpected} yağışlı gün sinyali.`;
+  }
+  if (wk.meanAnomalyC <= -1.8) {
+    return `Mevsim normallerinin ${anomLabel} altında serin/soğuk salınım sinyali; ~${wk.wetDaysExpected} yağışlı gün olasılığı.`;
+  }
+  return `Sıcaklıklar mevsim normalleri bandında (${anomLabel} sapma); dönemde ~${wk.wetDaysExpected} gün yağış geçişi bekleniyor.`;
 }
 
 /**

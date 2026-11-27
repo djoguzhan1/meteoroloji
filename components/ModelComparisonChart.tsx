@@ -15,6 +15,14 @@ import {
   reanchorMultiModelBundleToNow
 } from "@/lib/forecast-resilience";
 import { CORE_MODEL_KEYS, CORE_MODEL_META } from "@/lib/model-registry";
+import {
+  convertPrecipMm,
+  convertTempValue,
+  convertWindSpeed,
+  formatPrecip,
+  formatTempDelta,
+  formatTemperature
+} from "@/lib/weather-client";
 import type {
   CoreModelKey,
   GeoLocation,
@@ -28,7 +36,13 @@ type HorizonHours = 72 | 168 | 360;
 
 const TAB_CONFIG: Record<
   MetricTab,
-  { label: string; subtitle: string; unitMetric: string; unitImperial: string }
+  {
+    label: string;
+    subtitle: string;
+    subtitleImperial?: string;
+    unitMetric: string;
+    unitImperial: string;
+  }
 > = {
   temp2m: {
     label: "2m Sıcaklık",
@@ -38,15 +52,17 @@ const TAB_CONFIG: Record<
   },
   temp850: {
     label: "850 hPa",
-    subtitle: "~1500m üst atmosfer sıcaklığı (soğuk cephe & kar sınırı takibi)",
+    subtitle: "~1500 m üst atmosfer sıcaklığı (soğuk cephe & kar sınırı takibi)",
+    subtitleImperial: "~5000 ft üst atmosfer sıcaklığı (soğuk cephe & kar sınırı takibi)",
     unitMetric: "°C",
-    unitImperial: "°C"
+    unitImperial: "°F"
   },
   precip: {
     label: "Yağış",
     subtitle: "Saatlik yağış miktarı (mm/sa)",
+    subtitleImperial: "Saatlik yağış miktarı (in/sa)",
     unitMetric: "mm",
-    unitImperial: "mm"
+    unitImperial: "in"
   },
   wind10m: {
     label: "10m Rüzgar",
@@ -58,9 +74,15 @@ const TAB_CONFIG: Record<
 
 function convertValue(val: number | null, tab: MetricTab, unit: UnitSystem): number | null {
   if (val === null || !Number.isFinite(val)) return null;
-  if (unit === "imperial") {
-    if (tab === "temp2m") return Number(((val * 9) / 5 + 32).toFixed(1));
-    if (tab === "wind10m") return Number((val * 0.621371).toFixed(1));
+  if (tab === "temp2m" || tab === "temp850") {
+    return Number(convertTempValue(val, unit).toFixed(1));
+  }
+  if (tab === "precip") {
+    const converted = convertPrecipMm(val, unit);
+    return Number(converted.toFixed(unit === "imperial" ? 2 : 1));
+  }
+  if (tab === "wind10m") {
+    return Number(convertWindSpeed(val, unit).toFixed(1));
   }
   return Number(val.toFixed(1));
 }
@@ -324,9 +346,11 @@ function ModelComparisonChartBase({
     const minVal = tab === "precip" || tab === "wind10m" ? 0 : Math.floor(minRaw - 2);
     const maxVal =
       tab === "precip"
-        ? Math.max(2, Math.ceil(maxRaw + 0.5))
+        ? unit === "imperial"
+          ? Math.max(0.2, Math.ceil((maxRaw + 0.05) * 10) / 10)
+          : Math.max(2, Math.ceil(maxRaw + 0.5))
         : Math.ceil(maxRaw + 2);
-    const span = Math.max(1, maxVal - minVal);
+    const span = Math.max(tab === "precip" && unit === "imperial" ? 0.1 : 1, maxVal - minVal);
 
     const n = Math.max(2, activeSeries.length);
     const xAt = (i: number) => padL + (i / (n - 1)) * plotW;
@@ -362,14 +386,18 @@ function ModelComparisonChartBase({
         ? `M${upperPts.join(" L")} L${lowerPts.reverse().join(" L")} Z`
         : "";
 
-    const yTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => {
+    const tickDecimals = tab === "precip" ? (unit === "imperial" ? 2 : 1) : 0;
+    const yTicks = [0, 0.25, 0.5, 0.75, 1].map((frac, idx) => {
       const val = minVal + span * frac;
-      return { val: Number(val.toFixed(tab === "precip" ? 1 : 0)), y: yAt(val) };
+      return { id: idx, val: Number(val.toFixed(tickDecimals)), y: yAt(val) };
     });
 
+    const freezeIso = unit === "imperial" ? 32 : 0;
     const zeroY =
-      (tab === "temp2m" || tab === "temp850") && minVal < 0 && maxVal > 0
-        ? yAt(0)
+      (tab === "temp2m" || tab === "temp850") &&
+      minVal < freezeIso &&
+      maxVal > freezeIso
+        ? yAt(freezeIso)
         : null;
 
     return {
@@ -402,15 +430,21 @@ function ModelComparisonChartBase({
       map[k] = v;
       if (v !== null && visibleModels[k]) present.push(v);
     }
+    const spreadDecimals = tab === "precip" && unit === "imperial" ? 2 : 1;
     const spread =
       present.length >= 2
-        ? Number((Math.max(...present) - Math.min(...present)).toFixed(1))
+        ? Number((Math.max(...present) - Math.min(...present)).toFixed(spreadDecimals))
         : null;
     return { map, spread };
   }, [inspected, tab, unit, visibleModels]);
 
-  const unitSuffix =
+  const rawUnitSuffix =
     unit === "imperial" ? TAB_CONFIG[tab].unitImperial : TAB_CONFIG[tab].unitMetric;
+  const unitSuffix = rawUnitSuffix.startsWith("°") ? rawUnitSuffix : ` ${rawUnitSuffix}`;
+  const activeSubtitle =
+    unit === "imperial" && TAB_CONFIG[tab].subtitleImperial
+      ? TAB_CONFIG[tab].subtitleImperial
+      : TAB_CONFIG[tab].subtitle;
 
   const handlePointer = (e: React.PointerEvent<SVGSVGElement>) => {
     if (activeSeries.length < 2) return;
@@ -450,7 +484,7 @@ function ModelComparisonChartBase({
             )}
           </div>
           <p className="mt-0.5 text-xs text-ink-muted">
-            {location.name} · {TAB_CONFIG[tab].subtitle}
+            {location.name} · {activeSubtitle}
           </p>
         </div>
 
@@ -584,7 +618,7 @@ function ModelComparisonChartBase({
               aria-label={`8 meteoroloji modeli ${horizonHours} saatlik karşılaştırma grafiği`}
             >
               {chart.yTicks.map((tick) => (
-                <g key={tick.val}>
+                <g key={tick.id}>
                   <line
                     x1={chart.padL}
                     x2={chart.W - chart.padR}
@@ -662,7 +696,7 @@ function ModelComparisonChartBase({
                 />
               )}
 
-              <g key={`${tab}-${horizonHours}`}>
+              <g key={`${tab}-${horizonHours}-${unit}`}>
                 {CORE_MODEL_KEYS.map((k) => {
                   if (!visibleModels[k] || !chart.paths[k]) return null;
                   return (
@@ -728,25 +762,31 @@ function ModelComparisonChartBase({
           <div className="grid gap-3 sm:grid-cols-3 text-xs font-mono tabular">
             <div className="surface-tile p-3.5 space-y-1.5">
               <span className="text-[11px] text-ink-muted">
-                {horizonHours} Saat Toplam Yağış (mm)
+                {horizonHours} Saat Toplam Yağış ({unit === "imperial" ? "in" : "mm"})
               </span>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
                 {CORE_MODEL_KEYS.map((k) => (
                   <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
-                    {CORE_MODEL_META[k].shortLabel}: {activePrecipSummary?.[k] ?? 0}
+                    {CORE_MODEL_META[k].shortLabel}:{" "}
+                    {formatPrecip(activePrecipSummary?.[k] ?? 0, unit)}
                   </span>
                 ))}
               </div>
             </div>
 
             <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">En Düşük 850 hPa (°C)</span>
+              <span className="text-[11px] text-ink-muted">
+                En Düşük 850 hPa ({unit === "imperial" ? "°F" : "°C"})
+              </span>
               <div className="flex flex-wrap gap-x-3 gap-y-1">
                 {CORE_MODEL_KEYS.map((k) => (
                   <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
                     {CORE_MODEL_META[k].shortLabel}:{" "}
                     {models.summary.min850hPa[k] !== null
-                      ? `${models.summary.min850hPa[k]}°`
+                      ? formatTemperature(models.summary.min850hPa[k] as number, unit, {
+                          decimals: 1,
+                          showUnit: true
+                        })
                       : "—"}
                   </span>
                 ))}
@@ -756,7 +796,12 @@ function ModelComparisonChartBase({
             <div className="surface-tile p-3.5 space-y-1.5">
               <span className="text-[11px] text-ink-muted">Maks. 2m 8-Model Sapması</span>
               <p className="text-sm font-semibold text-ink-primary">
-                ±{models.summary.maxSpreadTemp2m}°C{" "}
+                ±
+                {formatTempDelta(models.summary.maxSpreadTemp2m, unit, {
+                  decimals: 1,
+                  signed: false,
+                  showUnit: true
+                })}{" "}
                 <span className="text-[11px] font-normal text-ink-muted">
                   ({models.summary.maxSpreadTemp2m <= 2.5
                     ? "Yüksek uzlaşı"

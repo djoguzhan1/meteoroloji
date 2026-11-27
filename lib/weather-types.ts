@@ -295,6 +295,8 @@ export type CurrentWeather = {
   precipConsensus: PrecipitationConsensus;
   precipType: PrecipType;
   precipPhase?: PrecipPhase;
+  potentialPrecipPhase?: PrecipPhase;
+  subHourOffsetFrac?: number;
   snowLineElevationM?: number | null;
   airSnowCmHr?: number;
   groundSnowCmHr?: number;
@@ -721,6 +723,7 @@ export type MultiModelBundle = {
   fetchedAt: string;
   lat: number;
   lon: number;
+  timezone?: string;
   utcOffsetSeconds?: number;
   freshness?: DataFreshnessMeta;
   temp2m: ModelSeriesPoint[];
@@ -801,4 +804,58 @@ export type SceneAtmosphereInput = {
   lightningFlashRatePerMin?: number;
   snowSlrRatio?: number;
   isThundersnow?: boolean;
+  lightningProbPct?: number;
+  precipitationMmHr?: number;
+  solarArcProgress?: number;
 };
+
+export type HourlyHorizonHours = 48 | 168 | 240;
+
+export const PRECIP_WETNESS_CONTRACT = {
+  /** toFixed(1) gösteriminde >= 0.1 mm olan fiziksel aktif yağış alt sınırı */
+  WET_ACTIVE_MIN_MM: 0.05,
+  /** Soğuk/yüksek SLR toz kar serpintisinde aktif kar alt sınırı (mm > 0 şartıyla) */
+  SNOW_FLURRY_ACTIVE_CM: 0.08,
+  /** Kalibre NWP ıslak saat tabanı */
+  CALIBRATED_NWP_WET_FLOOR_MM: 0.1,
+  /** Kuru saatte kesikli olasılık izi (ghost bar) alt sınırı (%) */
+  GHOST_POP_MIN_PCT: 20
+} as const;
+
+export function isWetActiveSample(
+  precipMmHr: number | null | undefined,
+  airSnowCmHr?: number | null
+): boolean {
+  const p = Number(precipMmHr ?? 0);
+  const s = Number(airSnowCmHr ?? 0);
+  if (!Number.isFinite(p) || p <= 0) return false;
+  return (
+    p >= PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM ||
+    s >= PRECIP_WETNESS_CONTRACT.SNOW_FLURRY_ACTIVE_CM
+  );
+}
+
+export function isSnowLinePhysicallyRelevant(params: {
+  snowLineElevationM: number | null | undefined;
+  baseElevationM?: number | null;
+  temperatureC: number;
+  temp850hPa?: number | null;
+  precipMmHr?: number | null;
+  precipProbabilityPct?: number | null;
+  airSnowProbPct?: number | null;
+  snowpackDepthCm?: number | null;
+}): boolean {
+  const sl = params.snowLineElevationM;
+  if (sl === null || sl === undefined || !Number.isFinite(sl)) return false;
+  if ((params.snowpackDepthCm ?? 0) >= 0.2) return true;
+  if ((params.airSnowProbPct ?? 0) >= 15) return true;
+  if (params.temperatureC <= 9.0) return true;
+  if (params.temp850hPa !== null && params.temp850hPa !== undefined && params.temp850hPa <= 2.0) {
+    return true;
+  }
+  const baseElev = Number.isFinite(params.baseElevationM) ? Number(params.baseElevationM) : 100;
+  const hasNearPrecip =
+    (params.precipMmHr ?? 0) >= PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM ||
+    (params.precipProbabilityPct ?? 0) >= 20;
+  return hasNearPrecip && sl <= Math.max(2600, baseElev + 2200);
+}

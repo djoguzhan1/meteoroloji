@@ -27,9 +27,14 @@ import {
   PRESET_CITIES,
   readMigratedStorageItem
 } from "@/lib/weather-client";
+import {
+  resolveActiveTemporalView,
+  type ActiveTemporalView
+} from "@/lib/temporal-view";
 import type {
   DataFreshnessMeta,
   GeoLocation,
+  HourlyHorizonHours,
   SceneAtmosphereInput,
   UnitSystem,
   WeatherAlertRule,
@@ -62,6 +67,11 @@ export type WeatherDataContextValue = {
 export type WeatherScrubContextValue = {
   frameIndex: number;
   setFrameIndex: (idx: number) => void;
+  hourlyHorizon: HourlyHorizonHours;
+  setHourlyHorizon: (h: HourlyHorizonHours) => void;
+  focusedDate: string | null;
+  setFocusedDate: (ymd: string | null) => void;
+  temporalView: ActiveTemporalView | null;
   atmosphere: SceneAtmosphereInput;
 };
 
@@ -110,6 +120,43 @@ const DEFAULT_ALERTS: WeatherAlertRule[] = [
   }
 ];
 
+function estimateInstantSolarElevationDeg(latDeg: number, lonDeg: number, date: Date): number {
+  const rad = Math.PI / 180;
+  const dayOfYear = Math.floor(
+    (Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) -
+      Date.UTC(date.getUTCFullYear(), 0, 0)) /
+      86_400_000
+  );
+  const utcHours =
+    date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+  const gamma = ((2 * Math.PI) / 365) * (dayOfYear - 1 + (utcHours - 12) / 24);
+  const eqTimeMin =
+    229.18 *
+    (0.000075 +
+      0.001868 * Math.cos(gamma) -
+      0.032077 * Math.sin(gamma) -
+      0.014615 * Math.cos(2 * gamma) -
+      0.040849 * Math.sin(2 * gamma));
+  const declRad =
+    0.006918 -
+    0.399912 * Math.cos(gamma) +
+    0.070257 * Math.sin(gamma) -
+    0.006758 * Math.cos(2 * gamma) +
+    0.000907 * Math.sin(2 * gamma);
+  const trueSolarTimeMin = ((utcHours * 60 + eqTimeMin + 4 * lonDeg) % 1440 + 1440) % 1440;
+  const hourAngleDeg = trueSolarTimeMin / 4 - 180;
+  const latRad = latDeg * rad;
+  const sinElev =
+    Math.sin(latRad) * Math.sin(declRad) +
+    Math.cos(latRad) * Math.cos(declRad) * Math.cos(hourAngleDeg * rad);
+  return Math.asin(Math.max(-1, Math.min(1, sinElev))) / rad;
+}
+
+function resolveTodayDateFromBundle(b: WeatherBundle | null): string | null {
+  if (!b) return null;
+  return resolveActiveTemporalView(b, 0).dayContext.date || null;
+}
+
 const FALLBACK_SCENE: SceneAtmosphereInput = {
   windSpeed: 8,
   windDirection: 180,
@@ -151,12 +198,10 @@ export function WeatherProvider({
   const [alerts, setAlerts] = useState<WeatherAlertRule[]>(DEFAULT_ALERTS);
   const [unit, setUnitState] = useState<UnitSystem>("metric");
   const [frameIndex, setFrameIndexState] = useState(0);
+  const [hourlyHorizon, setHourlyHorizonState] = useState<HourlyHorizonHours>(168);
+  const [focusedDate, setFocusedDateState] = useState<string | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-
-  const setFrameIndex = useCallback((idx: number) => {
-    setFrameIndexState((prev) => (prev === idx ? prev : idx));
-  }, []);
 
   const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -171,6 +216,27 @@ export function WeatherProvider({
       (initialBundle?.freshness !== undefined && initialBundle.freshness.status !== "live")
   );
   const recoveryBadgeTimerRef = useRef<number | null>(null);
+
+  const setFrameIndex = useCallback((idx: number) => {
+    setFrameIndexState((prev) => (prev === idx ? prev : idx));
+    if (idx === 0) {
+      const todayYmd = resolveTodayDateFromBundle(bundleRef.current);
+      setFocusedDateState((prev) => (prev === todayYmd ? prev : todayYmd));
+    } else if (idx >= 168) {
+      setHourlyHorizonState((prev) => (prev < 240 ? 240 : prev));
+    } else if (idx >= 48) {
+      setHourlyHorizonState((prev) => (prev < 168 ? 168 : prev));
+    }
+  }, []);
+
+  const setHourlyHorizon = useCallback((h: HourlyHorizonHours) => {
+    setHourlyHorizonState((prev) => (prev === h ? prev : h));
+    setFrameIndexState((prev) => (prev >= h ? Math.max(0, h - 1) : prev));
+  }, []);
+
+  const setFocusedDate = useCallback((ymd: string | null) => {
+    setFocusedDateState((prev) => (prev === ymd ? prev : ymd));
+  }, []);
 
   useEffect(() => {
     bundleRef.current = bundle;
@@ -286,8 +352,12 @@ export function WeatherProvider({
           }
         }
 
+        bundleRef.current = merged;
         setBundle(merged);
         setFrameIndexState(nextFrameIdx);
+        if (!runInBackground && nextFrameIdx === 0) {
+          setFocusedDateState(resolveTodayDateFromBundle(merged));
+        }
         setError(null);
 
         const nextStatus = merged.freshness?.status ?? "live";
@@ -354,8 +424,10 @@ export function WeatherProvider({
           );
           if (seq !== loadSeqRef.current) return;
           if (cachedFallback) {
+            bundleRef.current = cachedFallback;
             setBundle(cachedFallback);
             setFrameIndexState(0);
+            setFocusedDateState(resolveTodayDateFromBundle(cachedFallback));
             setError(null);
           } else {
             setBundle(null);
@@ -379,6 +451,7 @@ export function WeatherProvider({
       activeLocRef.current = loc;
       retryAttemptRef.current = 0;
       setRetryCountdownSec(null);
+      frameIndexRef.current = 0;
       setFrameIndexState(0);
 
       const sameAsCurrent = Boolean(
@@ -403,6 +476,8 @@ export function WeatherProvider({
           setError(null);
         }
       }
+
+      setFocusedDateState(resolveTodayDateFromBundle(bundleRef.current));
 
       void loadForLocation(loc, { background: Boolean(bundleRef.current) });
     },
@@ -769,63 +844,44 @@ export function WeatherProvider({
     });
   }, []);
 
-  // %100 gerçek anlık / seçili saatlik atmosfer verisi
-  const atmosphere: SceneAtmosphereInput = useMemo(() => {
-    if (!bundle) return FALLBACK_SCENE;
-
-    const activeHour = frameIndex > 0 ? bundle.hourly[frameIndex] : null;
-    if (activeHour) {
-      return {
-        windSpeed: activeHour.windSpeed,
-        windDirection: activeHour.windDirection,
-        cloudCover: activeHour.cloudCover,
-        visibilityKm: activeHour.visibilityKm,
-        airQualityIndex: bundle.airQuality.categoryIndex,
-        isStorm: activeHour.isStorm,
-        precipType: activeHour.precipType,
-        precipIntensity:
-          activeHour.precipType === "none"
-            ? 0
-            : Math.min(1, 0.3 + activeHour.precipitation * 0.25),
-        rainAccum: activeHour.rainAccum,
-        snowAccum: activeHour.snowAccum,
-        solarElevationDeg: activeHour.solarElevationDeg,
-        daylight: activeHour.daylight,
-        cape: activeHour.cape ?? bundle.nativeConvective.cape ?? 0,
-        lightningFlashRatePerMin: activeHour.lightningFlashesPerMin ?? 0,
-        snowSlrRatio: activeHour.snowSlr ?? 10,
-        isThundersnow: Boolean(activeHour.isThundersnow)
-      };
-    }
-
-    const cur = bundle.current;
-    return {
-      windSpeed: cur.windSpeed,
-      windDirection: cur.windDirection,
-      cloudCover: cur.cloudCover,
-      visibilityKm: cur.visibilityKm,
-      airQualityIndex: bundle.airQuality.categoryIndex,
-      isStorm: cur.isStorm,
-      precipType: cur.precipType,
-      precipIntensity:
-        cur.precipType === "none"
-          ? 0
-          : Math.min(1, 0.3 + cur.precipitation * 0.3 + (cur.isStorm ? 0.35 : 0)),
-      rainAccum: bundle.hourly[0]?.rainAccum ?? 0,
-      snowAccum: bundle.hourly[0]?.snowAccum ?? 0,
-      solarElevationDeg: cur.solarElevationDeg,
-      daylight: cur.daylight,
-      cape: bundle.nativeConvective.cape ?? 0,
-      lightningFlashRatePerMin:
-        cur.lightningFlashesPerMin ??
-        bundle.snowAndLightning?.lightningRadar.currentFlashesPerMin ??
-        0,
-      snowSlrRatio: cur.snowSlr ?? bundle.hourly[0]?.snowSlr ?? 10,
-      isThundersnow: Boolean(
-        cur.isThundersnow ?? bundle.snowAndLightning?.lightningRadar.isThundersnowNow
-      )
-    };
+  // %100 deterministik aktif zaman görünümü ve fiziksel 3D sahne girdisi
+  const temporalView = useMemo<ActiveTemporalView | null>(() => {
+    if (!bundle) return null;
+    return resolveActiveTemporalView(bundle, frameIndex);
   }, [bundle, frameIndex]);
+
+  const effectiveFocusedDate = useMemo<string | null>(() => {
+    if (!temporalView?.dayContext.date) return focusedDate;
+    if (frameIndex > 0 || focusedDate === null) {
+      return temporalView.dayContext.date;
+    }
+    if (
+      bundle &&
+      bundle.daily.length > 0 &&
+      !bundle.daily.some((d) => d.date === focusedDate)
+    ) {
+      return temporalView.dayContext.date;
+    }
+    return focusedDate;
+  }, [bundle, focusedDate, frameIndex, temporalView]);
+
+  const atmosphere: SceneAtmosphereInput = useMemo(() => {
+    if (temporalView) return temporalView.atmosphere;
+    const solarElev = estimateInstantSolarElevationDeg(
+      activeLocation.lat,
+      activeLocation.lon,
+      new Date()
+    );
+    const daylight = Math.max(0, Math.min(1, (solarElev + 6) / 36));
+    return {
+      ...FALLBACK_SCENE,
+      solarElevationDeg: solarElev,
+      daylight,
+      solarArcProgress: 0.5,
+      lightningProbPct: 0,
+      precipitationMmHr: 0
+    };
+  }, [temporalView, activeLocation.lat, activeLocation.lon]);
 
   const dataValue = useMemo<WeatherDataContextValue>(
     () => ({
@@ -870,9 +926,23 @@ export function WeatherProvider({
     () => ({
       frameIndex,
       setFrameIndex,
+      hourlyHorizon,
+      setHourlyHorizon,
+      focusedDate: effectiveFocusedDate,
+      setFocusedDate,
+      temporalView,
       atmosphere
     }),
-    [frameIndex, setFrameIndex, atmosphere]
+    [
+      frameIndex,
+      setFrameIndex,
+      hourlyHorizon,
+      setHourlyHorizon,
+      effectiveFocusedDate,
+      setFocusedDate,
+      temporalView,
+      atmosphere
+    ]
   );
 
   const statusValue = useMemo<WeatherStatusContextValue>(

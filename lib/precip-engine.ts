@@ -1,13 +1,14 @@
 import { CORE_MODEL_KEYS } from "./model-registry";
 import { wetBulbStullC } from "./thermo-cape";
 import type { BursaSynopticRegime } from "./topographic-cressman";
-import type {
-  CoreModelKey,
-  HybridModelSnapshot,
-  MetarWxFlags,
-  PrecipPhase,
-  PrecipitationConsensus,
-  PrecipType
+import {
+  type CoreModelKey,
+  type HybridModelSnapshot,
+  type MetarWxFlags,
+  PRECIP_WETNESS_CONTRACT,
+  type PrecipPhase,
+  type PrecipitationConsensus,
+  type PrecipType
 } from "./weather-types";
 
 export type EnsembleDistStats = {
@@ -213,7 +214,11 @@ export function fusePrecipitationHour({
     pmmMm = Math.max(pmmMm, liveMetarWx.heavyPrecip ? 3.5 : 0.4);
   }
 
-  const finalMm = Number(Math.max(0, pmmMm).toFixed(2));
+  const rawFinalMm = Number(Math.max(0, pmmMm).toFixed(2));
+  const finalMm =
+    rawFinalMm < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM && !metarWetNow
+      ? 0
+      : rawFinalMm;
   const minMm = detVals.length > 0 ? Number(detVals[0].toFixed(1)) : 0;
   const medianMm =
     detVals.length > 0 ? Number(quantileSorted(detVals, 0.5).toFixed(1)) : 0;
@@ -308,7 +313,11 @@ export function classifyHydrometeorPhase(params: {
     params.snowfallHeightM ?? Math.max(0, estFreezingM - 280)
   );
 
-  if (!params.isWetHour || params.qpfMmHr < 0.06) {
+  if (
+    !params.isWetHour ||
+    !Number.isFinite(params.qpfMmHr) ||
+    params.qpfMmHr < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM
+  ) {
     return { phase: "none", wetBulbC: Number(wetBulbC.toFixed(2)), snowLineElevationM };
   }
 
@@ -491,7 +500,9 @@ export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepF
     pmQmAmount = 0.65 * pmQmAmount + 0.35 * input.ensembleP75Mm;
   }
 
-  const qpfMmHr = Number(Math.max(0.10, pmQmAmount).toFixed(2));
+  const qpfMmHr = Number(
+    Math.max(PRECIP_WETNESS_CONTRACT.CALIBRATED_NWP_WET_FLOOR_MM, pmQmAmount).toFixed(2)
+  );
   const qpfP10MmHr = Number(weightedQuantile(sortedModels, 0.15).toFixed(2));
   const qpfP90MmHr = Number(
     Math.max(qpfMmHr, input.ensembleP90Mm ?? weightedQuantile(sortedModels, 0.90)).toFixed(2)
@@ -523,6 +534,8 @@ export function fusePrecipitationPmqm(input: PrecipStepFusionInput): PrecipStepF
 
 /**
  * Birleşik Fiziksel Yağış Fazı ve Kar Sınırı Sınıflandırıcısı (Stull 2011 Tw + Kalınlık + 850 hPa Sıcak Burun + Donma Seviyesi):
+ * - PRECIP_WETNESS_CONTRACT: `precipitationMm < 0.05 mm` iken (canlı METAR aktif yağış doğrulaması yoksa)
+ *   ham model `snowfallCm` veya `weatherCode` tek başına asla `"snow"` / ıslak faz döndüremez!
  * - none: yağış yok
  * - hail: yüksek MUCAPE + güçlü 0–6 km shear + aktif konvektif sağanak (veya canlı METAR GR)
  * - freezing_rain: 850 hPa sıcak burun (+1°C üstü) + donma altı yüzey sıcaklığı (veya WMO 56/57/66/67)
@@ -572,15 +585,18 @@ export function classifyPrecipPhase({
     snowfallHeightM ?? Math.max(0, estFreezingM - 280)
   );
 
-  const wmoWet =
-    (weatherCode >= 51 && weatherCode <= 86) || weatherCode >= 95;
-  const hasAnyPrecip =
-    precipitationMm >= 0.08 ||
-    snowfallCm >= 0.05 ||
-    wmoWet ||
-    Boolean(liveMetarWx?.hasPrecip);
+  const safePrecipMm =
+    typeof precipitationMm === "number" && Number.isFinite(precipitationMm)
+      ? precipitationMm
+      : 0;
+  const metarConfirmedWet = Boolean(
+    liveMetarWx?.hasPrecip || liveMetarWx?.hasSnow || liveMetarWx?.hasHail
+  );
 
-  if (!hasAnyPrecip) {
+  if (
+    safePrecipMm < PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM &&
+    !metarConfirmedWet
+  ) {
     return {
       precipPhase: "none",
       precipType: "none",
@@ -597,7 +613,7 @@ export function classifyPrecipPhase({
     Boolean(liveMetarWx?.hasHail) ||
     weatherCode === 96 ||
     weatherCode === 99 ||
-    (precipitationMm >= 2.0 &&
+    (safePrecipMm >= 2.0 &&
       mucape >= 1200 &&
       bulkShear06Kt >= 28 &&
       freezingAboveGround >= 1500 &&
@@ -615,7 +631,11 @@ export function classifyPrecipPhase({
 
   // 2. Donan Yağmur (Freezing Rain — 850 hPa sıcak burun + yüzeyde don)
   const wmoFreezingRain =
-    weatherCode === 56 || weatherCode === 57 || weatherCode === 66 || weatherCode === 67;
+    (weatherCode === 56 ||
+      weatherCode === 57 ||
+      weatherCode === 66 ||
+      weatherCode === 67) &&
+    temperatureC <= 2.0;
   if (
     wmoFreezingRain ||
     (temp850hPa !== null && temp850hPa >= 1.0 && wetBulbC <= 0.1 && temperatureC <= -0.3)
