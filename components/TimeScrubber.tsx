@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState } from "react";
-import { CloudRain, Pause, Play, RotateCcw, Snowflake } from "lucide-react";
+import { CloudRain, Pause, Play, RotateCcw, Snowflake, Zap } from "lucide-react";
 import {
   buildSmoothCurvePath,
   getPrecipPhaseVisual
@@ -257,10 +257,19 @@ function TimeScrubberBase({
               {active.rainAccum.toFixed(1)} mm
             </span>
           )}
-          {active.snowAccum > 0 && (
-            <span className="flex items-center gap-1 rounded-lg border border-white/20 bg-white/[0.08] px-2.5 py-1 text-ink-primary">
-              <Snowflake className="h-3.5 w-3.5" />
-              {active.snowAccum.toFixed(1)} cm
+          {(active.snowAccum > 0 || (active.airSnowProbPct ?? 0) >= 25) && (
+            <span
+              title="Kümülatif Havada Yağan / Zeminde Tutan Kar"
+              className="flex items-center gap-1 rounded-lg border border-sky-300/30 bg-sky-400/12 px-2.5 py-1 text-sky-100"
+            >
+              <Snowflake className="h-3.5 w-3.5 text-sky-300" />
+              Hava {active.snowAccum.toFixed(1)} · Yer {(active.groundAccumSnowCm ?? 0).toFixed(1)} cm
+            </span>
+          )}
+          {(active.lightningProbPct ?? 0) >= 25 && (
+            <span className="flex items-center gap-1 rounded-lg border border-signal-amber/35 bg-signal-amber/14 px-2 py-1 text-amber-100">
+              <Zap className="h-3.5 w-3.5 text-signal-amber" />
+              %{active.lightningProbPct}
             </span>
           )}
           <span className="rounded-lg border border-white/15 bg-white/[0.06] px-2.5 py-1 text-ink-primary">
@@ -288,6 +297,10 @@ function TimeScrubberBase({
             <span>
               {hovered.dayLabel} {hovered.hourLabel} ·{" "}
               {formatTemperature(hovered.temperature, unit)} · %{hovered.precipProbability}
+              {(hovered.airSnowCm ?? 0) > 0
+                ? ` · ❄ H ${(hovered.airSnowCm ?? 0).toFixed(1)} / Y ${(hovered.groundSnowCm ?? 0).toFixed(1)} cm`
+                : ""}
+              {(hovered.lightningProbPct ?? 0) >= 25 ? ` · ⚡%${hovered.lightningProbPct}` : ""}
             </span>
           </div>
         )}

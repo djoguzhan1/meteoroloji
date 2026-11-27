@@ -23,9 +23,11 @@ import {
   Share2,
   ShieldCheck,
   Star,
+  Snowflake,
   Sunrise,
   Sunset,
-  Wind
+  Wind,
+  Zap
 } from "lucide-react";
 import { useWeatherData, useWeatherRetryCountdown, useWeatherScrub, useWeatherStatus } from "@/context/WeatherContext";
 import { formatClockTr, formatFreshnessAgeTr } from "@/lib/forecast-resilience";
@@ -47,6 +49,7 @@ import type { PrecipPhase, WeatherBundle } from "@/lib/weather-types";
 import TimeScrubber from "./TimeScrubber";
 import HourlyForecastStrip from "./HourlyForecastStrip";
 import ExtendedDailyForecastPanel from "./ExtendedDailyForecastPanel";
+import SnowAndLightningObservatory from "./SnowAndLightningObservatory";
 import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
@@ -380,6 +383,16 @@ function computeHeroDisplay(b: WeatherBundle | null, frameIndex: number) {
       precipitation: activeHour.precipitation,
       wetBulbC: activeHour.wetBulbC,
       snowLineElevationM: activeHour.snowLineElevationM ?? null,
+      airSnowCm: activeHour.airSnowCm ?? 0,
+      groundSnowCm: activeHour.groundSnowCm ?? 0,
+      snowpackDepthCm: activeHour.snowpackDepthCm ?? 0,
+      airSnowProbPct: activeHour.airSnowProbPct ?? 0,
+      snowSlr: activeHour.snowSlr ?? 0,
+      snowQualityTr: activeHour.snowQualityTr ?? "Yok",
+      icingRisk: activeHour.icingRisk ?? "none",
+      lightningProbPct: activeHour.lightningProbPct ?? 0,
+      lightningFlashesPerMin: activeHour.lightningFlashesPerMin ?? 0,
+      isThundersnow: Boolean(activeHour.isThundersnow),
       stormScore: activeHour.stormScore ?? 0,
       solarElevationDeg: activeHour.solarElevationDeg,
       timeLabel: `${activeHour.dayLabel} · ${activeHour.hourLabel}`
@@ -412,6 +425,18 @@ function computeHeroDisplay(b: WeatherBundle | null, frameIndex: number) {
     precipitation: obs.precipitation,
     wetBulbC: obs.wetBulbC,
     snowLineElevationM: obs.snowLineElevationM ?? null,
+    airSnowCm: obs.airSnowCmHr ?? 0,
+    groundSnowCm: obs.groundSnowCmHr ?? 0,
+    snowpackDepthCm: obs.snowpackDepthCm ?? 0,
+    airSnowProbPct: b.hourly[0]?.airSnowProbPct ?? 0,
+    snowSlr: obs.snowSlr ?? 0,
+    snowQualityTr: obs.snowQualityTr ?? "Yok",
+    icingRisk: obs.icingRisk ?? "none",
+    lightningProbPct:
+      obs.lightningProbPct ?? b.snowAndLightning?.lightningRadar.rings[0].probabilityPct ?? 0,
+    lightningFlashesPerMin:
+      obs.lightningFlashesPerMin ?? b.snowAndLightning?.lightningRadar.currentFlashesPerMin ?? 0,
+    isThundersnow: Boolean(obs.isThundersnow),
     stormScore: b.storm?.score ?? obs.stormScore ?? 0,
     solarElevationDeg: obs.solarElevationDeg,
     timeLabel: `Gözlem · ${obs.time.slice(11, 16)}`
@@ -658,12 +683,25 @@ export default function HeroSceneView() {
             <div>
               <div className="flex flex-wrap items-baseline gap-2.5">
                 <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl drop-shadow-[0_2px_18px_rgba(0,0,0,0.5)]">
-                  {activeLocation.name}
-                  {activeLocation.country ? `, ${activeLocation.country}` : ""}
+                  {bundle.location.name || activeLocation.name}
+                  {(bundle.location.country || activeLocation.country)
+                    ? `, ${bundle.location.country || activeLocation.country}`
+                    : ""}
                 </h1>
                 <span className="font-mono text-xs text-ink-muted tabular">
-                  {formatLatLon(activeLocation.lat, activeLocation.lon)}
+                  {formatLatLon(bundle.location.lat, bundle.location.lon)}
+                  {bundle.location.elevation !== undefined ? ` · ${bundle.location.elevation} m` : ""}
                 </span>
+                {(bundle.location.admin1 || bundle.hybrid.engineMeta?.mgmDistrictMatched) && (
+                  <span className="rounded-md border border-sky-400/25 bg-[#081120]/85 px-2 py-0.5 font-mono text-[11px] text-sky-200 tabular">
+                    Baz:{" "}
+                    {bundle.location.admin1?.includes("WMO 17116")
+                      ? "Bursa Merkez (Osmangazi · WMO 17116)"
+                      : bundle.hybrid.engineMeta?.mgmDistrictMatched
+                        ? `MGM ${bundle.hybrid.engineMeta.mgmDistrictMatched}`
+                        : bundle.location.admin1}
+                  </span>
+                )}
               </div>
 
               <div className="mt-2.5 flex flex-wrap items-baseline gap-5">
@@ -736,6 +774,43 @@ export default function HeroSceneView() {
                   )}
                 </span>
               )}
+              <a
+                href="#kar-simsek"
+                className="atmos-btn inline-flex items-center gap-1.5 rounded-lg border border-sky-400/25 bg-[#080d18]/88 px-3 py-1.5 text-sky-100 hover:border-sky-300/45"
+              >
+                <Snowflake className="h-3.5 w-3.5 text-sky-300" />
+                {display.airSnowCm > 0 || display.airSnowProbPct >= 20 ? (
+                  <span>
+                    Kar: <strong>Hava {display.airSnowCm.toFixed(1)}</strong> ·{" "}
+                    <strong>Yer {display.groundSnowCm.toFixed(1)} cm</strong>
+                  </span>
+                ) : (
+                  <span>
+                    Kar Sınırı:{" "}
+                    <strong>
+                      {display.snowLineElevationM !== null ? `${display.snowLineElevationM} m` : "—"}
+                    </strong>
+                  </span>
+                )}
+              </a>
+              <a
+                href="#kar-simsek"
+                className={`atmos-btn inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 ${
+                  display.lightningProbPct >= 25
+                    ? "border-signal-amber/40 bg-signal-amber/15 text-amber-100"
+                    : "border-white/10 bg-[#080d18]/86 text-ink-secondary hover:text-ink-primary"
+                }`}
+              >
+                <Zap
+                  className={`h-3.5 w-3.5 ${
+                    display.lightningProbPct >= 25 ? "text-signal-amber" : "text-ink-muted"
+                  }`}
+                />
+                <span>
+                  Şimşek: <strong>%{display.lightningProbPct}</strong>
+                  {display.isThundersnow ? " · Thundersnow" : ""}
+                </span>
+              </a>
               <Link
                 href="/lab"
                 className="atmos-btn rounded-lg border border-white/10 bg-[#080d18]/86 px-3 py-1.5 text-ink-secondary hover:text-ink-primary"
@@ -1021,6 +1096,20 @@ export default function HeroSceneView() {
             </div>
           )}
         </section>
+      )}
+
+      {/* BÖLÜM 1B: TARİH BAZLI KESKİN KAR RASATHANESİ (HAVADA vs ZEMİNDE) & 3-HALKALI ŞİMŞEK RADARI */}
+      {bundle.snowAndLightning && (
+        <SnowAndLightningObservatory
+          cityName={bundle.location.name}
+          daily={bundle.daily}
+          hourly={bundle.hourly}
+          subseasonal={bundle.subseasonal}
+          summary={bundle.snowAndLightning}
+          selectedHourIndex={frameIndex}
+          onSelectHourIndex={setFrameIndex}
+          unit={unit}
+        />
       )}
 
       {/* BÖLÜM 2: BİRLEŞİK SİNOPTİK SAATLİK METEOGRAM & İKON ŞERİDİ */}

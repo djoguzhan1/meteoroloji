@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWeatherBundle } from "@/lib/weather";
-import { DEFAULT_LOCATION } from "@/lib/weather-client";
+import { DEFAULT_LOCATION, normalizeCanonicalBursaLocation } from "@/lib/weather-client";
 import type { GeoLocation } from "@/lib/weather-types";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +11,10 @@ export async function GET(request: NextRequest) {
   const latRaw = searchParams.get("lat");
   const lonRaw = searchParams.get("lon");
   const name = searchParams.get("name")?.trim();
+  const admin1 = searchParams.get("admin1")?.trim();
   const country = searchParams.get("country")?.trim();
+  const elevRaw = searchParams.get("elevation");
+  const parsedElev = elevRaw !== null && elevRaw !== "" ? Number(elevRaw) : undefined;
 
   const lat = latRaw !== null ? Number(latRaw) : DEFAULT_LOCATION.lat;
   const lon = lonRaw !== null ? Number(lonRaw) : DEFAULT_LOCATION.lon;
@@ -30,17 +33,24 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const location: GeoLocation = {
-    id: `${lat.toFixed(2)}_${lon.toFixed(2)}`,
+  const location: GeoLocation = normalizeCanonicalBursaLocation({
+    id: latRaw === null ? DEFAULT_LOCATION.id : `${lat.toFixed(2)}_${lon.toFixed(2)}`,
     name:
       name ||
       (latRaw === null
         ? DEFAULT_LOCATION.name
         : `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`),
+    admin1: admin1 || (latRaw === null ? DEFAULT_LOCATION.admin1 : undefined),
     country: country || (latRaw === null ? DEFAULT_LOCATION.country : ""),
     lat,
-    lon
-  };
+    lon,
+    elevation:
+      parsedElev !== undefined && Number.isFinite(parsedElev)
+        ? Math.round(parsedElev)
+        : latRaw === null
+          ? DEFAULT_LOCATION.elevation
+          : undefined
+  });
 
   try {
     const bundle = await fetchWeatherBundle(location);

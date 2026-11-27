@@ -141,12 +141,22 @@ export function reanchorWeatherBundleToNow(
 
   let runningRain = 0;
   let runningSnow = 0;
+  let runningGroundSnow = 0;
   const nextHourly: HourlyPoint[] =
     hourOffset === 0 && ageMs < 20 * 60 * 1000
       ? bundle.hourly
       : bundle.hourly.slice(hourOffset).map((pt) => {
           const dateYmd = pt.time.slice(0, 10);
-          if (pt.precipType === "snow") {
+          if (pt.airSnowCm !== undefined) {
+            runningSnow = Number((runningSnow + pt.airSnowCm).toFixed(2));
+            runningGroundSnow = Number(
+              (runningGroundSnow + (pt.groundSnowCm ?? 0)).toFixed(2)
+            );
+            const liqPart = Math.max(0, pt.precipitation - pt.airSnowCm * 0.1);
+            if (liqPart > 0) {
+              runningRain = Number((runningRain + liqPart).toFixed(2));
+            }
+          } else if (pt.precipType === "snow") {
             runningSnow = Number((runningSnow + pt.precipitation * 0.85).toFixed(2));
           } else if (pt.precipitation > 0) {
             runningRain = Number((runningRain + pt.precipitation).toFixed(2));
@@ -155,7 +165,11 @@ export function reanchorWeatherBundleToNow(
             ...pt,
             dayLabel: formatRelativeDayLabelTr(dateYmd, localTodayYmd),
             rainAccum: hourOffset > 0 ? runningRain : pt.rainAccum,
-            snowAccum: hourOffset > 0 ? runningSnow : pt.snowAccum
+            snowAccum: hourOffset > 0 ? runningSnow : pt.snowAccum,
+            groundAccumSnowCm:
+              hourOffset > 0 && pt.groundAccumSnowCm !== undefined
+                ? runningGroundSnow
+                : pt.groundAccumSnowCm
           };
         });
 
@@ -241,6 +255,20 @@ export function reanchorWeatherBundleToNow(
       precipType: h0.precipType,
       precipPhase: h0.precipPhase ?? "none",
       snowLineElevationM: h0.snowLineElevationM ?? null,
+      airSnowCmHr: h0.airSnowCm,
+      groundSnowCmHr: h0.groundSnowCm,
+      roadSnowCmHr: h0.roadSnowCm,
+      snowpackDepthCm: h0.snowpackDepthCm,
+      snowSlr: h0.snowSlr,
+      snowQualityTr: h0.snowQualityTr,
+      soilTempC: h0.soilTempC,
+      roadTempC: h0.roadTempC,
+      icingRisk: h0.icingRisk,
+      blowingSnowRisk: h0.blowingSnowRisk,
+      dekStatus: h0.dekStatus,
+      lightningProbPct: h0.lightningProbPct,
+      lightningFlashesPerMin: h0.lightningFlashesPerMin,
+      isThundersnow: h0.isThundersnow,
       weatherCode: h0.weatherCode,
       condition: h0.condition,
       isStorm: h0.isStorm,

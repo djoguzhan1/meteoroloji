@@ -94,6 +94,132 @@ export function resolveWeatherGlyphKind({
   return isNight ? "clear-night" : "clear-day";
 }
 
+export interface HourlyDisplaySemantics {
+  /** Gerçek ölçülebilir yağış düşüyor mu (`>= 0.05 mm` veya `>= 0.08 cm` havada kar) */
+  isWetActive: boolean;
+  /** Miktar `0.0 mm` iken kayda değer yağış olasılığı (`>= %18`) var mı (kesikli hayalet bar) */
+  isProbabilisticGhost: boolean;
+  /** İkonda kullanılacak dürüst faz (`0.0 mm` iken yanıltıcı yağış damlası/kar tanesi çizmez) */
+  iconPhase: PrecipPhase;
+  /** Olasılık barının faz rengi için potansiyel faz (`sleet`, `snow`, `rain` vb.) */
+  potentialPhase: PrecipPhase;
+  /** İkonda kullanılacak dürüst WMO kodu */
+  effectiveCode: number;
+  /** Kullanıcıya gösterilecek tutarlı Türkçe durum metni */
+  statusLabelTr: string;
+}
+
+/**
+ * `0.0 mm` yağışlı saatlerde `"Karla Karışık Yağmur · 0.0 mm"` gibi çelişkili durum/ikon üretimini önler;
+ * gerçek aktif yağış ile kuru olasılık izini (ghost bar) birbirinden net biçimde ayırır.
+ */
+export function resolveHourlyDisplaySemantics(
+  hour: Pick<
+    HourlyPoint,
+    | "precipitation"
+    | "precipProbability"
+    | "precipPhase"
+    | "precipType"
+    | "airSnowCm"
+    | "cloudCover"
+    | "weatherCode"
+    | "condition"
+    | "wetBulbC"
+    | "temperature"
+    | "lightningProbPct"
+    | "isThundersnow"
+  >
+): HourlyDisplaySemantics {
+  const mm = hour.precipitation ?? 0;
+  const airSnow = hour.airSnowCm ?? 0;
+  const pop = hour.precipProbability ?? 0;
+  const tw = hour.wetBulbC ?? hour.temperature;
+
+  // Potansiyel termodinamik faz (yağış düşerse hangi fazda düşeceği)
+  let potentialPhase: PrecipPhase =
+    hour.precipPhase && hour.precipPhase !== "none"
+      ? hour.precipPhase
+      : hour.precipType === "snow"
+        ? "snow"
+        : hour.precipType === "rain"
+          ? "rain"
+          : tw <= 0.2
+            ? "snow"
+            : tw <= 1.6
+              ? "sleet"
+              : "rain";
+
+  const isWetActive = mm >= 0.05 || airSnow >= 0.08;
+  if (isWetActive) {
+    return {
+      isWetActive: true,
+      isProbabilisticGhost: false,
+      iconPhase: potentialPhase,
+      potentialPhase,
+      effectiveCode: hour.weatherCode,
+      statusLabelTr: hour.isThundersnow
+        ? "Gökgürültülü Kar (Thundersnow)"
+        : hour.condition
+    };
+  }
+
+  // Miktar < 0.05 mm: Gökyüzü kuru/iz düzeyinde -> yanıltıcı yağış ikonu yerine gerçek bulutluluk ikonu!
+  const skyCode =
+    hour.weatherCode === 45 || hour.weatherCode === 48
+      ? hour.weatherCode
+      : (hour.lightningProbPct ?? 0) >= 48 && hour.weatherCode >= 95
+        ? 95
+        : hour.cloudCover >= 78
+          ? 3
+          : hour.cloudCover >= 38
+            ? 2
+            : hour.cloudCover >= 15
+              ? 1
+              : 0;
+
+  const skyBaseTr =
+    skyCode === 45 || skyCode === 48
+      ? "Sisli"
+      : skyCode === 95
+        ? "Konvektif Kararsızlık"
+        : skyCode === 3
+          ? "Çok Bulutlu"
+          : skyCode === 2
+            ? "Parçalı Bulutlu"
+            : skyCode === 1
+              ? "Az Bulutlu"
+              : "Açık";
+
+  if (pop >= 18) {
+    const potentialTr =
+      potentialPhase === "snow"
+        ? "Kar İhtimali"
+        : potentialPhase === "sleet"
+          ? "Sulu Kar İhtimali"
+          : potentialPhase === "freezing_rain"
+            ? "Donan Yağmur İhtimali"
+            : "Yağış İhtimali";
+
+    return {
+      isWetActive: false,
+      isProbabilisticGhost: true,
+      iconPhase: "none",
+      potentialPhase,
+      effectiveCode: skyCode,
+      statusLabelTr: `${skyBaseTr} · ${potentialTr} (%${pop})`
+    };
+  }
+
+  return {
+    isWetActive: false,
+    isProbabilisticGhost: false,
+    iconPhase: "none",
+    potentialPhase: "none",
+    effectiveCode: skyCode,
+    statusLabelTr: skyBaseTr
+  };
+}
+
 /**
  * Yan yana dizilen saatlik ikonların robotik eşzamanlı hareketini kırmak için
  * asal çarpanlı deterministik negatif animasyon gecikmesi üretir.
@@ -173,6 +299,15 @@ export function buildConfidenceBandPath(
   return `${topPath} ${botContinuation} Z`;
 }
 
+export type DayMicroPhaseSlot =
+  | "none"
+  | "prob"
+  | "rain"
+  | "sleet"
+  | "snow"
+  | "freezing_rain"
+  | "storm";
+
 export interface HourlyDayGroup {
   date: string;
   dayName: string;
@@ -184,8 +319,12 @@ export interface HourlyDayGroup {
   tempMax: number;
   maxPopPct: number;
   precipSumMm: number;
+  snowAirSumCm: number;
+  snowGroundSumCm: number;
+  maxLightningProbPct: number;
   dominantCode: number;
   dominantPhase: PrecipPhase;
+  microSlots: DayMicroPhaseSlot[];
 }
 
 const MONTHS_SHORT_TR = [
@@ -203,7 +342,7 @@ const MONTHS_SHORT_TR = [
   "Ara"
 ];
 
-function formatShortDateTr(ymd: string): string {
+export function formatShortDateTr(ymd: string): string {
   const parts = ymd.split("-");
   if (parts.length < 3) return ymd;
   const monthIdx = Number(parts[1]) - 1;
@@ -212,8 +351,20 @@ function formatShortDateTr(ymd: string): string {
   return `${dayNum} ${MONTHS_SHORT_TR[monthIdx]}`;
 }
 
+function classifyMicroSlot(h: HourlyPoint): DayMicroPhaseSlot {
+  if ((h.lightningProbPct ?? 0) >= 35 || h.weatherCode >= 95) return "storm";
+  const sem = resolveHourlyDisplaySemantics(h);
+  if (!sem.isWetActive) {
+    return sem.isProbabilisticGhost ? "prob" : "none";
+  }
+  if (sem.iconPhase === "freezing_rain") return "freezing_rain";
+  if (sem.iconPhase === "snow") return "snow";
+  if (sem.iconPhase === "sleet") return "sleet";
+  return "rain";
+}
+
 /**
- * 168 saatlik diziyi 7 günlük hızlı atlama gruplarına ayırır.
+ * 168–240 saatlik diziyi günlük hızlı atlama gruplarına ve 24-dilimli mikro-faz imzasına ayırır.
  */
 export function buildHourlyDayGroups(
   hourly: ReadonlyArray<HourlyPoint>,
@@ -228,6 +379,7 @@ export function buildHourlyDayGroups(
     const h = hourly[i];
     const date = h.time.slice(0, 10);
     const prev = groups[groups.length - 1];
+    const slot = classifyMicroSlot(h);
 
     if (!prev || prev.date !== date) {
       const matchedDaily = dailyByDate.get(date);
@@ -242,16 +394,26 @@ export function buildHourlyDayGroups(
         tempMax: h.temperature,
         maxPopPct: h.precipProbability,
         precipSumMm: h.precipitation,
+        snowAirSumCm: h.airSnowCm ?? 0,
+        snowGroundSumCm: h.groundSnowCm ?? 0,
+        maxLightningProbPct: h.lightningProbPct ?? 0,
         dominantCode: h.weatherCode,
-        dominantPhase: h.precipPhase ?? "none"
+        dominantPhase: h.precipPhase ?? "none",
+        microSlots: [slot]
       });
     } else {
       prev.endIndex = i;
       prev.hourCount++;
+      prev.microSlots.push(slot);
       if (h.temperature < prev.tempMin) prev.tempMin = h.temperature;
       if (h.temperature > prev.tempMax) prev.tempMax = h.temperature;
       if (h.precipProbability > prev.maxPopPct) prev.maxPopPct = h.precipProbability;
       prev.precipSumMm = Number((prev.precipSumMm + h.precipitation).toFixed(1));
+      prev.snowAirSumCm = Number((prev.snowAirSumCm + (h.airSnowCm ?? 0)).toFixed(1));
+      prev.snowGroundSumCm = Number((prev.snowGroundSumCm + (h.groundSnowCm ?? 0)).toFixed(1));
+      if ((h.lightningProbPct ?? 0) > prev.maxLightningProbPct) {
+        prev.maxLightningProbPct = h.lightningProbPct ?? 0;
+      }
       if (h.weatherCode > prev.dominantCode) {
         prev.dominantCode = h.weatherCode;
       }
@@ -278,6 +440,11 @@ export function buildHourlyDayGroups(
       g.tempMax = d.tempMax;
       g.dominantCode = d.weatherCode;
       if (d.precipPhase) g.dominantPhase = d.precipPhase;
+      if (d.airSnowSumCm !== undefined) g.snowAirSumCm = d.airSnowSumCm;
+      if (d.groundSnowSumCm !== undefined) g.snowGroundSumCm = d.groundSnowSumCm;
+      if (d.lightningProbMaxPct !== undefined) {
+        g.maxLightningProbPct = Math.max(g.maxLightningProbPct, d.lightningProbMaxPct);
+      }
     }
   }
 
@@ -368,6 +535,291 @@ export function detectDiurnalExtrema(
   return result;
 }
 
+export type SynopticEventKind =
+  | "rain_to_snow"
+  | "cold_front"
+  | "freeze_cross"
+  | "peak_storm"
+  | "peak_gust";
+
+export interface SynopticTimelineEvent {
+  id: string;
+  hourIndex: number;
+  kind: SynopticEventKind;
+  labelTr: string;
+  badgeClass: string;
+  lineStroke: string;
+  priority: number;
+}
+
+function angularDiffDeg(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+/**
+ * Saatlik seride önemli sinoptik kırılma anlarını (Yağmur->Kar geçişi, Soğuk Cephe,
+ * 0°C Don/Buzlanma eşiği, Oraj zirvesi, Fırtına hamlesi) çakışmasız (en az 5 saat aralıklı) bulur.
+ */
+export function detectSynopticEvents(
+  hourly: ReadonlyArray<HourlyPoint>
+): SynopticTimelineEvent[] {
+  if (hourly.length < 4) return [];
+
+  const candidates: SynopticTimelineEvent[] = [];
+
+  for (let i = 1; i < hourly.length; i++) {
+    const prev = hourly[i - 1];
+    const cur = hourly[i];
+    const prevSem = resolveHourlyDisplaySemantics(prev);
+    const curSem = resolveHourlyDisplaySemantics(cur);
+
+    // 1. Yağmurdan Kara / Sulu Kara Aktif Geçiş (En yüksek öncelik)
+    if (
+      curSem.isWetActive &&
+      (curSem.iconPhase === "snow" || (curSem.iconPhase === "sleet" && (cur.airSnowCm ?? 0) >= 0.2)) &&
+      (!prevSem.isWetActive || prevSem.iconPhase === "rain")
+    ) {
+      candidates.push({
+        id: `snow-turn-${cur.time}`,
+        hourIndex: i,
+        kind: "rain_to_snow",
+        labelTr: curSem.iconPhase === "snow" ? "❄ Kara Dönüş" : "❄ KKY Geçiş",
+        badgeClass: "border-sky-300/50 bg-[#081526]/95 text-sky-100",
+        lineStroke: "#7dd3fc",
+        priority: 100
+      });
+      continue;
+    }
+
+    // 2. Keskin Soğuk Cephe Girişi (3 saatte >= 2.8°C düşüş + rüzgar dönüşü veya hamle)
+    if (i >= 3) {
+      const prev3 = hourly[i - 3];
+      const dT3h = cur.temperature - prev3.temperature;
+      const windShift = angularDiffDeg(cur.windDirection, prev3.windDirection);
+      if (dT3h <= -2.8 && (windShift >= 35 || cur.windGusts >= 32)) {
+        candidates.push({
+          id: `front-${cur.time}`,
+          hourIndex: i,
+          kind: "cold_front",
+          labelTr: `▼ Cephe (${dT3h.toFixed(1)}°)`,
+          badgeClass: "border-cyan-400/45 bg-[#081424]/95 text-cyan-200",
+          lineStroke: "#38bdf8",
+          priority: 88
+        });
+        continue;
+      }
+    }
+
+    // 3. 0°C Donma / Gizli Buzlanma Geçişi
+    if (
+      (prev.temperature > 0.2 && cur.temperature <= 0.0) ||
+      (prev.icingRisk !== "black_ice" && cur.icingRisk === "black_ice")
+    ) {
+      candidates.push({
+        id: `freeze-${cur.time}`,
+        hourIndex: i,
+        kind: "freeze_cross",
+        labelTr: cur.icingRisk === "black_ice" ? "⚠ Gizli Buz" : "0°C Don",
+        badgeClass:
+          cur.icingRisk === "black_ice"
+            ? "border-rose-400/50 bg-[#1f0b14]/95 text-rose-200"
+            : "border-indigo-300/40 bg-[#0b1326]/95 text-indigo-200",
+        lineStroke: cur.icingRisk === "black_ice" ? "#fb7185" : "#a5b4fc",
+        priority: 82
+      });
+    }
+
+    // 4. Konvektif Oraj / Şimşek Zirvesi (>= %45 ve +-5 saat içinde yerel zirve)
+    const ltProb = cur.lightningProbPct ?? 0;
+    if (ltProb >= 45) {
+      let isLocalPeak = true;
+      for (let j = Math.max(0, i - 5); j <= Math.min(hourly.length - 1, i + 5); j++) {
+        if (j !== i && (hourly[j].lightningProbPct ?? 0) > ltProb) {
+          isLocalPeak = false;
+          break;
+        }
+      }
+      if (isLocalPeak) {
+        candidates.push({
+          id: `storm-${cur.time}`,
+          hourIndex: i,
+          kind: "peak_storm",
+          labelTr: cur.isThundersnow ? "⚡ Kış Orajı" : `⚡ Oraj %${ltProb}`,
+          badgeClass: "border-amber-400/50 bg-[#1c1306]/95 text-amber-200",
+          lineStroke: "#fbbf24",
+          priority: 85
+        });
+      }
+    }
+
+    // 5. Kuvvetli Fırtına Hamlesi Zirvesi (>= 50 km/s ve +-6 saat yerel zirve)
+    if (cur.windGusts >= 50) {
+      let isGustPeak = true;
+      for (let j = Math.max(0, i - 6); j <= Math.min(hourly.length - 1, i + 6); j++) {
+        if (j !== i && hourly[j].windGusts > cur.windGusts) {
+          isGustPeak = false;
+          break;
+        }
+      }
+      if (isGustPeak) {
+        candidates.push({
+          id: `gust-${cur.time}`,
+          hourIndex: i,
+          kind: "peak_gust",
+          labelTr: `⚑ ${Math.round(cur.windGusts)} km/s`,
+          badgeClass: "border-orange-400/45 bg-[#1c1008]/95 text-orange-200",
+          lineStroke: "#fb923c",
+          priority: 72
+        });
+      }
+    }
+  }
+
+  // En az 5 sütun (~340px) mesafe garantisiyle en yüksek öncelikli olayları seç (sıfır çakışma!)
+  candidates.sort((a, b) => b.priority - a.priority || a.hourIndex - b.hourIndex);
+  const selected: SynopticTimelineEvent[] = [];
+  for (const cand of candidates) {
+    if (selected.every((s) => Math.abs(s.hourIndex - cand.hourIndex) >= 5)) {
+      selected.push(cand);
+    }
+  }
+  return selected.sort((a, b) => a.hourIndex - b.hourIndex);
+}
+
+export interface AdaptiveScaleAxisTick {
+  value: number;
+  y: number;
+  label: string;
+  isZero?: boolean;
+}
+
+export interface AdaptiveMeteogramScaleResult {
+  minVal: number;
+  maxVal: number;
+  span: number;
+  yOf: (v: number) => number;
+  ticks: AdaptiveScaleAxisTick[];
+}
+
+/**
+ * Görünür 24-36 saatlik pencereyi (%82 ağırlık) ile tüm seri bağlamını (%18 ağırlık) birleştirerek
+ * 3°..6° gibi dar aralıklarda eğrinin dümdüz çizgiye ezilmesini engeller ve Y-ekseni kılavuzlarını üretir.
+ */
+export function computeAdaptiveMeteogramScale(params: {
+  allValues: ReadonlyArray<number>;
+  visibleStartIdx: number;
+  visibleEndIdx: number;
+  curveTopY: number;
+  curveBotY: number;
+  minSpan?: number;
+  clampZeroFloor?: boolean;
+  unitSuffix?: string;
+  zeroThreshold?: number | null;
+}): AdaptiveMeteogramScaleResult {
+  const {
+    allValues,
+    visibleStartIdx,
+    visibleEndIdx,
+    curveTopY,
+    curveBotY,
+    minSpan = 7.5,
+    clampZeroFloor = false,
+    unitSuffix = "°",
+    zeroThreshold = 0
+  } = params;
+
+  const heightPx = Math.max(24, curveBotY - curveTopY);
+  if (allValues.length === 0) {
+    return {
+      minVal: 0,
+      maxVal: 10,
+      span: 10,
+      yOf: () => (curveTopY + curveBotY) / 2,
+      ticks: []
+    };
+  }
+
+  const globMin = Math.min(...allValues);
+  const globMax = Math.max(...allValues);
+
+  const winLo = Math.max(0, visibleStartIdx - 4);
+  const winHi = Math.min(allValues.length - 1, visibleEndIdx + 6);
+  let locMin = Infinity;
+  let locMax = -Infinity;
+  for (let i = winLo; i <= winHi; i++) {
+    const v = allValues[i];
+    if (Number.isFinite(v)) {
+      if (v < locMin) locMin = v;
+      if (v > locMax) locMax = v;
+    }
+  }
+  if (!Number.isFinite(locMin) || !Number.isFinite(locMax)) {
+    locMin = globMin;
+    locMax = globMax;
+  }
+
+  // %82 yerel görünür pencere + %18 genel seri dengesi: kaydırırken yumuşak, yerel dalgalara duyarlı!
+  let rawLo = 0.82 * locMin + 0.18 * globMin;
+  let rawHi = 0.82 * locMax + 0.18 * globMax;
+
+  // Görünür penceredeki hiçbir gerçek nokta eğri tavan/tabanından taşmasın!
+  rawLo = Math.min(rawLo, locMin - 0.8);
+  rawHi = Math.max(rawHi, locMax + 0.8);
+
+  const curSpan = rawHi - rawLo;
+  if (curSpan < minSpan) {
+    const pad = (minSpan - curSpan) * 0.5;
+    rawLo -= pad;
+    rawHi += pad;
+  } else {
+    const pad = curSpan * 0.1;
+    rawLo -= pad;
+    rawHi += pad;
+  }
+
+  if (clampZeroFloor) {
+    rawLo = Math.max(0, rawLo);
+    if (rawHi - rawLo < minSpan) {
+      rawHi = rawLo + minSpan;
+    }
+  }
+
+  const span = Math.max(1, rawHi - rawLo);
+  const yOf = (v: number): number => {
+    const clamped = Math.max(rawLo - span * 0.25, Math.min(rawHi + span * 0.25, v));
+    return curveBotY - ((clamped - rawLo) / span) * heightPx;
+  };
+
+  // Temiz yuvarlanmış Y-ekseni adımı (1, 2, 5, 10, 20, 50, 100, 250...)
+  const rawStep = span / 3.2;
+  const niceSteps = [1, 2, 3, 5, 10, 15, 20, 25, 50, 100, 200, 500];
+  const step = niceSteps.find((s) => s >= rawStep) ?? Math.ceil(rawStep / 100) * 100;
+
+  const firstTick = Math.ceil(rawLo / step) * step;
+  const ticks: AdaptiveScaleAxisTick[] = [];
+  for (let tv = firstTick; tv <= rawHi; tv += step) {
+    const y = yOf(tv);
+    if (y >= curveTopY - 4 && y <= curveBotY + 4) {
+      const isZero = zeroThreshold !== null && Math.abs(tv - zeroThreshold) < 0.01;
+      ticks.push({
+        value: tv,
+        y,
+        label: `${Math.round(tv)}${unitSuffix}`,
+        isZero
+      });
+    }
+  }
+
+  return {
+    minVal: rawLo,
+    maxVal: rawHi,
+    span,
+    yOf,
+    ticks
+  };
+}
+
 export interface PrecipPhaseVisual {
   label: string;
   stroke: string;
@@ -394,7 +846,7 @@ export function getPrecipPhaseVisual(
       return {
         label: "Dolu",
         stroke: "#fb7185",
-        barFill: "rgba(251, 113, 133, 0.48)",
+        barFill: "rgba(251, 113, 133, 0.54)",
         barFocusFill: "#fb7185",
         badgeTextClass: "text-rose-300"
       };
@@ -402,7 +854,7 @@ export function getPrecipPhaseVisual(
       return {
         label: "Donan Yğm",
         stroke: "#fbbf24",
-        barFill: "rgba(251, 191, 36, 0.48)",
+        barFill: "rgba(251, 191, 36, 0.54)",
         barFocusFill: "#fbbf24",
         badgeTextClass: "text-amber-300"
       };
@@ -410,7 +862,7 @@ export function getPrecipPhaseVisual(
       return {
         label: "K.Karışık",
         stroke: "#2dd4bf",
-        barFill: "rgba(45, 212, 191, 0.45)",
+        barFill: "rgba(45, 212, 191, 0.50)",
         barFocusFill: "#2dd4bf",
         badgeTextClass: "text-teal-200"
       };
@@ -418,7 +870,7 @@ export function getPrecipPhaseVisual(
       return {
         label: "Kar",
         stroke: "#e2e8f0",
-        barFill: "rgba(226, 232, 240, 0.46)",
+        barFill: "rgba(226, 232, 240, 0.52)",
         barFocusFill: "#f8fafc",
         badgeTextClass: "text-slate-100"
       };
@@ -426,7 +878,7 @@ export function getPrecipPhaseVisual(
       return {
         label: "Yağmur",
         stroke: "#38bdf8",
-        barFill: "rgba(56, 189, 248, 0.42)",
+        barFill: "rgba(56, 189, 248, 0.48)",
         barFocusFill: "#38bdf8",
         badgeTextClass: "text-sky-300"
       };

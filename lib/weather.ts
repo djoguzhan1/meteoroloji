@@ -71,6 +71,19 @@ import {
   saveWeatherSnapshotToDisk
 } from "./snapshot-store";
 import {
+  type AntecedentThermalHour,
+  buildLightningProximityRadar,
+  estimateShortwaveRadiationWm2,
+  evaluateHourLightningPhysics,
+  type LightningHourPhysicsResult,
+  maxBlowingSnowRisk,
+  maxDekStatus,
+  maxIcingRisk,
+  type SimulatedSnowHourOutput,
+  simulateCoupledSnowTimeline,
+  type SnowSimulationHourInput
+} from "./snow-and-lightning-engine";
+import {
   buildStormAssessment,
   evaluateHourlyStormRisk,
   type HourlyStormEvalResult
@@ -103,6 +116,7 @@ import {
   computePrecipConsensus,
   computeSolarElevationDeg,
   DEFAULT_LOCATION,
+  normalizeCanonicalBursaLocation,
   describePressureTrendDetail,
   detectDominantPollutant,
   mapEuropeanAqi,
@@ -125,9 +139,15 @@ import type {
   Minutely15Point,
   ModelSeriesPoint,
   MultiModelBundle,
+  BlowingSnowRisk,
+  DekSnowStatus,
+  ElevationSnowBand,
   PrecipPhase,
   RadarFrame,
   RadarMetadata,
+  RoadIcingRisk,
+  SnowAndLightningObservatorySummary,
+  SnowQualityLabelTr,
   SoundingLevel,
   WeatherBundle,
   WindGridBundle
@@ -435,8 +455,9 @@ function readEnsembleRowWithWeights(
 }
 
 export async function fetchWeatherBundle(
-  location: GeoLocation = DEFAULT_LOCATION
+  rawLocation: GeoLocation = DEFAULT_LOCATION
 ): Promise<WeatherBundle> {
+  const location = normalizeCanonicalBursaLocation(rawLocation);
   const elevTag = location.elevation !== undefined ? Math.round(location.elevation) : "auto";
   const key = `${location.lat.toFixed(3)},${location.lon.toFixed(3)},${elevTag}`;
   const entryNowMs = Date.now();
@@ -626,11 +647,11 @@ export async function fetchWeatherBundle(
     fetchMetarNetworkHistory(location.lat, location.lon, 4, 85).catch(() => []),
     isBursaDomain
       ? fetchBursaObservationMesh(location.lat, location.lon, {
-          referenceElevationM: location.elevation ?? 155
+          referenceElevationM: location.elevation ?? 100
         }).catch(() => null)
       : Promise.resolve(null),
     isBursaDomain
-      ? fetchMgmBursaForecasts(location.lat, location.lon, location.elevation ?? 155).catch(() => null)
+      ? fetchMgmBursaForecasts(location.lat, location.lon, location.elevation ?? 100).catch(() => null)
       : Promise.resolve(null),
     isBursaDomain ? fetchMarmaraLiveSst().catch(() => null) : Promise.resolve(null),
     isBursaDomain ? fetchBursa9PointStencil().catch(() => new Map()) : Promise.resolve(new Map()),
@@ -1805,6 +1826,13 @@ export async function fetchWeatherBundle(
       gustP90,
       windDirection,
       cloudCover: Math.round(Number(hourlyRaw.cloud_cover?.[i] ?? 0)),
+      shortwaveRadiationWm2: estimateShortwaveRadiationWm2(
+        typeof hourlyRaw.shortwave_radiation?.[i] === "number"
+          ? Number(hourlyRaw.shortwave_radiation[i])
+          : null,
+        solarElevationDeg,
+        Number(hourlyRaw.cloud_cover?.[i] ?? 0)
+      ),
       visibilityKm: Number(
         (
           diagnosePhysicalVisibilityM({
@@ -2132,6 +2160,13 @@ export async function fetchWeatherBundle(
         gustP90: extGustP90,
         windDirection: extWindDir,
         cloudCover: Math.round(Number(hourlyRaw.cloud_cover?.[i] ?? 40)),
+        shortwaveRadiationWm2: estimateShortwaveRadiationWm2(
+          typeof hourlyRaw.shortwave_radiation?.[i] === "number"
+            ? Number(hourlyRaw.shortwave_radiation[i])
+            : null,
+          solarElevationDeg,
+          Number(hourlyRaw.cloud_cover?.[i] ?? 40)
+        ),
         visibilityKm: 15,
         uvIndex: Number(hourlyRaw.uv_index?.[i] ?? 0),
         precipitation: extConsistency.finalPrecipMmHr,
@@ -2177,6 +2212,210 @@ export async function fetchWeatherBundle(
       } else {
         extendedSynopticHours.push(extPoint);
       }
+    }
+  }
+
+  // STAGE 3C: COUPLED 360-HOUR IN-AIR vs. GROUND/ROAD SNOW MICROPHYSICS & MIXED-PHASE LIGHTNING PASS
+  // Preserves 0.00°C temperature invariance while computing Bourgouin melting energy, dynamic Kuchera+DGZ SLR,
+  // 24h antecedent soil/asphalt skin temperatures, 4-band elevation snow budgets, DEK, Black Ice, and Lightning/Thundersnow!
+  const antecedentThermalHours: AntecedentThermalHour[] = [];
+  for (let backH = 24; backH >= 1; backH--) {
+    const pastUtc = new Date(startHourUtcMs - backH * 3600000);
+    const pastUtcKey = pastUtc.toISOString().slice(0, 16);
+    const pastHIdx = utcTimeIndex.get(pastUtcKey);
+    const pastLocalIdx = startIdx - backH;
+    if (pastLocalIdx >= 0 && pastLocalIdx < times.length) {
+      const pCloud = Number(hourlyRaw.cloud_cover?.[pastLocalIdx] ?? 40);
+      const pElev = computeSolarElevationDeg(location.lat, location.lon, pastUtc);
+      antecedentThermalHours.push({
+        temp2mC: Number(hourlyRaw.temperature_2m?.[pastLocalIdx] ?? hourly[0]?.temperature ?? 10),
+        shortwaveWm2: estimateShortwaveRadiationWm2(
+          typeof hourlyRaw.shortwave_radiation?.[pastLocalIdx] === "number"
+            ? Number(hourlyRaw.shortwave_radiation[pastLocalIdx])
+            : null,
+          pElev,
+          pCloud
+        ),
+        cloudCoverPct: pCloud,
+        precipMmHr: Math.max(0, Number(hourlyRaw.precipitation?.[pastLocalIdx] ?? 0))
+      });
+    } else if (pastHIdx !== undefined && hybridHourly) {
+      const pTempSnap = readExtendedModelSnapshot("temperature_2m", pastUtcKey);
+      const pCloudSnap = readExtendedModelSnapshot("cloud_cover", pastUtcKey);
+      const pSwSnap = readExtendedModelSnapshot("shortwave_radiation", pastUtcKey);
+      const pPrecSnap = readExtendedModelSnapshot("precipitation", pastUtcKey);
+      const pElev = computeSolarElevationDeg(location.lat, location.lon, pastUtc);
+      const pCloud = blendHybridParameter(pCloudSnap, WMO_PRIOR_WEIGHTS.temperature, 40);
+      antecedentThermalHours.push({
+        temp2mC: blendHybridParameter(pTempSnap, mos.shortRangeWeights.temperature, hourly[0]?.temperature ?? 10),
+        shortwaveWm2: estimateShortwaveRadiationWm2(
+          blendHybridParameter(pSwSnap, WMO_PRIOR_WEIGHTS.temperature, -1),
+          pElev,
+          pCloud
+        ),
+        cloudCoverPct: pCloud,
+        precipMmHr: Math.max(0, blendHybridParameter(pPrecSnap, mos.shortRangeWeights.precipitation, 0))
+      });
+    }
+  }
+
+  const all360Hours: HourlyPoint[] = [...hourly, ...extendedSynopticHours];
+  const snowSimInputs: SnowSimulationHourInput[] = all360Hours.map((pt, idxAll) => {
+    const srcIdx = startIdx + idxAll;
+    const utcD = localIsoToUtcDate(pt.time, utcOffsetSeconds);
+    const uK = utcD.toISOString().slice(0, 16);
+    const eRowIdx = ensIndex.utcIndex.get(uK);
+    const ensTMembers = readEnsembleRow(ensIndex.tempCols, eRowIdx);
+    const rawModSnow =
+      srcIdx < times.length ? Math.max(0, Number(hourlyRaw.snowfall?.[srcIdx] ?? 0)) : 0;
+    const sstAtHour =
+      marmaraSstBundle?.hourlySstByUtc.get(uK) ?? marmaraSstBundle?.currentSstC ?? null;
+    const sLevels =
+      idxAll < hourlySoundings.length
+        ? hourlySoundings[idxAll]
+        : idxAll < 168 && srcIdx < times.length
+          ? buildSoundingAtIndex(srcIdx)
+          : undefined;
+
+    return {
+      timeIso: pt.time,
+      dateYmd: pt.time.slice(0, 10),
+      leadHour: idxAll,
+      elevationM: cityElevationM,
+      lat: location.lat,
+      lon: location.lon,
+      temp2mC: pt.temperature,
+      tempP10C: pt.tempP10,
+      tempP90C: pt.tempP90,
+      rh2mPct: pt.humidity,
+      wetBulbC: pt.wetBulbC ?? wetBulbStullC(pt.temperature, pt.humidity),
+      windSpeedKmh: pt.windSpeed,
+      windGustsKmh: pt.windGusts,
+      windDirDeg: pt.windDirection,
+      cloudCoverPct: pt.cloudCover,
+      solarElevationDeg: pt.solarElevationDeg,
+      shortwaveWm2:
+        pt.shortwaveRadiationWm2 ??
+        estimateShortwaveRadiationWm2(null, pt.solarElevationDeg, pt.cloudCover),
+      precipMmHr: pt.precipitation,
+      precipP90MmHr: pt.precipConsensus.p90Mm ?? pt.precipitation,
+      precipProbPct: pt.precipProbability,
+      rawModelSnowfallCm: rawModSnow,
+      precipPhase: pt.precipPhase ?? "none",
+      freezingLevelM: pt.freezingLevelM,
+      temp850hPa: pt.temp850hPa,
+      capeJkg: pt.cape ?? 0,
+      seaSurfaceTempC: sstAtHour,
+      soundingLevels: sLevels,
+      lapseRateCPerKm: effectiveLapsePerKm,
+      ensembleTempMembersC: ensTMembers
+    };
+  });
+
+  const snowSimOutputs = simulateCoupledSnowTimeline({
+    hours: snowSimInputs,
+    antecedentHours: antecedentThermalHours
+  });
+
+  const simByTimeMap = new Map<string, SimulatedSnowHourOutput>();
+  const lightningByTimeMap = new Map<string, LightningHourPhysicsResult>();
+  const liveMetarHasTs =
+    (mos.anchor.active && Boolean(mos.anchor.wxFlags?.isThunderstorm)) ||
+    (mos.report.stations ?? (mos.report.station ? [mos.report.station] : [])).some((st) => st.ageMinutes <= 75 && st.distanceKm <= 45 && Boolean(st.wxFlags?.isThunderstorm));
+
+  let runningLiquidRainMm = 0;
+  for (let idxAll = 0; idxAll < all360Hours.length; idxAll++) {
+    const pt = all360Hours[idxAll];
+    const sim = snowSimOutputs[idxAll];
+    const simIn = snowSimInputs[idxAll];
+    if (!sim) continue;
+    simByTimeMap.set(pt.time, sim);
+
+    const lpiRaw = nowcastHourlyLpi.get(pt.time.slice(0, 13)) ?? null;
+    const ltEval = evaluateHourLightningPhysics({
+      temp2mC: pt.temperature,
+      wetBulbC: pt.wetBulbC ?? simIn.wetBulbC,
+      precipMmHr: pt.precipitation,
+      precipProbPct: pt.precipProbability,
+      precipPhase: sim.refinedPhase,
+      capeJkg: pt.cape ?? 0,
+      liftedIndex: pt.liftedIndex,
+      lpiJkg: lpiRaw,
+      stormLightningProbPct: pt.lightningProbPct ?? (pt.weatherCode >= 95 ? 55 : 0),
+      wmoCode: pt.weatherCode,
+      temp850hPa: pt.temp850hPa,
+      dekStatus: sim.dekStatus,
+      dekDeltaTC: sim.dekDeltaTSst850C,
+      windGustsKmh: pt.windGusts,
+      soundingLevels: simIn.soundingLevels,
+      liveMetarTs: idxAll <= 1 && liveMetarHasTs
+    });
+    lightningByTimeMap.set(pt.time, ltEval);
+
+    const snowSwePart = sim.slr > 0 ? (sim.airSnowCm * 10) / sim.slr : 0;
+    const liqPart = Math.max(0, pt.precipitation - snowSwePart);
+    if (idxAll < 240) {
+      runningLiquidRainMm += liqPart;
+    }
+
+    pt.snowLineElevationM = sim.snowLineElevationM;
+    pt.wetBulbZeroM = sim.wetBulbZeroM;
+    pt.meltingEnergyJkg = sim.meltingEnergyJkg;
+    pt.precipPhase = sim.refinedPhase;
+    pt.precipType =
+      sim.refinedPhase === "snow" || (sim.refinedPhase === "sleet" && sim.airSnowCm >= 0.15)
+        ? "snow"
+        : sim.refinedPhase === "none"
+          ? "none"
+          : "rain";
+    pt.rainAccum = Number(runningLiquidRainMm.toFixed(1));
+    pt.snowAccum = sim.cumulativeAirSnowCm;
+    pt.airSnowCm = sim.airSnowCm;
+    pt.airSnowProbPct = sim.airSnowProbPct;
+    pt.groundSnowCm = sim.groundSnowCm;
+    pt.roadSnowCm = sim.roadSnowCm;
+    pt.snowpackDepthCm = sim.snowpackDepthCm;
+    pt.roadSnowDepthCm = sim.roadSnowDepthCm;
+    pt.groundAccumSnowCm = sim.cumulativeGroundSnowCm;
+    pt.soilTempC = sim.soilTempC;
+    pt.roadTempC = sim.roadTempC;
+    pt.snowSlr = sim.slr;
+    pt.snowQualityTr = sim.snowQualityTr;
+    pt.icingRisk = sim.icingRisk;
+    pt.blowingSnowRisk = sim.blowingSnowRisk;
+    pt.dekStatus = sim.dekStatus;
+    pt.elevationSnowBands = sim.elevationBands;
+
+    pt.lightningProbPct = ltEval.lightningProbPct;
+    pt.lpiJkg = ltEval.lpiEffectiveJkg;
+    pt.lightningFlashesPerMin = ltEval.flashesPerMin;
+    pt.cgFractionPct = ltEval.cgFractionPct;
+    pt.isThundersnow = ltEval.isThundersnow;
+    if (pt.precipitation < 0.05 && sim.airSnowCm < 0.08) {
+      // Sıfır yağış (`0.0 mm`) olan saatlerde yanıltıcı 'Karla Karışık Yağmur / Kar Yağışlı' etiketi ve yağış ikonu bırakılmaz!
+      if (pt.weatherCode >= 51 && pt.weatherCode <= 86) {
+        pt.weatherCode = pt.cloudCover >= 78 ? 3 : pt.cloudCover >= 38 ? 2 : 1;
+      }
+      const drySkyLabel = mapWmoCodeToLabel(pt.weatherCode);
+      if (pt.precipProbability >= 22) {
+        const wetHint =
+          (pt.wetBulbC ?? pt.temperature) <= 0.2
+            ? "Kar İhtimali"
+            : (pt.wetBulbC ?? pt.temperature) <= 1.6
+              ? "Sulu Kar İhtimali"
+              : "Yağış İhtimali";
+        pt.condition = `${drySkyLabel} (${wetHint})`;
+      } else {
+        pt.condition = drySkyLabel;
+      }
+    } else if (ltEval.isThundersnow && pt.precipitation >= 0.25) {
+      pt.condition = "Gökgürültülü Kar (Thundersnow)";
+      pt.isStorm = true;
+    } else if (sim.refinedPhase === "sleet") {
+      pt.condition = "Karla Karışık Yağmur";
+    } else if (sim.refinedPhase === "rain" && pt.weatherCode >= 71 && pt.weatherCode <= 77) {
+      pt.weatherCode = pt.precipitation >= 1.5 ? 61 : 51;
+      pt.condition = mapWmoCodeToLabel(pt.weatherCode);
     }
   }
 
@@ -2646,6 +2885,164 @@ export async function fetchWeatherBundle(
       }
     }
 
+    // Per-Date Snow (In-Air vs. Grass/Soil vs. Asphalt/Road + 4-Elevation Bands) & Lightning Aggregation
+    let daySnowProbMaxPct = 0;
+    let dayAirSnowSumCm = 0;
+    let dayAirSnowP90SumCm = 0;
+    let dayGroundSnowSumCm = 0;
+    let dayGroundSnowP90SumCm = 0;
+    let dayRoadSnowSumCm = 0;
+    let dayMaxSnowpackCm = 0;
+    let daySlrWeightedSum = 0;
+    let daySlrWeight = 0;
+    let dayPeakHourSnowCm = -1;
+    let dayDominantSnowQuality: SnowQualityLabelTr = "Yok";
+    let dayMinSnowLineM: number | null = null;
+    let dayMinSoilTempC = Infinity;
+    let dayMinRoadTempC = Infinity;
+    let dayIcingMax: RoadIcingRisk = "none";
+    let dayBlowingMax: BlowingSnowRisk = "none";
+    let dayDekMax: DekSnowStatus = "none";
+    let dayLightningProbMax = 0;
+    let dayLightningPeakFlashes = 0;
+    let dayLpiMax = 0;
+    let dayHasThundersnow = false;
+    const bandAccumMap = new Map<
+      string,
+      {
+        id: string;
+        labelTr: string;
+        elevationM: number;
+        tempSum: number;
+        twSum: number;
+        count: number;
+        snowProbMax: number;
+        airSnowSum: number;
+        groundSnowSum: number;
+        roadSnowSum: number;
+        maxPack: number;
+        slrWeighted: number;
+        slrW: number;
+        peakQuality: SnowQualityLabelTr;
+        peakHourAir: number;
+        domPhase: PrecipPhase;
+      }
+    >();
+
+    for (let hh = 0; hh < 24; hh++) {
+      const lIso = `${dateStr}T${String(hh).padStart(2, "0")}:00`;
+      const hPt = hourlyByTimeMap.get(lIso);
+      const simPt = simByTimeMap.get(lIso);
+      const ltPt = lightningByTimeMap.get(lIso);
+      if (hPt) {
+        daySnowProbMaxPct = Math.max(daySnowProbMaxPct, hPt.airSnowProbPct ?? 0);
+        const hAir = hPt.airSnowCm ?? 0;
+        const hGnd = hPt.groundSnowCm ?? 0;
+        const hRd = hPt.roadSnowCm ?? 0;
+        dayAirSnowSumCm += hAir;
+        dayAirSnowP90SumCm += simPt ? simPt.airSnowP90Cm : hAir;
+        dayGroundSnowSumCm += hGnd;
+        dayGroundSnowP90SumCm += simPt ? simPt.groundSnowP90Cm : hGnd;
+        dayRoadSnowSumCm += hRd;
+        dayMaxSnowpackCm = Math.max(dayMaxSnowpackCm, hPt.snowpackDepthCm ?? 0);
+        if (hAir > 0 && (hPt.snowSlr ?? 0) > 0) {
+          daySlrWeightedSum += (hPt.snowSlr ?? 10) * hAir;
+          daySlrWeight += hAir;
+        }
+        if (hAir > dayPeakHourSnowCm && hPt.snowQualityTr && hPt.snowQualityTr !== "Yok") {
+          dayPeakHourSnowCm = hAir;
+          dayDominantSnowQuality = hPt.snowQualityTr;
+        }
+        if (hPt.snowLineElevationM !== null && hPt.snowLineElevationM !== undefined) {
+          dayMinSnowLineM =
+            dayMinSnowLineM === null
+              ? hPt.snowLineElevationM
+              : Math.min(dayMinSnowLineM, hPt.snowLineElevationM);
+        }
+        if (hPt.soilTempC !== undefined && hPt.soilTempC < dayMinSoilTempC) {
+          dayMinSoilTempC = hPt.soilTempC;
+        }
+        if (hPt.roadTempC !== undefined && hPt.roadTempC < dayMinRoadTempC) {
+          dayMinRoadTempC = hPt.roadTempC;
+        }
+        if (hPt.icingRisk) dayIcingMax = maxIcingRisk(dayIcingMax, hPt.icingRisk);
+        if (hPt.blowingSnowRisk) dayBlowingMax = maxBlowingSnowRisk(dayBlowingMax, hPt.blowingSnowRisk);
+        if (hPt.dekStatus) dayDekMax = maxDekStatus(dayDekMax, hPt.dekStatus);
+
+        if (hPt.elevationSnowBands) {
+          for (const b of hPt.elevationSnowBands) {
+            let acc = bandAccumMap.get(b.id);
+            if (!acc) {
+              acc = {
+                id: b.id,
+                labelTr: b.labelTr,
+                elevationM: b.elevationM,
+                tempSum: 0,
+                twSum: 0,
+                count: 0,
+                snowProbMax: 0,
+                airSnowSum: 0,
+                groundSnowSum: 0,
+                roadSnowSum: 0,
+                maxPack: 0,
+                slrWeighted: 0,
+                slrW: 0,
+                peakQuality: "Yok",
+                peakHourAir: -1,
+                domPhase: "none"
+              };
+              bandAccumMap.set(b.id, acc);
+            }
+            acc.tempSum += b.tempMeanC;
+            acc.twSum += b.wetBulbMeanC;
+            acc.count += 1;
+            acc.snowProbMax = Math.max(acc.snowProbMax, b.snowProbPct);
+            acc.airSnowSum += b.airSnowCm;
+            acc.groundSnowSum += b.groundSnowCm;
+            acc.roadSnowSum += b.roadSnowCm;
+            acc.maxPack = Math.max(acc.maxPack, b.maxSnowpackCm);
+            if (b.airSnowCm > 0 && b.slr > 0) {
+              acc.slrWeighted += b.slr * b.airSnowCm;
+              acc.slrW += b.airSnowCm;
+            }
+            if (b.airSnowCm > acc.peakHourAir && b.snowQualityTr !== "Yok") {
+              acc.peakHourAir = b.airSnowCm;
+              acc.peakQuality = b.snowQualityTr;
+            }
+            if (b.precipPhase === "snow") acc.domPhase = "snow";
+            else if (b.precipPhase === "freezing_rain" && acc.domPhase !== "snow")
+              acc.domPhase = "freezing_rain";
+            else if (b.precipPhase === "sleet" && acc.domPhase === "none") acc.domPhase = "sleet";
+            else if (b.precipPhase === "rain" && acc.domPhase === "none") acc.domPhase = "rain";
+          }
+        }
+      }
+      if (ltPt) {
+        dayLightningProbMax = Math.max(dayLightningProbMax, ltPt.lightningProbPct);
+        dayLightningPeakFlashes = Math.max(dayLightningPeakFlashes, ltPt.flashesPerMin);
+        dayLpiMax = Math.max(dayLpiMax, ltPt.lpiEffectiveJkg);
+        if (ltPt.isThundersnow) dayHasThundersnow = true;
+      } else if (hPt?.lightningProbPct !== undefined) {
+        dayLightningProbMax = Math.max(dayLightningProbMax, hPt.lightningProbPct);
+      }
+    }
+
+    const dayElevationBands: ElevationSnowBand[] = Array.from(bandAccumMap.values()).map((acc) => ({
+      id: acc.id,
+      labelTr: acc.labelTr,
+      elevationM: acc.elevationM,
+      tempMeanC: Number((acc.tempSum / Math.max(1, acc.count)).toFixed(1)),
+      wetBulbMeanC: Number((acc.twSum / Math.max(1, acc.count)).toFixed(1)),
+      precipPhase: acc.domPhase,
+      snowProbPct: acc.snowProbMax,
+      airSnowCm: Number(acc.airSnowSum.toFixed(1)),
+      groundSnowCm: Number(acc.groundSnowSum.toFixed(1)),
+      roadSnowCm: Number(acc.roadSnowSum.toFixed(1)),
+      maxSnowpackCm: Number(acc.maxPack.toFixed(1)),
+      slr: acc.slrW > 0 ? Number((acc.slrWeighted / acc.slrW).toFixed(1)) : 0,
+      snowQualityTr: acc.peakQuality
+    }));
+
     const avgWindDeg =
       Math.abs(sinDirSum) > 1e-4 || Math.abs(cosDirSum) > 1e-4
         ? (((Math.atan2(sinDirSum, cosDirSum) * 180) / Math.PI) + 360) % 360
@@ -2686,10 +3083,31 @@ export async function fetchWeatherBundle(
       precipP90: matchedDayHours >= 8 ? Number(precipP90Sum.toFixed(1)) : undefined,
       precipProbabilityMax: finalPop,
       precipPhase: dominantPhase,
+      snowProbMaxPct: daySnowProbMaxPct,
+      airSnowSumCm: Number(dayAirSnowSumCm.toFixed(1)),
+      airSnowP90Cm: Number(Math.max(dayAirSnowSumCm, dayAirSnowP90SumCm).toFixed(1)),
+      groundSnowSumCm: Number(dayGroundSnowSumCm.toFixed(1)),
+      groundSnowP90Cm: Number(Math.max(dayGroundSnowSumCm, dayGroundSnowP90SumCm).toFixed(1)),
+      roadSnowSumCm: Number(dayRoadSnowSumCm.toFixed(1)),
+      maxSnowpackDepthCm: Number(dayMaxSnowpackCm.toFixed(1)),
+      snowSlrMean:
+        daySlrWeight > 0 ? Number((daySlrWeightedSum / daySlrWeight).toFixed(1)) : undefined,
+      snowQualityTr: dayDominantSnowQuality,
+      minSnowLineM: dayMinSnowLineM,
+      minSoilTempC: Number.isFinite(dayMinSoilTempC) ? dayMinSoilTempC : undefined,
+      minRoadTempC: Number.isFinite(dayMinRoadTempC) ? dayMinRoadTempC : undefined,
+      icingRiskMax: dayIcingMax,
+      blowingSnowMax: dayBlowingMax,
+      dekStatus: dayDekMax,
+      elevationSnowBands: dayElevationBands.length > 0 ? dayElevationBands : undefined,
       windSpeedMax: finalWind,
       windGustMax: matchedDayHours >= 8 ? Math.round(maxGust) : undefined,
       dominantWindCompass: windDirectionToCompass(avgWindDeg),
       stormScoreMax: maxStormScore > 0 ? maxStormScore : undefined,
+      lightningProbMaxPct: dayLightningProbMax,
+      lightningPeakFlashesPerMin: Number(dayLightningPeakFlashes.toFixed(1)),
+      lpiMaxJkg: Number(dayLpiMax.toFixed(2)),
+      hasThundersnow: dayHasThundersnow,
       uvIndexMax: Number(Number(dailyRaw.uv_index_max?.[dIdx] ?? 0).toFixed(1)),
       sunrise: String(dailyRaw.sunrise?.[dIdx] ?? ""),
       sunset: String(dailyRaw.sunset?.[dIdx] ?? ""),
@@ -2709,6 +3127,120 @@ export async function fetchWeatherBundle(
     lon: location.lon,
     elevationM: cityElevationM
   });
+
+  // 6C. SNOW & LIGHTNING OBSERVATORY SUMMARY (15-30 Day Snow Ledger + 3-Ring 15/40/100km Lightning Radar)
+  const hour0Lt =
+    (firstHour ? lightningByTimeMap.get(firstHour.time) : undefined) ?? {
+      lightningProbPct: firstHour?.lightningProbPct ?? 0,
+      lpiEffectiveJkg: firstHour?.lpiJkg ?? 0,
+      flashesPerMin: firstHour?.lightningFlashesPerMin ?? 0,
+      cgFractionPct: firstHour?.cgFractionPct ?? 25,
+      isThundersnow: Boolean(firstHour?.isThundersnow)
+    };
+  const hour1Lt = secondHour ? lightningByTimeMap.get(secondHour.time) ?? null : null;
+
+  const lightningRadar = buildLightningProximityRadar({
+    updatedAtIso: radarNowcast.generatedAtIso || new Date(exactNowUtcMs).toISOString(),
+    radarAvailable: radarNowcast.radarAvailable,
+    currentRadarDbz: radarNowcast.currentDbzOverTarget,
+    radarCells: radarNowcast.convectiveCells ?? [],
+    metarStations: mos.report.stations ?? (mos.report.station ? [mos.report.station] : []),
+    hour0Lightning: hour0Lt,
+    hour1Lightning: hour1Lt,
+    surfaceTempC: hybridCurTemp,
+    dekStatus: firstHour?.dekStatus ?? "none"
+  });
+
+  const total15dAirSnowCm = Number(
+    daily.reduce((s, d) => s + (d.airSnowSumCm ?? 0), 0).toFixed(1)
+  );
+  const total15dGroundSnowCm = Number(
+    daily.reduce((s, d) => s + (d.groundSnowSumCm ?? 0), 0).toFixed(1)
+  );
+  const total15dRoadSnowCm = Number(
+    daily.reduce((s, d) => s + (d.roadSnowSumCm ?? 0), 0).toFixed(1)
+  );
+  const peak15dSnowpackCm = Number(
+    daily.reduce((m, d) => Math.max(m, d.maxSnowpackDepthCm ?? 0), 0).toFixed(1)
+  );
+  const lowest15dSnowLineM = daily.reduce<number | null>((best, d) => {
+    if (d.minSnowLineM === null || d.minSnowLineM === undefined) return best;
+    return best === null ? d.minSnowLineM : Math.min(best, d.minSnowLineM);
+  }, null);
+  const dekStatus15d = daily.reduce<DekSnowStatus>(
+    (acc, d) => maxDekStatus(acc, d.dekStatus ?? "none"),
+    "none"
+  );
+  const maxDekDeltaT = snowSimOutputs.reduce<number | null>((best, s) => {
+    if (s.dekDeltaTSst850C === null) return best;
+    return best === null ? s.dekDeltaTSst850C : Math.max(best, s.dekDeltaTSst850C);
+  }, null);
+
+  const first48Hours = hourly.slice(0, 48);
+  const first168Hours = hourly.slice(0, 168);
+  const maxIcingRisk48h = first48Hours.reduce<RoadIcingRisk>(
+    (acc, h) => maxIcingRisk(acc, h.icingRisk ?? "none"),
+    "none"
+  );
+  const maxBlowingSnow48h = first48Hours.reduce<BlowingSnowRisk>(
+    (acc, h) => maxBlowingSnowRisk(acc, h.blowingSnowRisk ?? "none"),
+    "none"
+  );
+
+  const nextSnowHour = all360Hours.find(
+    (h) => (h.airSnowCm ?? 0) >= 0.1 || (h.airSnowProbPct ?? 0) >= 35
+  );
+  const nextSnowDay = daily.find(
+    (d) =>
+      (d.airSnowSumCm ?? 0) >= 0.1 ||
+      (d.snowProbMaxPct ?? 0) >= 30 ||
+      (d.elevationSnowBands?.some((b) => b.airSnowCm >= 0.5) ?? false)
+  );
+  const hasSubseasonalSnow = Boolean(
+    subseasonal?.days.some((sd) => (sd.snowProbPct ?? 0) >= 25 || (sd.airSnowP90Cm ?? 0) >= 0.5)
+  );
+  const hasAnySnow15d = Boolean(nextSnowDay) || total15dAirSnowCm >= 0.1;
+
+  const peak48hLightningProbPct = first48Hours.reduce(
+    (m, h) => Math.max(m, h.lightningProbPct ?? 0),
+    lightningRadar.rings[0].probabilityPct
+  );
+  const peak168hLightningProbPct = first168Hours.reduce(
+    (m, h) => Math.max(m, h.lightningProbPct ?? 0),
+    peak48hLightningProbPct
+  );
+  const peak168hFlashesPerMin = Number(
+    first168Hours
+      .reduce((m, h) => Math.max(m, h.lightningFlashesPerMin ?? 0), lightningRadar.currentFlashesPerMin)
+      .toFixed(1)
+  );
+  const hasThundersnow168h = first168Hours.some((h) => Boolean(h.isThundersnow));
+  const nextLightningHour = first168Hours.find((h) => (h.lightningProbPct ?? 0) >= 28);
+
+  const snowAndLightningSummary: SnowAndLightningObservatorySummary = {
+    referenceElevationM: cityElevationM,
+    soilTempNowC: firstHour?.soilTempC ?? Number((hybridCurTemp * 0.85 + 0.8).toFixed(1)),
+    roadTempNowC: firstHour?.roadTempC ?? Number((hybridCurTemp * 0.9 + 1.4).toFixed(1)),
+    hasAnySnow15d,
+    hasAnySnow30d: hasAnySnow15d || hasSubseasonalSnow,
+    nextSnowHourIso: nextSnowHour?.time ?? null,
+    nextSnowDateYmd: nextSnowDay?.date ?? null,
+    total15dAirSnowCm,
+    total15dGroundSnowCm,
+    total15dRoadSnowCm,
+    peak15dSnowpackCm,
+    lowest15dSnowLineM,
+    dekStatus15d,
+    dekDeltaTSst850C: maxDekDeltaT,
+    maxIcingRisk48h,
+    maxBlowingSnow48h,
+    lightningRadar,
+    peak48hLightningProbPct,
+    peak168hLightningProbPct,
+    peak168hFlashesPerMin,
+    hasThundersnow168h,
+    nextLightningHourIso: nextLightningHour?.time ?? null
+  };
 
   const aqiCur = aJson?.current ?? {};
   const euAqi = Math.round(Number(aqiCur.european_aqi ?? 20));
@@ -3011,6 +3543,20 @@ export async function fetchWeatherBundle(
               : "rain"
           : "none",
       snowLineElevationM: firstHour?.snowLineElevationM ?? null,
+      airSnowCmHr: firstHour?.airSnowCm ?? 0,
+      groundSnowCmHr: firstHour?.groundSnowCm ?? 0,
+      roadSnowCmHr: firstHour?.roadSnowCm ?? 0,
+      snowpackDepthCm: firstHour?.snowpackDepthCm ?? 0,
+      snowSlr: firstHour?.snowSlr ?? 0,
+      snowQualityTr: firstHour?.snowQualityTr ?? "Yok",
+      soilTempC: snowAndLightningSummary.soilTempNowC,
+      roadTempC: snowAndLightningSummary.roadTempNowC,
+      icingRisk: firstHour?.icingRisk ?? "none",
+      blowingSnowRisk: firstHour?.blowingSnowRisk ?? "none",
+      dekStatus: firstHour?.dekStatus ?? "none",
+      lightningProbPct: Math.max(firstHour?.lightningProbPct ?? 0, lightningRadar.rings[0].probabilityPct),
+      lightningFlashesPerMin: lightningRadar.currentFlashesPerMin,
+      isThundersnow: lightningRadar.isThundersnowNow,
       weatherCode: curWmo,
       condition: mapWmoCodeToLabel(curWmo),
       isStorm: firstHour?.isStorm ?? (hybridCurWind >= 50 || curWmo >= 95),
@@ -3037,6 +3583,7 @@ export async function fetchWeatherBundle(
       lightningPotential: minutely15[0]?.lightningPotential ?? null
     },
     storm: stormAssessment,
+    snowAndLightning: snowAndLightningSummary,
     hybrid
   };
 

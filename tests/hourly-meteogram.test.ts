@@ -7,8 +7,11 @@ import {
   buildSmoothCurvePath,
   buildSolarMarkers,
   computeIconPhaseDelaySec,
+  computeAdaptiveMeteogramScale,
   detectDiurnalExtrema,
+  detectSynopticEvents,
   getPrecipPhaseVisual,
+  resolveHourlyDisplaySemantics,
   resolveWeatherGlyphKind
 } from "../lib/hourly-meteogram";
 import type { DailyPoint, HourlyPoint } from "../lib/weather-types";
@@ -212,5 +215,117 @@ describe("Kategori 2 — 17-Varyantlı İkonografi, Monoton Spline ve Sinoptik M
     expect(getPrecipPhaseVisual("freezing_rain").label).toBe("Donan Yğm");
     expect(getPrecipPhaseVisual("sleet").label).toBe("K.Karışık");
     expect(getPrecipPhaseVisual("hail").label).toBe("Dolu");
+  });
+
+  it("0.0 mm yağışlı ama %42 olasılıklı saatte 'Karla Karışık Yağmur' çelişkisini önler ve kesikli olasılık izi (ghost) üretir", () => {
+    const dryProbHour = makeMockHour(10, {
+      temperature: 3.0,
+      wetBulbC: 1.5,
+      cloudCover: 88,
+      precipitation: 0.0,
+      precipProbability: 42,
+      precipPhase: "sleet",
+      precipType: "snow",
+      weatherCode: 68,
+      condition: "Karla Karışık Yağmur"
+    });
+
+    const sem = resolveHourlyDisplaySemantics(dryProbHour);
+    expect(sem.isWetActive).toBe(false);
+    expect(sem.isProbabilisticGhost).toBe(true);
+    expect(sem.iconPhase).toBe("none");
+    expect(sem.effectiveCode).toBe(3); // Çok Bulutlu gökyüzü (yanıltıcı yağış damlası yok!)
+    expect(sem.statusLabelTr).toContain("Çok Bulutlu");
+    expect(sem.statusLabelTr).toContain("Sulu Kar İhtimali (%42)");
+
+    const trueWetHour = makeMockHour(11, {
+      temperature: 1.8,
+      wetBulbC: 0.7,
+      cloudCover: 95,
+      precipitation: 1.4,
+      precipProbability: 78,
+      precipPhase: "sleet",
+      precipType: "snow",
+      weatherCode: 68,
+      condition: "Karla Karışık Yağmur"
+    });
+    const wetSem = resolveHourlyDisplaySemantics(trueWetHour);
+    expect(wetSem.isWetActive).toBe(true);
+    expect(wetSem.isProbabilisticGhost).toBe(false);
+    expect(wetSem.iconPhase).toBe("sleet");
+    expect(wetSem.statusLabelTr).toBe("Karla Karışık Yağmur");
+  });
+
+  it("adaptif Y-ölçekleme 3°..6° dar penceresini 18° genel uçlara ezdirmez ve cephe/kar dönüşüm bayraklarını yakalar", () => {
+    // İlk 24 saat 3°..6° dar kış bandı, 5. gün 18° lodos zirvesi
+    const series = Array.from({ length: 140 }, (_, i) =>
+      i < 24 ? 3 + Math.sin((i / 24) * Math.PI) * 3 : 18
+    );
+
+    const scale = computeAdaptiveMeteogramScale({
+      allValues: series,
+      visibleStartIdx: 0,
+      visibleEndIdx: 16,
+      curveTopY: 114,
+      curveBotY: 208,
+      minSpan: 7.5
+    });
+
+    // 3° ile 6° arasındaki dikey piksel farkı eski 10px yerine en az 25px olarak net açılır!
+    const pixelDiff3to6 = Math.abs(scale.yOf(6) - scale.yOf(3));
+    expect(pixelDiff3to6).toBeGreaterThanOrEqual(24);
+    expect(scale.ticks.length).toBeGreaterThanOrEqual(2);
+
+    // Yağmurdan Kara dönüşüm saati ve Soğuk Cephe girişi testi
+    const frontalHours = Array.from({ length: 20 }, (_, i) => {
+      if (i < 6) {
+        return makeMockHour(i, {
+          temperature: 11.5,
+          windDirection: 215,
+          windGusts: 30,
+          precipitation: 1.8,
+          precipProbability: 85,
+          precipPhase: "rain",
+          precipType: "rain",
+          weatherCode: 61,
+          condition: "Yağmurlu"
+        });
+      }
+      if (i < 12) {
+        return makeMockHour(i, {
+          temperature: 6.0, // 3 saatte -5.5°C soğuk cephe düşüşü + Karayel dönüşü!
+          windDirection: 330,
+          windGusts: 44,
+          precipitation: 2.1,
+          precipProbability: 90,
+          precipPhase: "rain",
+          precipType: "rain",
+          weatherCode: 61,
+          condition: "Yağmurlu"
+        });
+      }
+      return makeMockHour(i, {
+        temperature: 0.4,
+        wetBulbC: -0.2,
+        windDirection: 15,
+        windGusts: 38,
+        precipitation: 2.4,
+        precipProbability: 92,
+        airSnowCm: 2.6,
+        groundSnowCm: 1.9,
+        precipPhase: "snow",
+        precipType: "snow",
+        weatherCode: 73,
+        condition: "Kar Yağışlı"
+      });
+    });
+
+    const events = detectSynopticEvents(frontalHours);
+    expect(events.some((e) => e.kind === "cold_front")).toBe(true);
+    expect(events.some((e) => e.kind === "rain_to_snow")).toBe(true);
+    // Olay rozetleri birbirine en az 5 saat mesafeli olmalı (sıfır çakışma)
+    for (let k = 1; k < events.length; k++) {
+      expect(events[k].hourIndex - events[k - 1].hourIndex).toBeGreaterThanOrEqual(5);
+    }
   });
 });

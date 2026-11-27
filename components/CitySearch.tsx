@@ -226,7 +226,8 @@ export default function CitySearch({
                         </span>
                       )}
                     </span>
-                    <span className="shrink-0 font-mono text-xs text-ink-muted">
+                    <span className="shrink-0 font-mono text-xs text-ink-muted tabular">
+                      {loc.elevation !== undefined ? `${loc.elevation}m · ` : ""}
                       {loc.country}
                     </span>
                   </button>

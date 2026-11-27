@@ -8,8 +8,10 @@ import {
   GitBranch,
   Layers,
   ShieldCheck,
+  Snowflake,
   Sparkles,
-  Wind
+  Wind,
+  Zap
 } from "lucide-react";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import { formatTemperature, formatWindSpeed } from "@/lib/weather-client";
@@ -355,8 +357,23 @@ function ExtendedDailyForecastPanelBase({
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 font-mono text-xs">
-                    {Math.abs(anom) >= 1.5 ? (
+                  <div className="flex items-center justify-end gap-1.5 font-mono text-xs">
+                    {((d.airSnowSumCm ?? 0) >= 0.1 || (d.snowProbMaxPct ?? 0) >= 25) ? (
+                      <span
+                        title={`Havada ${(d.airSnowSumCm ?? 0).toFixed(1)} cm · Zeminde ${(d.groundSnowSumCm ?? 0).toFixed(1)} cm`}
+                        className="hidden sm:inline-flex items-center gap-1 rounded bg-sky-400/15 px-1.5 py-0.5 text-[10px] text-sky-200"
+                      >
+                        <Snowflake className="h-2.5 w-2.5 text-sky-300" />
+                        <span>
+                          H {(d.airSnowSumCm ?? 0).toFixed(1)} · Y {(d.groundSnowSumCm ?? 0).toFixed(1)}cm
+                        </span>
+                      </span>
+                    ) : (d.lightningProbMaxPct ?? 0) >= 30 ? (
+                      <span className="hidden sm:inline-flex items-center gap-0.5 rounded bg-signal-amber/15 px-1.5 py-0.5 text-[10px] text-amber-200">
+                        <Zap className="h-2.5 w-2.5 text-signal-amber" />
+                        <span>%{d.lightningProbMaxPct}</span>
+                      </span>
+                    ) : Math.abs(anom) >= 1.5 ? (
                       <span
                         className={`hidden sm:inline-block rounded px-1.5 py-0.5 text-[10px] ${
                           anom > 0
@@ -447,6 +464,44 @@ function ExtendedDailyForecastPanelBase({
                         </p>
                       </div>
                     </div>
+
+                    {((d.airSnowSumCm ?? 0) > 0 ||
+                      (d.snowProbMaxPct ?? 0) >= 15 ||
+                      (d.lightningProbMaxPct ?? 0) >= 20 ||
+                      (d.elevationSnowBands?.some((b) => b.airSnowCm >= 0.3) ?? false)) && (
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 font-mono text-[11px] tabular">
+                        <div className="rounded-lg border border-sky-400/20 bg-sky-400/[0.07] p-2">
+                          <span className="text-[10px] text-sky-200">Havada Kar (%{d.snowProbMaxPct ?? 0})</span>
+                          <p className="mt-0.5 font-semibold text-white">
+                            {(d.airSnowSumCm ?? 0).toFixed(1)} cm
+                            {(d.airSnowP90Cm ?? 0) > (d.airSnowSumCm ?? 0) + 0.1
+                              ? ` (P90 ${d.airSnowP90Cm})`
+                              : ""}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/[0.07] p-2">
+                          <span className="text-[10px] text-cyan-200">Çim / Asfalt Tutan</span>
+                          <p className="mt-0.5 font-semibold text-white">
+                            {(d.groundSnowSumCm ?? 0).toFixed(1)} / {(d.roadSnowSumCm ?? 0).toFixed(1)} cm
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                          <span className="text-[10px] text-ink-muted">Kar Sınırı & Kalite</span>
+                          <p className="mt-0.5 font-semibold text-sky-200 truncate">
+                            {d.minSnowLineM ?? "—"}m · {d.snowQualityTr ?? "—"}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2">
+                          <span className="text-[10px] text-ink-muted">Şimşek & Oraj</span>
+                          <p className="mt-0.5 font-semibold text-amber-200">
+                            %{d.lightningProbMaxPct ?? 0}
+                            {(d.lightningPeakFlashesPerMin ?? 0) > 0
+                              ? ` (~${d.lightningPeakFlashesPerMin}/dk)`
+                              : ""}
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {d.bimodalSplit && (
                       <div className="flex items-center justify-between gap-2 rounded-lg border border-signal-amber/35 bg-signal-amber/10 px-3 py-2 font-mono text-[11px] text-amber-100">
@@ -640,17 +695,27 @@ function ExtendedDailyForecastPanelBase({
                       </span>
                     </div>
 
-                    <span
-                      className={`hidden md:inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${
-                        sd.anomalyC >= 1.5
-                          ? "bg-signal-amber/14 text-amber-200"
-                          : sd.anomalyC <= -1.5
-                            ? "bg-signal-sky/14 text-sky-200"
-                            : "bg-white/[0.05] text-ink-muted"
-                      }`}
-                    >
-                      {sd.regimeTagTr}
-                    </span>
+                    {(sd.snowProbPct ?? 0) >= 15 ? (
+                      <span className="hidden md:inline-flex items-center gap-1 rounded bg-sky-400/15 px-1.5 py-0.5 font-mono text-[10px] text-sky-200">
+                        <Snowflake className="h-2.5 w-2.5 text-sky-300" />
+                        <span>
+                          ❄%{sd.snowProbPct} · H {sd.airSnowP50Cm ?? 0}–{sd.airSnowP90Cm ?? 0} / Y{" "}
+                          {sd.groundSnowP50Cm ?? 0}–{sd.groundSnowP90Cm ?? 0}cm
+                        </span>
+                      </span>
+                    ) : (
+                      <span
+                        className={`hidden md:inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                          sd.anomalyC >= 1.5
+                            ? "bg-signal-amber/14 text-amber-200"
+                            : sd.anomalyC <= -1.5
+                              ? "bg-signal-sky/14 text-sky-200"
+                              : "bg-white/[0.05] text-ink-muted"
+                        }`}
+                      >
+                        {sd.regimeTagTr}
+                      </span>
+                    )}
                   </div>
                 );
               })}

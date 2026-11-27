@@ -23,6 +23,7 @@ import {
 import {
   ATMOS_STORAGE_KEYS,
   DEFAULT_LOCATION,
+  normalizeCanonicalBursaLocation,
   PRESET_CITIES,
   readMigratedStorageItem
 } from "@/lib/weather-client";
@@ -229,6 +230,10 @@ export function WeatherProvider({
           name: loc.name,
           country: loc.country ?? ""
         });
+        if (loc.admin1) qs.set("admin1", loc.admin1);
+        if (loc.elevation !== undefined && Number.isFinite(loc.elevation)) {
+          qs.set("elevation", String(Math.round(loc.elevation)));
+        }
         const bypassHttpCache =
           runInBackground ||
           Boolean(opts?.manual) ||
@@ -368,7 +373,8 @@ export function WeatherProvider({
   );
 
   const switchAndHydrateLocation = useCallback(
-    (loc: GeoLocation) => {
+    (rawLoc: GeoLocation) => {
+      const loc = normalizeCanonicalBursaLocation(rawLoc);
       setActiveLocationState(loc);
       activeLocRef.current = loc;
       retryAttemptRef.current = 0;
@@ -425,7 +431,9 @@ export function WeatherProvider({
         const savedFavs = readMigratedStorageItem("favorites", localStorage);
         if (savedFavs) {
           const parsed = JSON.parse(savedFavs);
-          if (Array.isArray(parsed) && parsed.length > 0) setFavorites(parsed);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setFavorites(parsed.map((item: GeoLocation) => normalizeCanonicalBursaLocation(item)));
+          }
         }
         const savedAlerts = readMigratedStorageItem("alerts", localStorage);
         if (savedAlerts) {
@@ -452,14 +460,29 @@ export function WeatherProvider({
           urlLon >= -180 &&
           urlLon <= 180
         ) {
-          const urlLoc: GeoLocation = {
+          const rawUrlLoc: GeoLocation = {
             id: `url_${urlLat.toFixed(2)}_${urlLon.toFixed(2)}`,
             name: urlCity || `${urlLat.toFixed(2)}°, ${urlLon.toFixed(2)}°`,
             country: urlCountry,
             lat: urlLat,
             lon: urlLon
           };
-          if (!areLocationsEquivalent(initialBundle?.location, urlLoc)) {
+          const urlLoc = normalizeCanonicalBursaLocation(rawUrlLoc);
+          // Eski paylaşılmış linklerde (?lat=40.1885&lon=29.0610) adres çubuğunu da resmi Bursa Merkez (40.2308, 29.0133) ile eşitle!
+          if (
+            Math.abs(urlLat - urlLoc.lat) > 0.002 ||
+            Math.abs(urlLon - urlLoc.lon) > 0.002
+          ) {
+            const cleanQs = new URLSearchParams({
+              city: urlLoc.name,
+              lat: urlLoc.lat.toFixed(4),
+              lon: urlLoc.lon.toFixed(4)
+            });
+            if (urlLoc.country) cleanQs.set("country", urlLoc.country);
+            window.history.replaceState(null, "", `${window.location.pathname}?${cleanQs.toString()}`);
+            localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(urlLoc));
+          }
+          if (!areLocationsEquivalent(initialBundle?.location, urlLoc, 0.02)) {
             switchAndHydrateLocation(urlLoc);
             return;
           }
@@ -468,16 +491,17 @@ export function WeatherProvider({
         // 2. Öncelik: Kayıtlı son konum
         const savedLoc = readMigratedStorageItem("location", localStorage);
         if (savedLoc) {
-          const loc: GeoLocation = JSON.parse(savedLoc);
-          const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
-          if (
-            loc &&
-            typeof loc.lat === "number" &&
-            typeof loc.lon === "number" &&
-            !areLocationsEquivalent(loc, initLoc)
-          ) {
-            switchAndHydrateLocation(loc);
-            return;
+          const parsedLoc: GeoLocation = JSON.parse(savedLoc);
+          if (parsedLoc && typeof parsedLoc.lat === "number" && typeof parsedLoc.lon === "number") {
+            const loc = normalizeCanonicalBursaLocation(parsedLoc);
+            if (Math.abs(parsedLoc.lat - loc.lat) > 0.002 || Math.abs(parsedLoc.lon - loc.lon) > 0.002) {
+              localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
+            }
+            const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
+            if (!areLocationsEquivalent(loc, initLoc, 0.02)) {
+              switchAndHydrateLocation(loc);
+              return;
+            }
           }
         }
       } catch {
@@ -632,7 +656,8 @@ export function WeatherProvider({
   }, [loadForLocation]);
 
   const setActiveLocation = useCallback(
-    (loc: GeoLocation) => {
+    (rawLoc: GeoLocation) => {
+      const loc = normalizeCanonicalBursaLocation(rawLoc);
       try {
         localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
         if (typeof window !== "undefined" && window.location.pathname === "/") {
@@ -766,7 +791,10 @@ export function WeatherProvider({
         snowAccum: activeHour.snowAccum,
         solarElevationDeg: activeHour.solarElevationDeg,
         daylight: activeHour.daylight,
-        cape: activeHour.cape ?? bundle.nativeConvective.cape ?? 0
+        cape: activeHour.cape ?? bundle.nativeConvective.cape ?? 0,
+        lightningFlashRatePerMin: activeHour.lightningFlashesPerMin ?? 0,
+        snowSlrRatio: activeHour.snowSlr ?? 10,
+        isThundersnow: Boolean(activeHour.isThundersnow)
       };
     }
 
@@ -787,7 +815,15 @@ export function WeatherProvider({
       snowAccum: bundle.hourly[0]?.snowAccum ?? 0,
       solarElevationDeg: cur.solarElevationDeg,
       daylight: cur.daylight,
-      cape: bundle.nativeConvective.cape ?? 0
+      cape: bundle.nativeConvective.cape ?? 0,
+      lightningFlashRatePerMin:
+        cur.lightningFlashesPerMin ??
+        bundle.snowAndLightning?.lightningRadar.currentFlashesPerMin ??
+        0,
+      snowSlrRatio: cur.snowSlr ?? bundle.hourly[0]?.snowSlr ?? 10,
+      isThundersnow: Boolean(
+        cur.isThundersnow ?? bundle.snowAndLightning?.lightningRadar.isThundersnowNow
+      )
     };
   }, [bundle, frameIndex]);
 

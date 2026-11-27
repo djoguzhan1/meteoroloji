@@ -183,7 +183,7 @@ export const BURSA_REFERENCE_STATIONS: Record<string, StationMetadata> = {
     mgmIstNo: 17116,
     mgmMerkezId: 91601,
     mgmGunlukIstNo: 91601,
-    name: "Bursa Osmangazi Merkez (17116)",
+    name: "Bursa Merkez (Osmangazi · 17116)",
     district: "Osmangazi",
     lat: 40.2308,
     lon: 29.0133,
@@ -778,7 +778,7 @@ export async function fetchMgmBursaStations(timeoutMs = 4800): Promise<RawStatio
 export async function fetchMgmBursaForecasts(
   targetLat: number,
   targetLon: number,
-  targetElevationM = 155,
+  targetElevationM = 100,
   timeoutMs = 4500
 ): Promise<MgmBursaForecastBundle | null> {
   if (!isWithinBursaDomain(targetLat, targetLon)) return null;
@@ -787,10 +787,25 @@ export async function fetchMgmBursaForecasts(
   // Pick nearest district matching elevation band (prevents mapping Yıldırım 147m to Uludağ 1877m!)
   let bestCenter = centers[0] ?? FALLBACK_BURSA_MGM_CENTERS[0];
   let bestScore = Infinity;
+  // Gökdere Vadisi (~29.075°D) Osmangazi/Bursa Merkez ile Yıldırım arasındaki gerçek coğrafi sınırdır.
+  // Batı yakadaki Bursa Merkez ve Osmangazi noktalarının Yıldırım (18746) ile eşleşmesini engeller!
+  const isWestOfGokdereCentral =
+    targetLon <= 29.075 &&
+    targetLat >= 40.175 &&
+    targetLat <= 40.285 &&
+    targetElevationM <= 340;
+
   for (const c of centers) {
     const distKm = haversineKm(targetLat, targetLon, c.enlem, c.boylam);
     const elevPenKm = Math.abs(targetElevationM - c.yukseklik) * 0.035;
-    const score = distKm + elevPenKm;
+    const ilceUpper = c.ilce.toLocaleUpperCase("tr-TR");
+    const crossBoundaryPenKm =
+      isWestOfGokdereCentral && ilceUpper.includes("YILDIRIM")
+        ? 5.5
+        : !isWestOfGokdereCentral && targetLon >= 29.085 && c.istNo === 17116
+          ? 2.0
+          : 0;
+    const score = distKm + elevPenKm + crossBoundaryPenKm;
     if (score < bestScore) {
       bestScore = score;
       bestCenter = c;
@@ -1049,8 +1064,8 @@ export async function fetchAviationMetarPerimeter(
 }
 
 export async function fetchOpenSenseMapPws(
-  lat = 40.1885,
-  lon = 29.061,
+  lat = 40.2308,
+  lon = 29.0133,
   maxDistanceM = 25000,
   timeoutMs = 3500
 ): Promise<RawStationObservation[]> {
@@ -1494,8 +1509,8 @@ export function runBursaObservationQC(
 }
 
 export async function fetchBursaObservationMesh(
-  lat = 40.1885,
-  lon = 29.061,
+  lat = 40.2308,
+  lon = 29.0133,
   ctx: ObservationQcContext = {}
 ): Promise<BursaMeshSnapshot> {
   const isBursa = isWithinBursaDomain(lat, lon);
@@ -1631,6 +1646,24 @@ export function mapMeshToMetarObservations(
         wxFlags
       };
     })
-    .sort((a, b) => a.distanceKm - b.distanceKm)
+    .sort((a, b) => {
+      // Bursa Merkez / Osmangazi yakasında (`lon <= 29.075`) WMO 17116 Bursa Merkez istasyonu birincil referanstır;
+      // Yıldırım istasyonunun 1-2 km farkla ana başlığa çıkmasını engeller!
+      const isCentralOsmangazi =
+        targetLon <= 29.075 && targetLat >= 40.175 && targetLat <= 40.285;
+      const effDistA =
+        isCentralOsmangazi && a.icaoId === "17116-OSM" && a.distanceKm <= 8.5
+          ? a.distanceKm - 3.5
+          : isCentralOsmangazi && a.icaoId === "YILDIRIM"
+            ? a.distanceKm + 3.5
+            : a.distanceKm;
+      const effDistB =
+        isCentralOsmangazi && b.icaoId === "17116-OSM" && b.distanceKm <= 8.5
+          ? b.distanceKm - 3.5
+          : isCentralOsmangazi && b.icaoId === "YILDIRIM"
+            ? b.distanceKm + 3.5
+            : b.distanceKm;
+      return effDistA - effDistB;
+    })
     .slice(0, 5);
 }

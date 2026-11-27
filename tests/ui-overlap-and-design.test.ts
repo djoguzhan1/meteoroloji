@@ -85,11 +85,15 @@ describe("Site Geneli Sekme Bazlı Çakışma Önleme & Rasathane Tasarım Doğr
       path.join(repoRoot, "components/HourlyForecastStrip.tsx"),
       "utf-8"
     );
-    expect(meteogramSrc).toContain("const STAGE_H = 330;");
-    expect(meteogramSrc).toContain("const HYETO_BASE_Y = 274;");
-    expect(meteogramSrc).toContain("top-[28px]");
-    expect(meteogramSrc).toContain("top-[54px]");
-    expect(meteogramSrc).toContain("top-[203px]");
+    expect(meteogramSrc).toContain("const STAGE_H = 372;");
+    expect(meteogramSrc).toContain("const HYETO_BASE_Y = 316;");
+    // Saat etiketi mutlak (absolute top-[8px]) olmalı; <button> içinde akışta bırakılıp eğri üstüne düşmemeli!
+    expect(meteogramSrc).not.toContain('div className="pt-2 flex flex-col items-center"');
+    expect(meteogramSrc).toContain("top-[8px]");
+    expect(meteogramSrc).toContain("top-[29px]");
+    expect(meteogramSrc).toContain("top-[58px]");
+    expect(meteogramSrc).toContain("top-[225px]");
+    expect(meteogramSrc).toContain("top-[327px]");
 
     const scrubberSrc = fs.readFileSync(
       path.join(repoRoot, "components/TimeScrubber.tsx"),

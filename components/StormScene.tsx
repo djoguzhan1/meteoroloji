@@ -296,7 +296,19 @@ function PhysicalAtmosphericSky({
     u.uPointer.value.x = THREE.MathUtils.lerp(u.uPointer.value.x, state.pointer.x, 0.05);
     u.uPointer.value.y = THREE.MathUtils.lerp(u.uPointer.value.y, state.pointer.y, 0.05);
 
-    const stormTrigger = atmosphere.isStorm || atmosphere.cape >= 1200 ? 1 : 0;
+    const flashRate = atmosphere.lightningFlashRatePerMin ?? 0;
+    const stormTrigger =
+      atmosphere.isStorm ||
+      Boolean(atmosphere.isThundersnow) ||
+      flashRate >= 0.2 ||
+      atmosphere.cape >= 1200
+        ? 1
+        : 0;
+    // Calibrate visual flash cadence from physical `flashesPerMin` (`0.12 .. 0.65 Hz` visual envelope)
+    const flashHz =
+      flashRate > 0
+        ? Math.min(0.65, Math.max(0.14, 0.12 + flashRate * 0.06))
+        : 0.26;
     if (doubleStrikeTimerRef.current > 0) {
       doubleStrikeTimerRef.current -= delta;
       if (doubleStrikeTimerRef.current <= 0) {
@@ -305,7 +317,7 @@ function PhysicalAtmosphericSky({
     } else if (
       stormTrigger > 0 &&
       lightningRef.current <= 0.02 &&
-      Math.random() < delta * 0.28
+      Math.random() < delta * flashHz
     ) {
       lightningRef.current = 0.75 + Math.random() * 0.25;
       lightningCenterRef.current.set(
@@ -603,9 +615,13 @@ function RealPrecipitationParticles({
         seeds[idx + 1] -= delta * (11.2 + atmosphere.windSpeed * 0.09) * mult;
         seeds[idx + 0] += delta * windDriftX * 0.85;
       } else if (isSnow) {
-        seeds[idx + 1] -= delta * 1.35 * mult;
+        // High SLR (`15..22:1` dry dendritic powder) floats slower & flutters wider than dense `5:1` wet snow!
+        const slrNorm = THREE.MathUtils.clamp(((atmosphere.snowSlrRatio ?? 11) - 5) / 14, 0, 1);
+        const fallSpeed = (1.65 - slrNorm * 0.55) * mult;
+        const flutterAmp = 0.26 + slrNorm * 0.24;
+        seeds[idx + 1] -= delta * fallSpeed;
         seeds[idx + 0] +=
-          delta * (windDriftX * 0.42 + Math.sin(t * 1.45 + i) * 0.36);
+          delta * (windDriftX * 0.44 + Math.sin(t * 1.45 + i) * flutterAmp);
       } else {
         const dirSign = windDriftX >= 0 ? 1 : -1;
         seeds[idx + 0] += delta * (2.6 + atmosphere.windSpeed * 0.09) * mult * dirSign;
@@ -623,7 +639,8 @@ function RealPrecipitationParticles({
         dummy.scale.set(0.0055, 0.38 + mult * 0.12, 0.0055);
       } else if (isSnow) {
         dummy.rotation.set(t * 0.45 + i, t * 0.32, 0);
-        const s = 0.03 * mult;
+        const slrBoost = THREE.MathUtils.clamp(((atmosphere.snowSlrRatio ?? 11) - 8) / 12, -0.15, 0.32);
+        const s = 0.03 * (1 + slrBoost) * mult;
         dummy.scale.set(s, s, s);
       } else {
         dummy.rotation.set(0, 0, Math.sin(t * 0.4 + i) * 0.08);

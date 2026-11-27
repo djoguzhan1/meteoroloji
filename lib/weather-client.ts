@@ -11,6 +11,16 @@ import type {
   UnitSystem
 } from "./weather-types";
 
+/**
+ * Resmi Bursa Hava Merkezi Referansı:
+ * MGM Bursa Bölge / Osmangazi Merkez Rasathanesi (WMO 17116 — 40.2308°K, 29.0133°D, 100 m).
+ * Eski 40.1885, 29.0610 (155 m) idari iğnesi Gökdere/Setbaşı sınırında kaldığı için MGM Yıldırım (18746)
+ * istasyonuna (4.06 km) WMO 17116 Bursa Merkez'den (6.21 km) daha yakın düşüyordu.
+ */
+export const BURSA_WMO_17116_LAT = 40.2308;
+export const BURSA_WMO_17116_LON = 29.0133;
+export const BURSA_WMO_17116_ELEVATION_M = 100;
+
 const envCity =
   typeof process !== "undefined" && process.env?.DEFAULT_CITY
     ? process.env.DEFAULT_CITY
@@ -18,23 +28,209 @@ const envCity =
 const envLat =
   typeof process !== "undefined" && process.env?.DEFAULT_LAT
     ? Number(process.env.DEFAULT_LAT)
-    : 40.1885;
+    : BURSA_WMO_17116_LAT;
 const envLon =
   typeof process !== "undefined" && process.env?.DEFAULT_LON
     ? Number(process.env.DEFAULT_LON)
-    : 29.061;
+    : BURSA_WMO_17116_LON;
 
 export const DEFAULT_LOCATION: GeoLocation = {
   id: "bursa-tr",
   name: envCity,
-  admin1: "Bursa",
+  admin1: "Osmangazi · Merkez (WMO 17116)",
   country: "Türkiye",
   countryCode: "TR",
-  lat: Number.isFinite(envLat) ? envLat : 40.1885,
-  lon: Number.isFinite(envLon) ? envLon : 29.061,
-  elevation: 155,
+  lat: Number.isFinite(envLat) ? envLat : BURSA_WMO_17116_LAT,
+  lon: Number.isFinite(envLon) ? envLon : BURSA_WMO_17116_LON,
+  elevation: BURSA_WMO_17116_ELEVATION_M,
   timezone: "Europe/Istanbul"
 };
+
+export const BURSA_CURATED_LOCATIONS: GeoLocation[] = [
+  DEFAULT_LOCATION,
+  {
+    id: "bursa-nilufer-tr",
+    name: "Nilüfer",
+    admin1: "Bursa · Batı Ova (MGM 18386)",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.2286,
+    lon: 28.8585,
+    elevation: 105,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-osmangazi-etek-tr",
+    name: "Osmangazi (Heykel / Çekirge)",
+    admin1: "Bursa · Tarihi Etek",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.1965,
+    lon: 29.0385,
+    elevation: 205,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-yildirim-tr",
+    name: "Yıldırım",
+    admin1: "Bursa · Doğu Etek (MGM 18746)",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.1919,
+    lon: 29.1086,
+    elevation: 147,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-mudanya-tr",
+    name: "Mudanya",
+    admin1: "Bursa · Marmara Kıyısı (MGM 18385)",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.3753,
+    lon: 28.8822,
+    elevation: 15,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-uludag-tr",
+    name: "Uludağ (Oteller / Zirve)",
+    admin1: "Bursa · Zirve Kuşağı (MGM 17676)",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.1069,
+    lon: 29.1292,
+    elevation: 1850,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-gemlik-tr",
+    name: "Gemlik",
+    admin1: "Bursa · Körfez",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.4325,
+    lon: 29.1564,
+    elevation: 15,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-gursu-tr",
+    name: "Gürsu",
+    admin1: "Bursa · Doğu Ova",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.2153,
+    lon: 29.1886,
+    elevation: 105,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-kestel-tr",
+    name: "Kestel",
+    admin1: "Bursa · Doğu Havza (MGM 18384)",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.1861,
+    lon: 29.2106,
+    elevation: 230,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "bursa-inegol-tr",
+    name: "İnegöl",
+    admin1: "Bursa · İç Havza",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 40.0781,
+    lon: 29.5133,
+    elevation: 295,
+    timezone: "Europe/Istanbul"
+  }
+];
+
+function normalizeTrAscii(str: string): string {
+  return str
+    .trim()
+    .toLowerCase()
+    .replace(/ı/g, "i")
+    .replace(/İ/g, "i")
+    .replace(/ş/g, "s")
+    .replace(/ğ/g, "g")
+    .replace(/ü/g, "u")
+    .replace(/ö/g, "o")
+    .replace(/ç/g, "c");
+}
+
+const EXPLICIT_BURSA_SUBLOCATIONS = [
+  "yildirim",
+  "nilufer",
+  "mudanya",
+  "uludag",
+  "kestel",
+  "gursu",
+  "gemlik",
+  "inegol",
+  "karacabey",
+  "yenisehir",
+  "mustafakemalpasa",
+  "orhangazi",
+  "iznik",
+  "keles",
+  "orhaneli",
+  "buyukorhan",
+  "harmancik",
+  "cekirge",
+  "heykel",
+  "gorukle"
+];
+
+/**
+ * Genel "Bursa" / "Bursa Merkez" aramalarını (Open-Meteo GeoNames 40.1956, 29.0601 155m pini
+ * veya eski önbellekteki 40.1885, 29.0610 155m pini dahil) resmi Bursa Hava Merkezi olan
+ * WMO 17116 (Osmangazi Merkez, 40.2308°K, 29.0133°D, 100 m) noktasına kenetler.
+ * Kullanıcının açıkça seçtiği ilçelere (Yıldırım, Nilüfer, Uludağ, Mudanya vb.) asla dokunmaz!
+ */
+export function normalizeCanonicalBursaLocation(loc: GeoLocation): GeoLocation {
+  const nameKey = normalizeTrAscii(loc.name || "");
+  const idKey = normalizeTrAscii(loc.id || "");
+  const hasExplicitSubloc = EXPLICIT_BURSA_SUBLOCATIONS.some(
+    (sub) => nameKey.includes(sub) || idKey.includes(sub)
+  );
+  if (hasExplicitSubloc) {
+    return loc;
+  }
+
+  const isGenericBursaName =
+    nameKey === "bursa" ||
+    nameKey === "bursa merkez" ||
+    nameKey === "merkez, bursa" ||
+    idKey === "bursa-tr";
+
+  const inCentralBursaBox =
+    loc.lat >= 40.15 &&
+    loc.lat <= 40.28 &&
+    loc.lon >= 28.95 &&
+    loc.lon <= 29.11 &&
+    (loc.elevation === undefined || loc.elevation <= 350);
+
+  if (isGenericBursaName && inCentralBursaBox) {
+    return {
+      ...loc,
+      id: loc.id === "bursa-tr" ? "bursa-tr" : loc.id || "bursa-tr",
+      name: loc.name?.trim() ? loc.name.trim() : "Bursa",
+      admin1: "Osmangazi · Merkez (WMO 17116)",
+      country: loc.country || "Türkiye",
+      countryCode: loc.countryCode || "TR",
+      lat: BURSA_WMO_17116_LAT,
+      lon: BURSA_WMO_17116_LON,
+      elevation: BURSA_WMO_17116_ELEVATION_M,
+      timezone: loc.timezone || "Europe/Istanbul"
+    };
+  }
+
+  return loc;
+}
 
 export const PRESET_CITIES: GeoLocation[] = [
   DEFAULT_LOCATION,

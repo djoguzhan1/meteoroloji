@@ -8,7 +8,10 @@
  *  3. Sub-pixel parabolic SAD optical flow + 3-frame Lagrangian echo growth/decay (`dDbzPerMin`)
  *  4. Real-time MGM 10-min Pluviometer Gauge-to-Radar (G/R Fulton-Brandes) intensity calibration
  *  5. Physical LCL / Dew-point spread Virga evaporation filter & cosine-tapered NWP blending
+ *  6. 0–100 km 8-Octant Polar Convective Cell Scanner (`convectiveCells`) for 3-Ring Lightning Proximity Radar
  */
+
+import type { RadarConvectiveCellSample } from './snow-and-lightning-engine';
 
 type NodeZlibSubset = typeof import('node:zlib');
 function getNodeZlib(): NodeZlibSubset | null {
@@ -58,6 +61,7 @@ export interface RadarNowcastResult {
   rainCessationMinutes: number | null;
   summaryCode: 'DRY_CLEAR' | 'RAIN_ACTIVE' | 'RAIN_APPROACHING' | 'RAIN_ENDING' | 'VIRGA_ALOFT';
   steps5Min: RadarMinuteStep[];
+  convectiveCells?: RadarConvectiveCellSample[];
 }
 
 export function latLonToSlippyTilePixel(
@@ -134,7 +138,7 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
 
   if (width <= 0 || height <= 0 || bitDepth !== 8 || idatChunks.length === 0) return null;
 
-  const totalIdatLen = idatChunks.reduce((acc, c) => acc + c.length, 0);
+  const totalIdatLen = idatChunks.reduce((acc, c) => acc + lengthOf(c), 0);
   const compressed = new Uint8Array(totalIdatLen);
   let pos = 0;
   for (const c of idatChunks) {
@@ -207,6 +211,10 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
   }
 
   return { width, height, rgba };
+}
+
+function lengthOf(arr: Uint8Array): number {
+  return arr.length;
 }
 
 export function rgbaPixelToDbz(r: number, g: number, b: number, a: number): number {
@@ -388,6 +396,113 @@ function sampleSmoothedDbz(grid: Float32Array, width: number, height: number, fx
     }
   }
   return sum / wSum;
+}
+
+/**
+ * Scans 0–100 km around `(targetPx, targetPy)` across 8 azimuth octants × 3 range rings (`0-15`, `15-40`, `40-100 km`)
+ * to extract real convective reflectivity cores (`>= 28 dBZ`) and their radial approach ETA.
+ */
+export function scanPolarConvectiveCells(params: {
+  grid: Float32Array;
+  width: number;
+  height: number;
+  targetPx: number;
+  targetPy: number;
+  metersPerPixel: number;
+  vxPxPerMin: number;
+  vyPxPerMin: number;
+  minDbzThreshold?: number;
+}): RadarConvectiveCellSample[] {
+  const {
+    grid,
+    width,
+    height,
+    targetPx,
+    targetPy,
+    metersPerPixel,
+    vxPxPerMin,
+    vyPxPerMin,
+    minDbzThreshold = 28,
+  } = params;
+
+  if (metersPerPixel <= 0 || width <= 0 || height <= 0) return [];
+
+  const maxRadiusPx = Math.min(260, Math.ceil(100_000 / metersPerPixel));
+  const maxRadiusSqPx = maxRadiusPx * maxRadiusPx;
+
+  // 24 polar bins: 3 range bands (0: 0-15km, 1: 15-40km, 2: 40-100km) x 8 octants (0..7)
+  type PolarPeak = {
+    dbz: number;
+    dxPx: number;
+    dyPx: number;
+    distKm: number;
+    bearingDeg: number;
+  };
+  const peaks: Array<PolarPeak | null> = new Array(24).fill(null);
+
+  const yMin = Math.max(0, Math.floor(targetPy - maxRadiusPx));
+  const yMax = Math.min(height - 1, Math.ceil(targetPy + maxRadiusPx));
+  const xMin = Math.max(0, Math.floor(targetPx - maxRadiusPx));
+  const xMax = Math.min(width - 1, Math.ceil(targetPx + maxRadiusPx));
+
+  // Exact 1-pixel scan (~0.15 ms on Float32Array) so compact 0.5-2 km graupel/thundersnow cores are never skipped!
+  for (let y = yMin; y <= yMax; y++) {
+    const dy = y - targetPy;
+    const dySq = dy * dy;
+    const rowOffset = y * width;
+    for (let x = xMin; x <= xMax; x++) {
+      const dbz = grid[rowOffset + x];
+      if (dbz < minDbzThreshold) continue;
+
+      const dx = x - targetPx;
+      const distSqPx = dx * dx + dySq;
+      if (distSqPx > maxRadiusSqPx) continue;
+      const distKm = (Math.sqrt(distSqPx) * metersPerPixel) / 1000;
+      if (distKm > 100) continue;
+
+      const ringIdx = distKm <= 15 ? 0 : distKm <= 40 ? 1 : 2;
+      // Bearing clockwise from North (dx > 0 East, dy < 0 North in image coords)
+      const bearingDeg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+      const octant = Math.floor(((bearingDeg + 22.5) % 360) / 45) % 8;
+      const binIdx = ringIdx * 8 + octant;
+
+      const prev = peaks[binIdx];
+      if (!prev || dbz > prev.dbz) {
+        peaks[binIdx] = { dbz, dxPx: dx, dyPx: dy, distKm, bearingDeg };
+      }
+    }
+  }
+
+  const out: RadarConvectiveCellSample[] = [];
+  for (const pk of peaks) {
+    if (!pk) continue;
+    const distPx = Math.hypot(pk.dxPx, pk.dyPx);
+    let approaching = distPx < 4;
+    let etaMinutes: number | null = distPx < 4 ? 0 : null;
+
+    if (distPx >= 4) {
+      // Unit vector from cell `(targetPx + dx, targetPy + dy)` toward target `(targetPx, targetPy)` is `(-dx/dist, -dy/dist)`
+      const closingPxPerMin = (vxPxPerMin * -pk.dxPx + vyPxPerMin * -pk.dyPx) / distPx;
+      if (closingPxPerMin > 0.08) {
+        approaching = true;
+        const rawEta = Math.round(distPx / closingPxPerMin);
+        if (rawEta >= 1 && rawEta <= 180) {
+          etaMinutes = rawEta;
+        }
+      }
+    }
+
+    out.push({
+      bearingDeg: Number(pk.bearingDeg.toFixed(0)),
+      distanceKm: Number(pk.distKm.toFixed(1)),
+      peakDbz: Number(pk.dbz.toFixed(1)),
+      approaching,
+      etaMinutes,
+    });
+  }
+
+  out.sort((a, b) => a.distanceKm - b.distanceKm || b.peakDbz - a.peakDbz);
+  return out.slice(0, 8);
 }
 
 export interface NowcastSteeringContext {
@@ -572,6 +687,18 @@ export function runSemiLagrangianRadarNowcast(params: {
     summaryCode = 'VIRGA_ALOFT';
   }
 
+  const convectiveCells = scanPolarConvectiveCells({
+    grid: currGrid,
+    width,
+    height,
+    targetPx,
+    targetPy,
+    metersPerPixel,
+    vxPxPerMin,
+    vyPxPerMin,
+    minDbzThreshold: steering.surfaceTempC <= 3.5 ? 28 : 34,
+  });
+
   return {
     generatedAtIso: new Date(baseTimeMs).toISOString(),
     radarAvailable: true,
@@ -584,6 +711,7 @@ export function runSemiLagrangianRadarNowcast(params: {
     rainCessationMinutes,
     summaryCode,
     steps5Min,
+    convectiveCells,
   };
 }
 
@@ -767,6 +895,7 @@ export async function fetchBursaRadarNowcast(
       rainCessationMinutes: null,
       summaryCode: 'DRY_CLEAR',
       steps5Min: [],
+      convectiveCells: [],
     };
   }
 }

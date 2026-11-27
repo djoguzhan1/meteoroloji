@@ -805,6 +805,44 @@ export function buildCalibratedSubseasonalOutlook(params: {
       clamp(54 - subDayOffset * 1.3 - Math.max(0, iqrMax - 3.2) * 2.0, 26, 56)
     );
 
+    // Subseasonal probabilistic snow diagnostics (52-member thermal cold-tail x precipitation corridor)
+    const memberColdCount = minRow.filter((m, mIdx) => {
+      const mx = maxRow[Math.min(mIdx, maxRow.length - 1)]?.v ?? tempMaxP50;
+      const stitchedMean = 0.5 * (mx + biasShiftMaxC + m.v + biasShiftMinC);
+      return stitchedMean <= 2.4 || m.v + biasShiftMinC <= 0.4;
+    }).length;
+    const coldMemberFrac = minRow.length > 0 ? memberColdCount / minRow.length : 0;
+    const snowProbPct = Math.round(
+      clamp((wetProbPct / 100) * coldMemberFrac * 100, 0, 88)
+    );
+
+    const p50SnowSlr = dayMeanP50 <= -1.5 ? 13.0 : dayMeanP50 <= 1.2 ? 9.5 : dayMeanP50 <= 2.6 ? 5.5 : 0;
+    const p10MeanCold = 0.5 * (tempMaxP10 + (tempMinP25 - 1.1));
+    const p90SnowSlr = p10MeanCold <= -2.0 ? 14.2 : p10MeanCold <= 1.2 ? 10.2 : p10MeanCold <= 2.8 ? 6.0 : 0;
+
+    const airSnowP50Cm =
+      snowProbPct >= 10 && p50SnowSlr > 0
+        ? Number((precipP50Mm * clamp((2.8 - dayMeanP50) / 3.2, 0.12, 1) * (p50SnowSlr / 10)).toFixed(1))
+        : 0;
+    const airSnowP90Cm =
+      snowProbPct >= 8 && p90SnowSlr > 0
+        ? Number(
+            Math.max(
+              airSnowP50Cm,
+              precipP90Mm * clamp((3.0 - p10MeanCold) / 3.4, 0.15, 1) * (p90SnowSlr / 10) * Math.min(1, coldMemberFrac * 1.45)
+            ).toFixed(1)
+          )
+        : 0;
+
+    const subGroundStickP50 = dayMeanP50 <= 0.2 ? 0.76 : dayMeanP50 <= 1.6 ? 0.42 : 0.12;
+    const subGroundStickP90 = p10MeanCold <= 0.0 ? 0.82 : p10MeanCold <= 1.6 ? 0.48 : 0.18;
+    const groundSnowP50Cm = Number((airSnowP50Cm * subGroundStickP50).toFixed(1));
+    const groundSnowP90Cm = Number(Math.max(groundSnowP50Cm, airSnowP90Cm * subGroundStickP90).toFixed(1));
+    const estSnowLineM = Math.max(
+      0,
+      Math.round((params.elevationM ?? 100) + (dayMeanP50 - 0.8) / 0.006)
+    );
+
     days.push({
       date: dateStr,
       dayLabel: formatDayMonthTr(dateStr),
@@ -823,9 +861,15 @@ export function buildCalibratedSubseasonalOutlook(params: {
       wetProbPct,
       precipP50Mm,
       precipP90Mm,
+      snowProbPct,
+      airSnowP50Cm,
+      airSnowP90Cm,
+      groundSnowP50Cm,
+      groundSnowP90Cm,
+      estSnowLineM,
       confidencePct,
       ensembleMembers: maxRow.length,
-      weatherCode,
+      weatherCode: snowProbPct >= 42 && weatherCode === 61 ? 71 : weatherCode,
       regimeTagTr
     });
   }

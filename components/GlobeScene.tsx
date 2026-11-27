@@ -94,7 +94,7 @@ function drawLandPolygons(
 
 const MAJOR_URBAN_LIGHTS: Array<[number, number, number]> = [
   [28.98, 41.01, 12],
-  [29.06, 40.19, 7],
+  [29.0133, 40.2308, 7],
   [32.86, 39.93, 9],
   [27.14, 38.42, 8],
   [30.71, 36.9, 6],

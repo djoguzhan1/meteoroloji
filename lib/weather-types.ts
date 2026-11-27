@@ -10,6 +10,117 @@ export type PrecipPhase =
   | "snow"
   | "hail";
 
+export type SnowQualityLabelTr =
+  | "Kristal Toz Kar"
+  | "Kuru Kar"
+  | "Nemli Örtü Karı"
+  | "Ağır Islak Kar"
+  | "Sulu Kar / Sepken"
+  | "Graupel / Bulgur Kar"
+  | "Yok";
+
+export type RoadIcingRisk = "none" | "low" | "high" | "black_ice";
+
+export type BlowingSnowRisk = "none" | "drifting" | "blizzard";
+
+export type DekSnowStatus = "none" | "watch" | "moderate_dek" | "heavy_dek";
+
+export type LightningSafetyLevel =
+  | "safe"
+  | "awareness"
+  | "caution_30_30"
+  | "shelter_now";
+
+export type ElevationSnowBand = {
+  id: string;
+  labelTr: string;
+  elevationM: number;
+  tempMeanC: number;
+  wetBulbMeanC: number;
+  precipPhase: PrecipPhase;
+  snowProbPct: number;
+  /** Havada yağan toplam kar (cm) */
+  airSnowCm: number;
+  /** Çim/toprak zeminde tutan kar (cm) */
+  groundSnowCm: number;
+  /** Asfalt/yolda tutan kar (cm) */
+  roadSnowCm: number;
+  /** Zirve kar örtüsü kalınlığı (cm) */
+  maxSnowpackCm: number;
+  slr: number;
+  snowQualityTr: SnowQualityLabelTr;
+};
+
+export type LightningRangeRingSummary = {
+  ringKm: 15 | 40 | 100;
+  labelTr: string;
+  activeCellCount: number;
+  maxDbz: number;
+  estFlashesPerMin: number;
+  probabilityPct: number;
+  status: "clear" | "watch" | "active" | "severe";
+};
+
+export type LightningCellVector = {
+  id: string;
+  bearingDeg: number;
+  compassTr: string;
+  distanceKm: number;
+  peakDbz: number;
+  estFlashesPerMin: number;
+  cgFractionPct: number;
+  approaching: boolean;
+  etaMinutes: number | null;
+  kind: "convective_storm" | "graupel_cell" | "thundersnow_dek" | "metar_ts";
+};
+
+export type LightningProximityRadar = {
+  updatedAtIso: string;
+  radarBacked: boolean;
+  metarConfirmedTs: boolean;
+  safetyLevel: LightningSafetyLevel;
+  safetyTitleTr: string;
+  safetyDetailTr: string;
+  nearestCellKm: number | null;
+  nearestBearingTr: string | null;
+  approachingEtaMin: number | null;
+  currentFlashesPerMin: number;
+  currentLpiJkg: number;
+  currentCgFractionPct: number;
+  isThundersnowNow: boolean;
+  rings: [
+    LightningRangeRingSummary,
+    LightningRangeRingSummary,
+    LightningRangeRingSummary
+  ];
+  cells: LightningCellVector[];
+};
+
+export type SnowAndLightningObservatorySummary = {
+  referenceElevationM: number;
+  soilTempNowC: number;
+  roadTempNowC: number;
+  hasAnySnow15d: boolean;
+  hasAnySnow30d: boolean;
+  nextSnowHourIso: string | null;
+  nextSnowDateYmd: string | null;
+  total15dAirSnowCm: number;
+  total15dGroundSnowCm: number;
+  total15dRoadSnowCm: number;
+  peak15dSnowpackCm: number;
+  lowest15dSnowLineM: number | null;
+  dekStatus15d: DekSnowStatus;
+  dekDeltaTSst850C: number | null;
+  maxIcingRisk48h: RoadIcingRisk;
+  maxBlowingSnow48h: BlowingSnowRisk;
+  lightningRadar: LightningProximityRadar;
+  peak48hLightningProbPct: number;
+  peak168hLightningProbPct: number;
+  peak168hFlashesPerMin: number;
+  hasThundersnow168h: boolean;
+  nextLightningHourIso: string | null;
+};
+
 export type PressureTrend =
   | "hızlı yükseliyor"
   | "yükseliyor"
@@ -185,6 +296,20 @@ export type CurrentWeather = {
   precipType: PrecipType;
   precipPhase?: PrecipPhase;
   snowLineElevationM?: number | null;
+  airSnowCmHr?: number;
+  groundSnowCmHr?: number;
+  roadSnowCmHr?: number;
+  snowpackDepthCm?: number;
+  snowSlr?: number;
+  snowQualityTr?: SnowQualityLabelTr;
+  soilTempC?: number;
+  roadTempC?: number;
+  icingRisk?: RoadIcingRisk;
+  blowingSnowRisk?: BlowingSnowRisk;
+  dekStatus?: DekSnowStatus;
+  lightningProbPct?: number;
+  lightningFlashesPerMin?: number;
+  isThundersnow?: boolean;
   weatherCode: number;
   condition: string;
   isStorm: boolean;
@@ -214,6 +339,7 @@ export type HourlyPoint = {
   gustP90?: number;
   windDirection: number;
   cloudCover: number;
+  shortwaveRadiationWm2?: number;
   visibilityKm: number;
   uvIndex: number;
   precipitation: number;
@@ -222,13 +348,41 @@ export type HourlyPoint = {
   precipType: PrecipType;
   precipPhase?: PrecipPhase;
   snowLineElevationM?: number | null;
+  wetBulbZeroM?: number | null;
+  meltingEnergyJkg?: number;
   rainAccum: number;
   snowAccum: number;
+  /** O saatte havada yağan saf kar miktarı (cm) */
+  airSnowCm?: number;
+  /** O saatte havada kar görülme olasılığı (%) */
+  airSnowProbPct?: number;
+  /** O saatte çim/toprak zeminde tutan kar (cm) */
+  groundSnowCm?: number;
+  /** O saatte asfalt/yolda tutan kar (cm) */
+  roadSnowCm?: number;
+  /** Oturma ve erime sonrası o saat sonu çim/toprak kar örtüsü kalınlığı (cm) */
+  snowpackDepthCm?: number;
+  /** O saat sonu asfalt kar örtüsü kalınlığı (cm) */
+  roadSnowDepthCm?: number;
+  /** Kümülatif zeminde tutan toplam kar (cm) */
+  groundAccumSnowCm?: number;
+  soilTempC?: number;
+  roadTempC?: number;
+  snowSlr?: number;
+  snowQualityTr?: SnowQualityLabelTr;
+  icingRisk?: RoadIcingRisk;
+  blowingSnowRisk?: BlowingSnowRisk;
+  dekStatus?: DekSnowStatus;
+  elevationSnowBands?: ElevationSnowBand[];
   weatherCode: number;
   condition: string;
   isStorm: boolean;
   stormScore?: number;
   lightningProbPct?: number;
+  lpiJkg?: number;
+  lightningFlashesPerMin?: number;
+  cgFractionPct?: number;
+  isThundersnow?: boolean;
   solarElevationDeg: number;
   daylight: number;
   cape: number | null;
@@ -268,10 +422,37 @@ export type DailyPoint = {
   precipP90?: number;
   precipProbabilityMax: number;
   precipPhase?: PrecipPhase;
+  /** O tarihte havada kar olasılığı (%) */
+  snowProbMaxPct?: number;
+  /** O tarihte havada yağan toplam kar (cm) */
+  airSnowSumCm?: number;
+  /** O tarihte P90 üst olasılık havada kar (cm) */
+  airSnowP90Cm?: number;
+  /** O tarihte çim/toprak zeminde tutan toplam kar (cm) */
+  groundSnowSumCm?: number;
+  /** O tarihte P90 üst olasılık zeminde tutan kar (cm) */
+  groundSnowP90Cm?: number;
+  /** O tarihte asfalt/yolda tutan toplam kar (cm) */
+  roadSnowSumCm?: number;
+  /** O tarihte ulaşılan maksimum kar örtüsü kalınlığı (cm) */
+  maxSnowpackDepthCm?: number;
+  snowSlrMean?: number;
+  snowQualityTr?: SnowQualityLabelTr;
+  minSnowLineM?: number | null;
+  minSoilTempC?: number;
+  minRoadTempC?: number;
+  icingRiskMax?: RoadIcingRisk;
+  blowingSnowMax?: BlowingSnowRisk;
+  dekStatus?: DekSnowStatus;
+  elevationSnowBands?: ElevationSnowBand[];
   windSpeedMax: number;
   windGustMax?: number;
   dominantWindCompass?: string;
   stormScoreMax?: number;
+  lightningProbMaxPct?: number;
+  lightningPeakFlashesPerMin?: number;
+  lpiMaxJkg?: number;
+  hasThundersnow?: boolean;
   uvIndexMax: number;
   sunrise: string;
   sunset: string;
@@ -300,6 +481,12 @@ export type SubseasonalDayPoint = {
   wetProbPct: number;
   precipP50Mm: number;
   precipP90Mm: number;
+  snowProbPct?: number;
+  airSnowP50Cm?: number;
+  airSnowP90Cm?: number;
+  groundSnowP50Cm?: number;
+  groundSnowP90Cm?: number;
+  estSnowLineM?: number | null;
   confidencePct: number;
   ensembleMembers: number;
   weatherCode: number;
@@ -512,6 +699,7 @@ export type WeatherBundle = {
   hourlySoundings: SoundingLevel[][];
   nativeConvective: NativeConvective;
   storm?: StormAssessment;
+  snowAndLightning?: SnowAndLightningObservatorySummary;
   hybrid: HybridMeta;
 };
 
@@ -610,4 +798,7 @@ export type SceneAtmosphereInput = {
   solarElevationDeg: number;
   daylight: number;
   cape: number;
+  lightningFlashRatePerMin?: number;
+  snowSlrRatio?: number;
+  isThundersnow?: boolean;
 };
