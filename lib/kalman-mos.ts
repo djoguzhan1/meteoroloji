@@ -601,31 +601,71 @@ export function trainKalmanMos({
     (observedRainHours >= 1 ||
       Object.values(precipBriers).some((v) => typeof v === "number" && v > 0.02));
 
+  const shrinkTowardPriors = (
+    empirical: Record<CoreModelKey, number>,
+    priors: Record<CoreModelKey, number>,
+    credibility: number
+  ): Record<CoreModelKey, number> => {
+    const c = clamp(credibility, 0, 1);
+    const out = {} as Record<CoreModelKey, number>;
+    let sum = 0;
+    for (const k of CORE_MODEL_KEYS) {
+      const v = c * empirical[k] + (1 - c) * priors[k];
+      out[k] = v;
+      sum += v;
+    }
+    if (sum > 0) {
+      for (const k of CORE_MODEL_KEYS) out[k] /= sum;
+    }
+    return out;
+  };
+
+  // Sample-size credibility: 6-8h short samples shrink conservatively toward WMO priors; >=28h unlocks full empirical weight
+  const sampleCredibility = hasLiveCalibration
+    ? clamp(matchedHours / 28, 0.32, 1.0)
+    : 0;
+
   const shortRangeWeights: DynamicHybridWeights = hasLiveCalibration
     ? {
-        temperature: computeInverseRmseWeights(
-          tempUbRmses,
+        temperature: shrinkTowardPriors(
+          computeInverseRmseWeights(
+            tempUbRmses,
+            WMO_PRIOR_WEIGHTS.temperature,
+            0.45
+          ),
           WMO_PRIOR_WEIGHTS.temperature,
-          0.45
+          sampleCredibility
         ),
-        pressure: computeInverseRmseWeights(
-          pressUbRmses,
+        pressure: shrinkTowardPriors(
+          computeInverseRmseWeights(
+            pressUbRmses,
+            WMO_PRIOR_WEIGHTS.pressure,
+            0.35
+          ),
           WMO_PRIOR_WEIGHTS.pressure,
-          0.35
+          sampleCredibility
         ),
-        wind: computeInverseRmseWeights(windRmses, WMO_PRIOR_WEIGHTS.wind, 3.2),
+        wind: shrinkTowardPriors(
+          computeInverseRmseWeights(windRmses, WMO_PRIOR_WEIGHTS.wind, 3.2),
+          WMO_PRIOR_WEIGHTS.wind,
+          sampleCredibility
+        ),
         precipitation: usePrecipBrier
-          ? computeInverseRmseWeights(
-              Object.fromEntries(
-                CORE_MODEL_KEYS.map((k) => [
-                  k,
-                  precipBriers[k] !== null && precipBriers[k] !== undefined
-                    ? Math.sqrt(Math.max(0, precipBriers[k]!))
-                    : null
-                ])
-              ) as Partial<Record<CoreModelKey, number | null>>,
+          ? shrinkTowardPriors(
+              computeInverseRmseWeights(
+                Object.fromEntries(
+                  CORE_MODEL_KEYS.map((k) => [
+                    k,
+                    precipBriers[k] !== null && precipBriers[k] !== undefined
+                      ? Math.sqrt(Math.max(0, precipBriers[k]!))
+                      : null
+                  ])
+                ) as Partial<Record<CoreModelKey, number | null>>,
+                WMO_PRIOR_WEIGHTS.precipitation,
+                0.22
+              ),
               WMO_PRIOR_WEIGHTS.precipitation,
-              0.22
+              sampleCredibility
             )
           : { ...WMO_PRIOR_WEIGHTS.precipitation }
       }
@@ -636,11 +676,29 @@ export function trainKalmanMos({
         precipitation: { ...WMO_PRIOR_WEIGHTS.precipitation }
       };
 
+  // Retain 22% of verified local basin/orographic model skill in Days 3-7 instead of resetting 100% to static priors
+  const mediumLocalCarry = hasLiveCalibration ? 0.22 * sampleCredibility : 0;
   const mediumRangeWeights: DynamicHybridWeights = {
-    temperature: { ...MEDIUM_RANGE_PRIOR_WEIGHTS.temperature },
-    pressure: { ...MEDIUM_RANGE_PRIOR_WEIGHTS.pressure },
-    wind: { ...MEDIUM_RANGE_PRIOR_WEIGHTS.wind },
-    precipitation: { ...MEDIUM_RANGE_PRIOR_WEIGHTS.precipitation }
+    temperature: shrinkTowardPriors(
+      shortRangeWeights.temperature,
+      MEDIUM_RANGE_PRIOR_WEIGHTS.temperature,
+      mediumLocalCarry
+    ),
+    pressure: shrinkTowardPriors(
+      shortRangeWeights.pressure,
+      MEDIUM_RANGE_PRIOR_WEIGHTS.pressure,
+      mediumLocalCarry
+    ),
+    wind: shrinkTowardPriors(
+      shortRangeWeights.wind,
+      MEDIUM_RANGE_PRIOR_WEIGHTS.wind,
+      mediumLocalCarry
+    ),
+    precipitation: shrinkTowardPriors(
+      shortRangeWeights.precipitation,
+      MEDIUM_RANGE_PRIOR_WEIGHTS.precipitation,
+      mediumLocalCarry
+    )
   };
 
   const primary = network[0]?.station ?? null;

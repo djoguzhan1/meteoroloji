@@ -341,6 +341,153 @@ export const GLOBE_CITIES: GeoLocation[] = [
   }
 ];
 
+const CANONICAL_STATION_CATALOG: GeoLocation[] = (() => {
+  const seen = new Set<string>();
+  const out: GeoLocation[] = [];
+  for (const item of [...BURSA_CURATED_LOCATIONS, ...GLOBE_CITIES]) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      out.push(item);
+    }
+  }
+  return out;
+})();
+
+function isInBursaLowPlainCorridor(loc: Pick<GeoLocation, "lat" | "lon" | "elevation">): boolean {
+  return (
+    loc.lat >= 40.205 &&
+    loc.lat <= 40.265 &&
+    loc.lon >= 28.97 &&
+    loc.lon <= 29.06 &&
+    (loc.elevation === undefined ||
+      !Number.isFinite(loc.elevation) ||
+      loc.elevation <= 165)
+  );
+}
+
+/**
+ * İstasyon kimliğini kanonikleştirir:
+ * - Önce `normalizeCanonicalBursaLocation` uygular.
+ * - Bursa alçak ova koridorundaki (<= 165m) "Osmangazi" / "Bursa" / "Bursa Merkez" noktalarını
+ *   (205m Heykel/Çekirge ve `bursa-osmangazi-etek-tr` hariç) `DEFAULT_LOCATION` ile birleştirir.
+ * - `BURSA_CURATED_LOCATIONS` ve `GLOBE_CITIES` içinde hem yatay (<= 0.018°) hem dikey (< 65m)
+ *   eşleşen istasyonların kanonik `id`, `elevation`, `admin1`, `timezone`, `countryCode` alanlarını korur.
+ */
+export function canonicalizeStationIdentity(raw: GeoLocation): GeoLocation {
+  const norm = normalizeCanonicalBursaLocation(raw);
+
+  const rawIdKey = normalizeTrAscii(raw.id || "");
+  const normIdKey = normalizeTrAscii(norm.id || "");
+  const rawNameKey = normalizeTrAscii(raw.name || "");
+  const normNameKey = normalizeTrAscii(norm.name || "");
+
+  const isHeykelOrEtek =
+    rawIdKey === "bursa-osmangazi-etek-tr" ||
+    normIdKey === "bursa-osmangazi-etek-tr" ||
+    rawNameKey.includes("heykel") ||
+    rawNameKey.includes("cekirge") ||
+    normNameKey.includes("heykel") ||
+    normNameKey.includes("cekirge");
+
+  const isBursaPlainName =
+    normNameKey === "osmangazi" ||
+    normNameKey === "bursa" ||
+    normNameKey === "bursa merkez" ||
+    normNameKey === "merkez, bursa" ||
+    rawNameKey === "osmangazi" ||
+    rawNameKey === "bursa" ||
+    rawNameKey === "bursa merkez" ||
+    normIdKey === "bursa-tr";
+
+  if (
+    !isHeykelOrEtek &&
+    isBursaPlainName &&
+    (isInBursaLowPlainCorridor(raw) || isInBursaLowPlainCorridor(norm))
+  ) {
+    return {
+      ...DEFAULT_LOCATION,
+      id: "bursa-tr",
+      name: "Bursa",
+      lat: BURSA_WMO_17116_LAT,
+      lon: BURSA_WMO_17116_LON,
+      elevation: BURSA_WMO_17116_ELEVATION_M
+    };
+  }
+
+  let bestMatch: GeoLocation | null = null;
+  let bestDist = Infinity;
+
+  for (const cand of CANONICAL_STATION_CATALOG) {
+    if (
+      norm.id &&
+      norm.id.startsWith("bursa-") &&
+      cand.id.startsWith("bursa-") &&
+      norm.id !== cand.id
+    ) {
+      continue;
+    }
+
+    const dLat = Math.abs(cand.lat - norm.lat);
+    const dLon = Math.abs(cand.lon - norm.lon);
+    if (dLat > 0.018 || dLon > 0.018) continue;
+
+    if (
+      typeof cand.elevation === "number" &&
+      Number.isFinite(cand.elevation) &&
+      typeof norm.elevation === "number" &&
+      Number.isFinite(norm.elevation) &&
+      Math.abs(cand.elevation - norm.elevation) >= 65
+    ) {
+      continue;
+    }
+
+    const dist = Math.hypot(dLat, dLon);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestMatch = cand;
+    }
+  }
+
+  if (bestMatch) {
+    const hasCustomName =
+      Boolean(norm.name?.trim()) && !norm.name.includes("°");
+    return {
+      ...norm,
+      id: bestMatch.id,
+      name: hasCustomName ? norm.name.trim() : bestMatch.name,
+      admin1: bestMatch.admin1 ?? norm.admin1,
+      country: norm.country?.trim() ? norm.country.trim() : bestMatch.country,
+      countryCode: bestMatch.countryCode ?? norm.countryCode,
+      elevation:
+        bestMatch.elevation !== undefined ? bestMatch.elevation : norm.elevation,
+      timezone: bestMatch.timezone ?? norm.timezone
+    };
+  }
+
+  return norm;
+}
+
+/**
+ * Hero/WeatherContext, WorldView ve DashboardView için birebir aynı `/api/weather` URL'sini
+ * ve sunucu L1 önbellek anahtarını üreten paylaşımlı yardımcı.
+ */
+export function buildWeatherApiUrl(loc: GeoLocation): string {
+  const c = canonicalizeStationIdentity(normalizeCanonicalBursaLocation(loc));
+  const qs = new URLSearchParams({
+    lat: String(c.lat),
+    lon: String(c.lon),
+    name: c.name,
+    country: c.country ?? ""
+  });
+  if (c.admin1) {
+    qs.set("admin1", c.admin1);
+  }
+  if (c.elevation !== undefined && Number.isFinite(c.elevation)) {
+    qs.set("elevation", String(Math.round(c.elevation)));
+  }
+  return `/api/weather?${qs.toString()}`;
+}
+
 function fractionalYearRad(dateUtc: Date): number {
   const year = dateUtc.getUTCFullYear();
   const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
@@ -624,6 +771,15 @@ export function computePrecipConsensus(
     maxMm: Number(vals[vals.length - 1].toFixed(1))
   };
 }
+
+export {
+  computeCalibratedWeightedSpread,
+  computeIntrinsicAccuracyIndex,
+  computeLyapunovHorizonSkill,
+  decayConfidenceForStaleOrDegraded,
+  type IntrinsicAccuracyBreakdown,
+  type IntrinsicAccuracyInput
+} from "./accuracy-index";
 
 export function computeHybridConfidence(
   tempSpreadC: number,
@@ -1254,6 +1410,131 @@ export function createFastZonedTimeResolver(
   };
 }
 
+const radarClockDtfCache = new Map<string, Intl.DateTimeFormat | null>();
+
+function getCachedRadarClockFormatter(timeZone?: string): Intl.DateTimeFormat | null {
+  if (!timeZone || typeof timeZone !== "string") return null;
+  const key = timeZone.trim();
+  if (!key) return null;
+  if (radarClockDtfCache.has(key)) {
+    return radarClockDtfCache.get(key) ?? null;
+  }
+  try {
+    const fmt = new Intl.DateTimeFormat("tr-TR", {
+      timeZone: key,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    });
+    radarClockDtfCache.set(key, fmt);
+    return fmt;
+  } catch {
+    radarClockDtfCache.set(key, null);
+    return null;
+  }
+}
+
+function formatUtcOffsetLabel(offsetSeconds: number): string {
+  const totalMinutes = Math.round(offsetSeconds / 60);
+  if (totalMinutes === 0) return "UTC+0";
+  const sign = totalMinutes >= 0 ? "+" : "-";
+  const absMinutes = Math.abs(totalMinutes);
+  const hours = Math.floor(absMinutes / 60);
+  const mins = absMinutes % 60;
+  return mins > 0
+    ? `UTC${sign}${hours}:${String(mins).padStart(2, "0")}`
+    : `UTC${sign}${hours}`;
+}
+
+function resolveRadarZoneLabel(tzKey: string, offsetSeconds: number): string {
+  switch (tzKey) {
+    case "Europe/Istanbul":
+      return "TRT";
+    case "Asia/Tokyo":
+      return "JST";
+    case "Europe/London":
+      return offsetSeconds > 0 ? "BST" : "GMT";
+    case "Atlantic/Reykjavik":
+    case "GMT":
+    case "Etc/GMT":
+      return "GMT";
+    case "UTC":
+    case "Etc/UTC":
+      return "UTC";
+    case "America/New_York":
+      return offsetSeconds > -18000 ? "EDT" : "EST";
+    case "America/Los_Angeles":
+      return offsetSeconds > -28800 ? "PDT" : "PST";
+    case "Australia/Sydney":
+      return offsetSeconds > 36000 ? "AEDT" : "AEST";
+    case "Europe/Berlin":
+    case "Europe/Paris":
+      return offsetSeconds > 3600 ? "CEST" : "CET";
+    case "Asia/Dubai":
+      return "GST";
+    default:
+      return formatUtcOffsetLabel(offsetSeconds);
+  }
+}
+
+export function formatRadarClock(
+  unixSec: number,
+  timeZone?: string,
+  utcOffsetSeconds?: number,
+  includeZoneLabel = true
+): string {
+  const safeUnixSec = Number.isFinite(unixSec)
+    ? unixSec
+    : Math.floor(Date.now() / 1000);
+  const utcMs = safeUnixSec * 1000;
+  const safeFallbackOffsetSec =
+    typeof utcOffsetSeconds === "number" && Number.isFinite(utcOffsetSeconds)
+      ? Math.round(utcOffsetSeconds)
+      : 0;
+
+  const trimmedTz = typeof timeZone === "string" ? timeZone.trim() : "";
+  const effectiveTz =
+    trimmedTz === "UTC" && safeFallbackOffsetSec !== 0 ? "" : trimmedTz;
+
+  const radarFmt = effectiveTz ? getCachedRadarClockFormatter(effectiveTz) : null;
+  if (radarFmt) {
+    const parts = radarFmt.formatToParts(new Date(utcMs));
+    let hh = "00";
+    let mm = "00";
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (p.type === "hour") {
+        const hv = Number(p.value);
+        hh = String(Number.isFinite(hv) ? hv % 24 : 0).padStart(2, "0");
+      } else if (p.type === "minute") {
+        const mv = Number(p.value);
+        mm = String(Number.isFinite(mv) ? mv : 0).padStart(2, "0");
+      }
+    }
+    const hm = `${hh}:${mm}`;
+    if (!includeZoneLabel) return hm;
+
+    const zonedFmt = getCachedZonedFormatter(effectiveTz);
+    const actualOffsetSec = zonedFmt
+      ? extractZonedPartsRaw(zonedFmt, utcMs).offsetSeconds
+      : safeFallbackOffsetSec;
+    const zoneLabel = resolveRadarZoneLabel(effectiveTz, actualOffsetSec);
+    return `${hm} ${zoneLabel}`;
+  }
+
+  const shifted = new Date(utcMs + safeFallbackOffsetSec * 1000);
+  const hh = String(shifted.getUTCHours()).padStart(2, "0");
+  const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
+  const hm = `${hh}:${mm}`;
+  if (!includeZoneLabel) return hm;
+
+  const fallbackLabel =
+    trimmedTz === "UTC" && safeFallbackOffsetSec === 0
+      ? "UTC"
+      : formatUtcOffsetLabel(safeFallbackOffsetSec);
+  return `${hm} ${fallbackLabel}`;
+}
+
 export interface ModularSolarArcInput {
   sunriseIso: string;
   sunsetIso: string;
@@ -1509,6 +1790,7 @@ export const ATMOS_STORAGE_KEYS = {
   favorites: "atmos:v5:stations",
   alerts: "atmos:v5:alerts",
   unit: "atmos:v5:unit",
+  audio: "atmos:v5:audio",
   cumulusCareer: "atmos:v5:cumulus-career",
   bundleCache: "atmos:v5:bundle-cache",
   modelsCache: "atmos:v5:models-cache"
@@ -1519,10 +1801,24 @@ const LEGACY_STORAGE_MAP: Record<keyof typeof ATMOS_STORAGE_KEYS, readonly strin
   favorites: ["atmos:stations:" + "v3"],
   alerts: ["atmos:alerts:" + "v3"],
   unit: ["atmos:unit:" + "v3"],
+  audio: [],
   cumulusCareer: ["atmos:cumulus:career:" + "v1"],
   bundleCache: [],
   modelsCache: []
 };
+
+export const ATMOS_REFRESH_ALL_EVENT = "atmos:refresh-all" as const;
+
+export interface AtmosRefreshAllDetail {
+  reason: "manual" | "online" | "recovery";
+  timestampMs: number;
+  location: GeoLocation;
+}
+
+export function dispatchAtmosRefreshAll(detail: AtmosRefreshAllDetail): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(ATMOS_REFRESH_ALL_EVENT, { detail }));
+}
 
 export interface StorageLike {
   getItem(key: string): string | null;

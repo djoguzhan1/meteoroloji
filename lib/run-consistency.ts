@@ -201,7 +201,9 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
 
   const monotonicFamilies = new Set<string>();
   const agreeingShiftFamilies = new Set<string>();
-  let runLockCounter = 1;
+  let weightedLockNum = 0;
+  let weightedLockDen = 0;
+  let locked3PlusWeight = 0;
 
   for (const m of input.laggedModels) {
     const idx =
@@ -226,15 +228,20 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
           monotonicFamilies.add(m.family);
         }
       }
+      let localLock = 1;
       if (Math.abs(r0 - r1) <= 0.9) {
-        let localLock = 2;
+        localLock = 2;
         if (r2 !== null && Number.isFinite(r2) && Math.abs(r1 - r2) <= 1.0) {
           localLock = 3;
           if (r3 !== null && Number.isFinite(r3) && Math.abs(r2 - r3) <= 1.1) {
             localLock = 4;
           }
         }
-        runLockCounter = Math.max(runLockCounter, localLock);
+      }
+      weightedLockNum += relW * localLock;
+      weightedLockDen += relW;
+      if (localLock >= 3) {
+        locked3PlusWeight += relW;
       }
     }
 
@@ -242,6 +249,17 @@ export function evaluateHourlyRunConsistency(input: HourlyConsistencyInput): Hou
       sumPairR0For2 += relW * r0;
       sumPairR2 += relW * r2;
       wPair02 += relW;
+    }
+  }
+
+  // Multi-family consensus lock: prevents 1 stubborn model out of 8 from reporting 4-run LOCKED when 7 models shifted!
+  let runLockCounter = 1;
+  if (weightedLockDen > 0) {
+    const meanLock = weightedLockNum / weightedLockDen;
+    const locked3Frac = locked3PlusWeight / weightedLockDen;
+    runLockCounter = Math.max(1, Math.min(4, Math.round(meanLock)));
+    if (runLockCounter >= 3 && locked3Frac < 0.5) {
+      runLockCounter = 2;
     }
   }
 

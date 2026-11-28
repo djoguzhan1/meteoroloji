@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
@@ -29,8 +29,18 @@ import {
   formatFreshnessAgeTr,
   reanchorWeatherBundleToNow
 } from "@/lib/forecast-resilience";
+import { buildLocationHref } from "@/lib/location-url";
+import { resolveActiveTemporalView } from "@/lib/temporal-view";
 import {
+  ATMOS_REFRESH_ALL_EVENT,
+  buildWeatherApiUrl,
+  canonicalizeStationIdentity,
+  formatDistance,
+  formatElevation,
   formatLatLon,
+  formatPrecip,
+  formatPressure,
+  formatPressureDelta,
   formatTemperature,
   formatWindSpeed,
   GLOBE_CITIES,
@@ -38,6 +48,10 @@ import {
 } from "@/lib/weather-client";
 import type { GeoLocation, WeatherBundle } from "@/lib/weather-types";
 import { atmosUiSfx } from "@/lib/ui-sfx";
+import type { LiveRadarFrameState } from "./LiveRadarMap";
+import AnimatedNumber from "./AnimatedNumber";
+import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
+
 const LiveRadarMap = dynamic(() => import("./LiveRadarMap"), {
   ssr: false,
   loading: () => (
@@ -46,8 +60,6 @@ const LiveRadarMap = dynamic(() => import("./LiveRadarMap"), {
     </div>
   )
 });
-import AnimatedNumber from "./AnimatedNumber";
-import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
 const GlobeScene = dynamic(() => import("./GlobeScene"), {
   ssr: false,
@@ -101,7 +113,7 @@ export default function WorldView() {
   const {
     bundle,
     activeLocation,
-    setActiveLocation,
+    promoteLocationWithBundle,
     addFavorite,
     isFavorite,
     unit
@@ -116,6 +128,8 @@ export default function WorldView() {
   } | null>(null);
   const [fetching, setFetching] = useState(false);
   const [pointError, setPointError] = useState<string | null>(null);
+  const [radarFrameState, setRadarFrameState] = useState<LiveRadarFrameState | null>(null);
+
   const requestSeqRef = useRef(0);
   const manualPickRef = useRef(manualPick);
 
@@ -128,10 +142,32 @@ export default function WorldView() {
   const selectedLoc = isManualActive ? manualPick.loc : activeLocation;
   const pointBundle = isManualActive ? manualPick.bundle : bundle;
 
+  // 100% SSOT Data Parity with Weather ("Hava") tab via resolveActiveTemporalView(pointBundle, 0)
+  const temporal = useMemo(
+    () => (pointBundle ? resolveActiveTemporalView(pointBundle, 0) : null),
+    [pointBundle]
+  );
+
   const fetchPoint = useCallback(
-    async (loc: GeoLocation) => {
+    async (rawLoc: GeoLocation, opts?: { forceRefresh?: boolean }) => {
+      const loc = canonicalizeStationIdentity(rawLoc);
       const seq = ++requestSeqRef.current;
       const baseId = activeLocation.id;
+
+      // Zero duplicate request when selecting the active location whose context bundle is already live
+      const matchesActiveLive =
+        !opts?.forceRefresh &&
+        areLocationsEquivalent(loc, activeLocation) &&
+        bundle !== null &&
+        areLocationsEquivalent(bundle.location, loc) &&
+        (bundle.freshness?.status ?? "live") === "live";
+
+      if (matchesActiveLive) {
+        setManualPick(null);
+        setFetching(false);
+        setPointError(null);
+        return;
+      }
 
       // Strict city isolation: only prefill if existing bundle belongs to `loc`, or L4 vault has `loc`
       const prevPick = manualPickRef.current;
@@ -157,14 +193,8 @@ export default function WorldView() {
       setPointError(null);
 
       try {
-        const qs = new URLSearchParams({
-          lat: String(loc.lat),
-          lon: String(loc.lon),
-          name: loc.name,
-          country: loc.country ?? ""
-        });
-        const res = await fetch(`/api/weather?${qs.toString()}`, {
-          cache: initialPointBundle ? "no-store" : "default"
+        const res = await fetch(buildWeatherApiUrl(loc), {
+          cache: opts?.forceRefresh || initialPointBundle ? "no-store" : "default"
         });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
@@ -174,7 +204,16 @@ export default function WorldView() {
         if (seq !== requestSeqRef.current) return;
         const merged: WeatherBundle = {
           ...data,
-          location: { ...data.location, name: loc.name, country: loc.country }
+          location: {
+            ...data.location,
+            id: loc.id || data.location.id,
+            name: loc.name || data.location.name,
+            admin1: loc.admin1 ?? data.location.admin1,
+            country: loc.country || data.location.country,
+            countryCode: loc.countryCode ?? data.location.countryCode,
+            elevation: loc.elevation ?? data.location.elevation,
+            timezone: data.location.timezone ?? loc.timezone
+          }
         };
         if ((merged.freshness?.status ?? "live") === "live") {
           writeCachedWeatherBundle(merged);
@@ -228,7 +267,7 @@ export default function WorldView() {
         if (seq === requestSeqRef.current) setFetching(false);
       }
     },
-    [activeLocation.id, bundle, isOffline]
+    [activeLocation, bundle, isOffline]
   );
 
   // Auto-recover manually selected coordinate/city when live connection returns
@@ -238,10 +277,22 @@ export default function WorldView() {
     if (!cur || cur.baseId !== activeLocation.id) return;
     if (!cur.bundle || (cur.bundle.freshness?.status ?? "live") !== "live") {
       queueMicrotask(() => {
-        void fetchPoint(cur.loc);
+        void fetchPoint(cur.loc, { forceRefresh: true });
       });
     }
   }, [recoveryCount, activeLocation.id, fetchPoint]);
+
+  // Global refresh listener: refreshes manualPick when user triggers global refresh
+  useEffect(() => {
+    const onGlobalRefresh = () => {
+      const cur = manualPickRef.current;
+      if (cur && cur.baseId === activeLocation.id) {
+        void fetchPoint(cur.loc, { forceRefresh: true });
+      }
+    };
+    window.addEventListener(ATMOS_REFRESH_ALL_EVENT, onGlobalRefresh);
+    return () => window.removeEventListener(ATMOS_REFRESH_ALL_EVENT, onGlobalRefresh);
+  }, [activeLocation.id, fetchPoint]);
 
   const handlePickCoords = useCallback(
     async (lat: number, lon: number) => {
@@ -249,6 +300,10 @@ export default function WorldView() {
       setFetching(true);
       let name = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
       let country = "Koordinat";
+      let admin1: string | undefined;
+      let countryCode: string | undefined;
+      let elevation: number | undefined;
+      let timezone: string | undefined;
       try {
         const r = await fetch(
           `/api/reverse-geocode?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`
@@ -257,19 +312,35 @@ export default function WorldView() {
           const geo = await r.json();
           name = geo.name || name;
           country = geo.country || country;
+          if (typeof geo.admin1 === "string" && geo.admin1.trim()) {
+            admin1 = geo.admin1.trim();
+          }
+          if (typeof geo.countryCode === "string" && geo.countryCode.trim()) {
+            countryCode = geo.countryCode.trim().toUpperCase();
+          }
+          if (typeof geo.elevation === "number" && Number.isFinite(geo.elevation)) {
+            elevation = Math.round(geo.elevation);
+          }
+          if (typeof geo.timezone === "string" && geo.timezone.trim()) {
+            timezone = geo.timezone.trim();
+          }
         }
       } catch {
         // koordinat adı korunur
       }
       if (seq !== requestSeqRef.current) return;
 
-      const loc: GeoLocation = {
-        id: `coord_${lat.toFixed(2)}_${lon.toFixed(2)}`,
+      const loc = canonicalizeStationIdentity({
+        id: `coord_${lat.toFixed(4)}_${lon.toFixed(4)}`,
         name,
+        admin1,
         country,
+        countryCode,
         lat,
-        lon
-      };
+        lon,
+        elevation,
+        timezone
+      });
       await fetchPoint(loc);
     },
     [fetchPoint]
@@ -282,12 +353,72 @@ export default function WorldView() {
   );
   const engineMeta = pointBundle?.hybrid.engineMeta;
   const nowcastUi = formatRadarNowcastSummary(engineMeta);
+
   const liveRainMmHr =
     typeof engineMeta?.currentRadarRainMmHr === "number" && engineMeta.radarAvailable
       ? engineMeta.currentRadarRainMmHr
-      : (pointBundle?.current.precipitation ?? 0);
+      : (temporal?.telemetry.precipitation ?? pointBundle?.current.precipitation ?? 0);
   const liveRadarDbz =
     typeof engineMeta?.currentRadarDbz === "number" ? engineMeta.currentRadarDbz : 0;
+
+  // Synchronize Doppler box with timeline player frame (+5..+30m forecast steps & -120..-5m archive label)
+  const syncedDopplerReadout = useMemo(() => {
+    if (viewMode !== "radar" || !radarFrameState) {
+      return {
+        rainMmHr: liveRainMmHr,
+        dbz: liveRadarDbz,
+        frameNote: null as string | null,
+        isForecastStep: false
+      };
+    }
+
+    const { deltaMin, isForecast } = radarFrameState;
+    if (isForecast || deltaMin >= 5) {
+      const steps = engineMeta?.nowcastSteps5Min ?? [];
+      if (steps.length > 0) {
+        let best = steps[0];
+        let bestDiff = Math.abs(best.offsetMin - deltaMin);
+        for (let i = 1; i < steps.length; i++) {
+          const diff = Math.abs(steps[i].offsetMin - deltaMin);
+          if (diff < bestDiff) {
+            best = steps[i];
+            bestDiff = diff;
+          }
+        }
+        return {
+          rainMmHr: best.rainMmHr,
+          dbz: best.dbz,
+          frameNote: `+${best.offsetMin} dk Nowcast${best.virga ? " · Virga" : ""}`,
+          isForecastStep: true
+        };
+      }
+      return {
+        rainMmHr: liveRainMmHr,
+        dbz: liveRadarDbz,
+        frameNote: `+${Math.max(5, deltaMin)} dk Tahmin`,
+        isForecastStep: true
+      };
+    }
+
+    if (deltaMin <= -5) {
+      return {
+        rainMmHr: liveRainMmHr,
+        dbz: liveRadarDbz,
+        frameNote: `Yüzey: Canlı · Radar: -${Math.abs(deltaMin)} dk Arşiv`,
+        isForecastStep: false
+      };
+    }
+
+    return {
+      rainMmHr: liveRainMmHr,
+      dbz: liveRadarDbz,
+      frameNote: null,
+      isForecastStep: false
+    };
+  }, [viewMode, radarFrameState, engineMeta?.nowcastSteps5Min, liveRainMmHr, liveRadarDbz]);
+
+  const resolvedElevationM =
+    selectedLoc.elevation ?? pointBundle?.location.elevation;
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
@@ -343,9 +474,7 @@ export default function WorldView() {
       {/* Tek Satır Kaydırılabilir Hızlı İstasyon Şeridi */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
         {GLOBE_CITIES.map((city) => {
-          const active =
-            Math.abs(selectedLoc.lat - city.lat) < 0.2 &&
-            Math.abs(selectedLoc.lon - city.lon) < 0.2;
+          const active = areLocationsEquivalent(selectedLoc, city);
           return (
             <button
               key={city.id}
@@ -368,7 +497,7 @@ export default function WorldView() {
 
       {/* Ana Harita / Küre + Sağ Ölçüm Kartı */}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.85fr)]">
-        <div className="surface-panel relative h-[480px] overflow-hidden sm:h-[580px]">
+        <div className="surface-panel relative h-[clamp(340px,calc(100svh-264px-env(safe-area-inset-bottom,0px)),460px)] sm:h-[560px] lg:h-[580px] overflow-hidden">
           {viewMode === "radar" ? (
             <LiveRadarMap
               selectedLat={selectedLoc.lat}
@@ -376,6 +505,13 @@ export default function WorldView() {
               presetCities={GLOBE_CITIES}
               onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
               onPickCity={(city) => void fetchPoint(city)}
+              unit={unit}
+              timeZone={pointBundle?.timezone ?? selectedLoc.timezone}
+              utcOffsetSeconds={pointBundle?.utcOffsetSeconds}
+              convectiveCells={temporal?.lightningRadar.cells}
+              advectionFromDeg={engineMeta?.radarAdvectionFromDeg}
+              advectionSpeedKmh={engineMeta?.radarAdvectionSpeedKmh}
+              onFrameStateChange={setRadarFrameState}
             />
           ) : (
             <GlobeScene
@@ -384,6 +520,7 @@ export default function WorldView() {
               homeLat={activeLocation.lat}
               homeLon={activeLocation.lon}
               presetCities={GLOBE_CITIES}
+              selectedCloudCover={temporal?.telemetry.cloudCover}
               onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
               onPickCity={(city) => void fetchPoint(city)}
             />
@@ -395,9 +532,15 @@ export default function WorldView() {
           <div className="space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="flex items-center gap-1.5 font-mono text-xs text-ink-muted tabular">
+                <p className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-ink-muted tabular">
                   <MapPin className="h-3.5 w-3.5 text-signal-sky" />
-                  {formatLatLon(selectedLoc.lat, selectedLoc.lon, 3)}
+                  <span>{formatLatLon(selectedLoc.lat, selectedLoc.lon, 3)}</span>
+                  {resolvedElevationM !== undefined && Number.isFinite(resolvedElevationM) && (
+                    <>
+                      <span>·</span>
+                      <span>Rakım {formatElevation(resolvedElevationM, unit)}</span>
+                    </>
+                  )}
                 </p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   <h2 className="font-display text-2xl font-semibold text-ink-primary">
@@ -410,8 +553,10 @@ export default function WorldView() {
                     </span>
                   )}
                 </div>
-                {selectedLoc.country && (
-                  <p className="text-xs text-ink-secondary">{selectedLoc.country}</p>
+                {(selectedLoc.admin1 || selectedLoc.country) && (
+                  <p className="text-xs text-ink-secondary">
+                    {[selectedLoc.admin1, selectedLoc.country].filter(Boolean).join(" · ")}
+                  </p>
                 )}
               </div>
               {fetching && (
@@ -426,7 +571,7 @@ export default function WorldView() {
                 <span>{pointError}</span>
                 <button
                   type="button"
-                  onClick={() => void fetchPoint(selectedLoc)}
+                  onClick={() => void fetchPoint(selectedLoc, { forceRefresh: true })}
                   className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[11px] hover:bg-white/10"
                 >
                   <RefreshCw className="h-3 w-3" /> Tekrar
@@ -434,37 +579,40 @@ export default function WorldView() {
               </div>
             )}
 
-            {pointBundle ? (
+            {pointBundle && temporal ? (
               <>
                 <div className="flex items-baseline justify-between gap-3 border-y border-white/[0.08] py-4">
                   <div className="flex items-center gap-3">
                     <span className="font-display text-5xl font-semibold tracking-tight text-ink-primary tabular">
-                      <AnimatedNumber value={formatTemperature(pointBundle.current.temperature, unit)} />
+                      <AnimatedNumber
+                        value={formatTemperature(temporal.telemetry.temperature, unit)}
+                      />
                     </span>
                     <div>
                       <p className="flex items-center gap-1.5 text-sm font-medium text-ink-primary">
                         <AnimatedWeatherIcon
-                          code={pointBundle.current.weatherCode}
-                          isNight={pointBundle.current.solarElevationDeg < -3}
+                          code={temporal.telemetry.weatherCode}
+                          isNight={temporal.dayContext.isNight}
                           className="h-5 w-5"
                         />
-                        <span>{pointBundle.current.condition}</span>
+                        <span>{temporal.telemetry.condition}</span>
                       </p>
                       <p className="text-xs text-ink-muted tabular">
                         Hissedilen{" "}
-                        {formatTemperature(pointBundle.current.apparentTemperature, unit)}
+                        {formatTemperature(temporal.telemetry.apparentTemperature, unit)}
                       </p>
                     </div>
                   </div>
-                  {pointBundle.current.temp850hPa !== null && (
+                  {temporal.telemetry.temp850hPa !== null && (
                     <div className="text-right font-mono text-xs tabular">
                       <span className="block text-[10px] uppercase text-ink-muted">
                         850 hPa
                       </span>
                       <span className="font-semibold text-signal-sky">
-                        {pointBundle.current.temp850hPa > 0
-                          ? `+${pointBundle.current.temp850hPa}°`
-                          : `${pointBundle.current.temp850hPa}°`}
+                        {formatTemperature(temporal.telemetry.temp850hPa, unit, {
+                          signed: true,
+                          showUnit: true
+                        })}
                       </span>
                     </div>
                   )}
@@ -485,10 +633,13 @@ export default function WorldView() {
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-xs tabular">
                     <span className="text-ink-primary">
-                      {liveRainMmHr > 0 ? `${liveRainMmHr.toFixed(1)} mm/sa` : "0.0 mm/sa"}
+                      {formatPrecip(syncedDopplerReadout.rainMmHr, unit, { per: "hour" })}
                       <span className="text-ink-muted">
                         {" "}
-                        · {liveRadarDbz > 0 ? `${liveRadarDbz.toFixed(0)} dBZ` : "0 dBZ"}
+                        ·{" "}
+                        {syncedDopplerReadout.dbz > 0
+                          ? `${Math.round(syncedDopplerReadout.dbz)} dBZ`
+                          : "0 dBZ"}
                       </span>
                     </span>
                     <span className="text-ink-muted">
@@ -498,9 +649,20 @@ export default function WorldView() {
                         ? `Sürüklenme ${windDirectionToCompass(
                             engineMeta.radarAdvectionFromDeg
                           )} ${formatWindSpeed(engineMeta.radarAdvectionSpeedKmh, unit)}`
-                        : `Olasılık %${pointBundle.current.precipProbability}`}
+                        : `Olasılık %${temporal.telemetry.precipProbability}`}
                     </span>
                   </div>
+                  {syncedDopplerReadout.frameNote && (
+                    <p
+                      className={`font-mono text-[11px] tabular ${
+                        syncedDopplerReadout.isForecastStep
+                          ? "text-sky-300"
+                          : "text-amber-200/90"
+                      }`}
+                    >
+                      {syncedDopplerReadout.frameNote}
+                    </p>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5 text-xs">
@@ -509,11 +671,11 @@ export default function WorldView() {
                       <Wind className="h-3.5 w-3.5 text-signal-sky" /> Rüzgar
                     </span>
                     <p className="font-mono text-base font-semibold text-ink-primary tabular">
-                      {formatWindSpeed(pointBundle.current.windSpeed, unit)}
+                      {formatWindSpeed(temporal.telemetry.windSpeed, unit)}
                     </p>
                     <p className="text-ink-muted tabular">
-                      {windDirectionToCompass(pointBundle.current.windDirection)} · Hamle{" "}
-                      {formatWindSpeed(pointBundle.current.windGusts, unit)}
+                      {temporal.telemetry.windCompassTr} · Hamle{" "}
+                      {formatWindSpeed(temporal.telemetry.windGusts, unit)}
                     </p>
                   </div>
 
@@ -522,11 +684,11 @@ export default function WorldView() {
                       <Droplets className="h-3.5 w-3.5 text-signal-sky" /> Nem & Çiy
                     </span>
                     <p className="font-mono text-base font-semibold text-ink-primary tabular">
-                      %{pointBundle.current.humidity}
+                      %{temporal.telemetry.humidity}
                     </p>
                     <p className="text-ink-muted tabular">
-                      Td {formatTemperature(pointBundle.current.dewPoint, unit)} · Bulut %
-                      {pointBundle.current.cloudCover}
+                      Td {formatTemperature(temporal.telemetry.dewPoint, unit)} · Bulut %
+                      {temporal.telemetry.cloudCover}
                     </p>
                   </div>
 
@@ -535,29 +697,29 @@ export default function WorldView() {
                       <Gauge className="h-3.5 w-3.5 text-ink-secondary" /> Basınç
                     </span>
                     <p className="flex items-center gap-1 font-mono text-base font-semibold text-ink-primary tabular">
-                      <span>{pointBundle.current.pressure} hPa</span>
-                      {pointBundle.current.pressureTrend.includes("yükseliyor") ? (
+                      <span>{formatPressure(temporal.telemetry.pressure, unit)}</span>
+                      {temporal.telemetry.pressureTrend.includes("yükseliyor") ? (
                         <ArrowUpRight className="h-3.5 w-3.5 text-signal-emerald" />
-                      ) : pointBundle.current.pressureTrend.includes("düşüyor") ? (
+                      ) : temporal.telemetry.pressureTrend.includes("düşüyor") ? (
                         <ArrowDownRight className="h-3.5 w-3.5 text-signal-amber" />
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 text-ink-muted" />
                       )}
                     </p>
                     <p className="text-ink-muted tabular">
-                      3s: {pointBundle.current.pressureDelta3h > 0 ? "+" : ""}
-                      {pointBundle.current.pressureDelta3h} hPa · Görüş{" "}
-                      {pointBundle.current.visibilityKm} km
+                      3s: {formatPressureDelta(temporal.telemetry.pressureDelta3h, unit, false)}{" "}
+                      · Görüş {formatDistance(temporal.telemetry.visibilityKm, unit)}
                     </p>
                   </div>
 
                   <div className="surface-tile p-3 space-y-1">
                     <span className="text-ink-muted">Hava Kalitesi</span>
                     <p className="font-mono text-base font-semibold text-ink-primary tabular">
-                      EAQI {pointBundle.airQuality.europeanAqi}
+                      EAQI {temporal.airQualityContext.data.europeanAqi}
                     </p>
                     <p className="text-ink-muted tabular">
-                      {pointBundle.airQuality.label} · PM2.5 {pointBundle.airQuality.pm25}
+                      {temporal.airQualityContext.data.label} · PM2.5{" "}
+                      {temporal.airQualityContext.data.pm25}
                     </p>
                   </div>
                 </div>
@@ -575,8 +737,8 @@ export default function WorldView() {
             <button
               type="button"
               onClick={() => {
-                setActiveLocation(selectedLoc);
-                router.push("/");
+                promoteLocationWithBundle(selectedLoc, pointBundle);
+                router.push(buildLocationHref("/", selectedLoc));
               }}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-ink-primary px-4 py-2.5 text-sm font-medium text-obsidian-950 hover:bg-white transition-colors"
             >

@@ -10,21 +10,25 @@ import {
 } from "@/lib/perf-budgets";
 import type { WindGridBundle } from "@/lib/weather-types";
 
+export interface WindStreamOverlayProps {
+  grid: WindGridBundle | null;
+  width: number;
+  height: number;
+  zoom: number;
+  isInteracting?: boolean;
+  timeOffsetMinutes?: number;
+  screenToLatLon: (x: number, y: number) => { lat: number; lon: number };
+}
+
 function WindStreamOverlayBase({
   grid,
   width,
   height,
   zoom,
   isInteracting = false,
+  timeOffsetMinutes = 0,
   screenToLatLon
-}: {
-  grid: WindGridBundle | null;
-  width: number;
-  height: number;
-  zoom: number;
-  isInteracting?: boolean;
-  screenToLatLon: (x: number, y: number) => { lat: number; lon: number };
-}) {
+}: WindStreamOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const gridRef = useRef<WindGridBundle | null>(grid);
   const zoomRef = useRef<number>(zoom);
@@ -51,15 +55,22 @@ function WindStreamOverlayBase({
     interactingRef.current = isInteracting;
   }, [isInteracting]);
 
-  // Precompute viewport geo bounds on pan/zoom; reproject existing particles & request trail clear
-  // so stale screen-space trails never float over wrong cities!
+  // Precompute viewport geo bounds on pan/zoom; reproject existing particles across ±180° antimeridian
+  // & request trail clear so stale screen-space trails never float over wrong cities!
   useEffect(() => {
     if (width <= 0 || height <= 0) return;
     const nw = screenToLatLon(0, 0);
+    const mid = screenToLatLon(width / 2, height / 2);
     const se = screenToLatLon(width, height);
-    let eastLon = se.lon;
+
     const westLon = nw.lon;
-    if (eastLon < westLon) eastLon += 360;
+    const halfSpan = (((mid.lon - westLon) % 360) + 360) % 360;
+    let eastLon = se.lon;
+    if (halfSpan > 0 && halfSpan < 180) {
+      eastLon = westLon + halfSpan * 2;
+    } else if (eastLon <= westLon) {
+      eastLon += 360;
+    }
 
     const nextBounds: ViewportGeoBounds = {
       northLat: nw.lat,
@@ -74,6 +85,7 @@ function WindStreamOverlayBase({
       (Math.abs(prev.bounds.northLat - nextBounds.northLat) > 1e-4 ||
         Math.abs(prev.bounds.southLat - nextBounds.southLat) > 1e-4 ||
         Math.abs(prev.bounds.westLon - nextBounds.westLon) > 1e-4 ||
+        Math.abs(prev.bounds.eastLon - nextBounds.eastLon) > 1e-4 ||
         prev.zoom !== zoom)
     ) {
       clearRequestedRef.current = true;
@@ -88,9 +100,14 @@ function WindStreamOverlayBase({
       if (pts.length > 0 && Math.abs(nextMercSpan) > 1e-6) {
         for (let i = 0; i < pts.length; i++) {
           const p = pts[i];
-          const lon = prev.bounds.westLon + (p.x / width) * prevLonSpan;
+          const pLon = prev.bounds.westLon + (p.x / width) * prevLonSpan;
           const mercY = prevNorthM + (p.y / height) * prevMercSpan;
-          const nx = ((lon - nextBounds.westLon) / nextLonSpan) * width;
+          // Modular antimeridian (±180°) unwrapped longitude difference
+          let relLon = ((((pLon - nextBounds.westLon) % 360) + 540) % 360) - 180;
+          if (relLon < 0 && nextLonSpan > 180 && relLon + 360 <= nextLonSpan + 1e-4) {
+            relLon += 360;
+          }
+          const nx = (relLon / nextLonSpan) * width;
           const ny = ((mercY - nextNorthM) / nextMercSpan) * height;
           if (nx >= 0 && nx <= width && ny >= 0 && ny <= height) {
             p.x = nx;
@@ -120,7 +137,21 @@ function WindStreamOverlayBase({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const particleCount = Math.min(780, Math.max(320, Math.round((width * height) / 620)));
+    const reducedMotionMql =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null;
+    let prefersReducedMotion = Boolean(reducedMotionMql?.matches);
+
+    const fullParticleCount = Math.min(
+      780,
+      Math.max(320, Math.round((width * height) / 620))
+    );
+    const reducedParticleCount = Math.min(
+      240,
+      Math.max(100, Math.round(fullParticleCount * 0.36))
+    );
+
     const spawn = (): WindParticleState => ({
       x: Math.random() * width,
       y: Math.random() * height,
@@ -128,34 +159,41 @@ function WindStreamOverlayBase({
       maxAge: 90 + Math.floor(Math.random() * 75)
     });
 
-    const particles: WindParticleState[] = Array.from({ length: particleCount }, spawn);
+    const particles: WindParticleState[] = Array.from(
+      { length: prefersReducedMotion ? reducedParticleCount : fullParticleCount },
+      spawn
+    );
     particlesRef.current = particles;
 
-    const reducedMotionMql =
-      typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? window.matchMedia("(prefers-reduced-motion: reduce)")
-        : null;
-    let prefersReducedMotion = Boolean(reducedMotionMql?.matches);
+    const syncParticlePoolSize = (reduced: boolean) => {
+      const targetLen = reduced ? reducedParticleCount : fullParticleCount;
+      while (particles.length < targetLen) {
+        particles.push(spawn());
+      }
+      if (particles.length > targetLen) {
+        particles.length = targetLen;
+      }
+    };
 
     const drawStaticSnapshot = () => {
       ctx.clearRect(0, 0, width, height);
       const activeGrid = gridRef.current;
       if (!activeGrid) return;
-      const staticPts: WindParticleState[] = particles.map((p) => ({
+      const subset = particles.slice(0, reducedParticleCount).map((p) => ({
         ...p,
         age: 0,
         maxAge: 120
       }));
       const buckets = stepAndBatchWindParticles({
-        particles: staticPts,
+        particles: subset,
         grid: activeGrid,
         width,
         height,
         bounds: boundsRef.current,
-        dtSec: 0.28,
+        dtSec: 0.22,
         zoom: zoomRef.current
       });
-      ctx.lineWidth = 1.35;
+      ctx.lineWidth = 1.3;
       ctx.lineCap = "round";
       for (let b = 0; b < 5; b++) {
         const segs = buckets[b];
@@ -227,6 +265,7 @@ function WindStreamOverlayBase({
     };
 
     const startLoopIfEligible = () => {
+      syncParticlePoolSize(prefersReducedMotion);
       if (prefersReducedMotion) {
         if (rafId) {
           window.cancelAnimationFrame(rafId);
@@ -268,7 +307,7 @@ function WindStreamOverlayBase({
     };
   }, [width, height]);
 
-  // Refresh static vector snapshot when grid or viewport changes in reduced-motion mode
+  // Refresh reduced-density static vector snapshot when grid or viewport changes in reduced-motion mode
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -276,22 +315,27 @@ function WindStreamOverlayBase({
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx || !grid || width <= 0 || height <= 0) return;
 
+    const fullCount = Math.min(780, Math.max(320, Math.round((width * height) / 620)));
+    const reducedCount = Math.min(240, Math.max(100, Math.round(fullCount * 0.36)));
+
     ctx.clearRect(0, 0, width, height);
-    const staticPts: WindParticleState[] = particlesRef.current.map((p) => ({
-      ...p,
-      age: 0,
-      maxAge: 120
-    }));
+    const staticPts: WindParticleState[] = particlesRef.current
+      .slice(0, reducedCount)
+      .map((p) => ({
+        ...p,
+        age: 0,
+        maxAge: 120
+      }));
     const buckets = stepAndBatchWindParticles({
       particles: staticPts,
       grid,
       width,
       height,
       bounds: boundsRef.current,
-      dtSec: 0.28,
+      dtSec: 0.22,
       zoom
     });
-    ctx.lineWidth = 1.35;
+    ctx.lineWidth = 1.3;
     ctx.lineCap = "round";
     for (let b = 0; b < 5; b++) {
       const segs = buckets[b];
@@ -306,10 +350,18 @@ function WindStreamOverlayBase({
     }
   }, [grid, width, height, zoom, screenToLatLon]);
 
+  const isTimeShifted =
+    typeof timeOffsetMinutes === "number" && Math.abs(timeOffsetMinutes) >= 15;
+
   return (
     <canvas
       ref={canvasRef}
-      style={{ width, height }}
+      style={{
+        width,
+        height,
+        opacity: isTimeShifted ? 0.45 : 1,
+        transition: "opacity 200ms ease-out"
+      }}
       className="pointer-events-none absolute inset-0 block"
       aria-hidden="true"
     />

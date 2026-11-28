@@ -367,14 +367,33 @@ function OrbitalStarfield() {
 }
 
 /**
- * Yavaşça doğuya sürüklenen yarı-saydam küresel bulut kabuğu (gerçek güneş ışığıyla aydınlanır)
+ * Gerçekçi hızda (0.0016 rad/sn) doğuya sürüklenen, -3° alacakaranlık terminatörüyle aydınlanan
+ * ve seçili istasyon komşuluğunda gerçek bulutluluk oranına (selectedCloudCover) kenetlenen bulut kabuğu.
  */
-function GlobalCloudShell({ sunDir }: { sunDir: THREE.Vector3 }) {
+function GlobalCloudShell({
+  sunDir,
+  targetDir,
+  selectedCloudCover
+}: {
+  sunDir: THREE.Vector3;
+  targetDir: THREE.Vector3;
+  selectedCloudCover?: number;
+}) {
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.ShaderMaterial>(null);
+
+  const hasCloudCover =
+    typeof selectedCloudCover === "number" && Number.isFinite(selectedCloudCover);
+  const clampedCloudFrac = hasCloudCover
+    ? THREE.MathUtils.clamp(selectedCloudCover / 100, 0, 1)
+    : 0.5;
+
   const uniforms = useMemo(
     () => ({
       uSunDir: { value: sunDir.clone() },
+      uTargetDir: { value: targetDir.clone() },
+      uSelectedCloudFrac: { value: clampedCloudFrac },
+      uHasSelectedCloud: { value: hasCloudCover ? 1.0 : 0.0 },
       uTime: { value: 0 }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -387,12 +406,20 @@ function GlobalCloudShell({ sunDir }: { sunDir: THREE.Vector3 }) {
     }
   }, [sunDir]);
 
+  useEffect(() => {
+    if (matRef.current) {
+      matRef.current.uniforms.uTargetDir.value.copy(targetDir);
+      matRef.current.uniforms.uSelectedCloudFrac.value = clampedCloudFrac;
+      matRef.current.uniforms.uHasSelectedCloud.value = hasCloudCover ? 1.0 : 0.0;
+    }
+  }, [targetDir, clampedCloudFrac, hasCloudCover]);
+
   useFrame((_, delta) => {
     if (matRef.current) {
       matRef.current.uniforms.uTime.value += delta;
     }
     if (meshRef.current) {
-      meshRef.current.rotation.y += delta * 0.015;
+      meshRef.current.rotation.y += delta * 0.0016;
     }
   });
 
@@ -416,6 +443,9 @@ function GlobalCloudShell({ sunDir }: { sunDir: THREE.Vector3 }) {
         fragmentShader={/* glsl */ `
           precision highp float;
           uniform vec3 uSunDir;
+          uniform vec3 uTargetDir;
+          uniform float uSelectedCloudFrac;
+          uniform float uHasSelectedCloud;
           uniform float uTime;
           varying vec3 vNormalObj;
           varying vec3 vWorldNormal;
@@ -452,15 +482,29 @@ function GlobalCloudShell({ sunDir }: { sunDir: THREE.Vector3 }) {
 
           void main() {
             vec3 sp = vNormalObj * vec3(2.8, 3.4, 2.8);
-            float warp = fbm3(sp * 0.8 + vec3(uTime * 0.015, 0.0, 0.0));
-            float n = fbm3(sp * 1.45 + vec3(warp * 0.75, 0.0, -uTime * 0.01));
-            float clouds = smoothstep(0.52, 0.78, n);
+            float warp = fbm3(sp * 0.8 + vec3(uTime * 0.004, 0.0, 0.0));
+            float n = fbm3(sp * 1.45 + vec3(warp * 0.75, 0.0, -uTime * 0.003));
+            float globalClouds = smoothstep(0.52, 0.78, n);
+            float clouds = globalClouds;
+
+            vec3 worldN = normalize(vWorldNormal);
+            if (uHasSelectedCloud > 0.5) {
+              float targetCos = dot(worldN, normalize(uTargetDir));
+              float localWeight = smoothstep(0.965, 0.996, targetCos);
+              float localLow = mix(0.92, 0.28, uSelectedCloudFrac);
+              float localHigh = localLow + 0.26;
+              float clearGate = smoothstep(0.02, 0.22, uSelectedCloudFrac);
+              float localClouds = smoothstep(localLow, localHigh, n) * clearGate;
+              clouds = mix(globalClouds, localClouds, localWeight);
+            }
+
             if (clouds < 0.02) discard;
 
-            float ndl = dot(normalize(vWorldNormal), normalize(uSunDir));
-            float dayLit = smoothstep(-0.22, 0.35, ndl);
-            vec3 col = mix(vec3(0.26, 0.36, 0.52), vec3(0.92, 0.96, 1.0), dayLit);
-            float alpha = clouds * mix(0.14, 0.34, dayLit);
+            // -3.0° (sin(-3°) = -0.05234) merkezli alacakaranlık terminatörü
+            float ndl = dot(worldN, normalize(uSunDir));
+            float dayLit = smoothstep(-0.10453, 0.0, ndl);
+            vec3 col = mix(vec3(0.24, 0.34, 0.50), vec3(0.92, 0.96, 1.0), dayLit);
+            float alpha = clouds * mix(0.13, 0.34, dayLit);
             gl_FragColor = vec4(col, alpha);
           }
         `}
@@ -595,6 +639,7 @@ function EarthMesh({
   homeLon,
   presetCities,
   sunDir,
+  selectedCloudCover,
   onPickCoords,
   onPickCity
 }: {
@@ -604,6 +649,7 @@ function EarthMesh({
   homeLon?: number;
   presetCities: GeoLocation[];
   sunDir: THREE.Vector3;
+  selectedCloudCover?: number;
   onPickCoords: (lat: number, lon: number) => void;
   onPickCity: (city: GeoLocation) => void;
 }) {
@@ -663,9 +709,14 @@ function EarthMesh({
     [selectedLat, selectedLon]
   );
 
+  const selectedUnitDir = useMemo(
+    () => latLonToVector3(selectedLat, selectedLon, 1).normalize(),
+    [selectedLat, selectedLon]
+  );
+
   return (
     <group>
-      {/* Gerçek Natural Earth Kıyıları + Gerçek Zamanlı Gece-Gündüz Terminatörü */}
+      {/* Gerçek Natural Earth Kıyıları + -3° Alacakaranlık Merkezli Gece-Gündüz Terminatörü */}
       <mesh onPointerDown={recordPointerDown} onClick={handleClick}>
         <sphereGeometry args={[GLOBE_RADIUS, 72, 72]} />
         <shaderMaterial
@@ -692,14 +743,15 @@ function EarthMesh({
               vec3 n = normalize(vWorldNormal);
               float ndl = dot(n, normalize(uSunDir));
 
-              float dayFactor = smoothstep(-0.14, 0.14, ndl);
+              // alpha_sun = -3.0° (sin(-3°) = -0.05234) merkezli alacakaranlık geçişi [-6°, 0°]
+              float dayFactor = smoothstep(-0.10453, 0.0, ndl);
               float diffuse = 0.56 + 0.54 * max(ndl, 0.0);
 
               vec3 dayCol = texture2D(uDayMap, vUv).rgb * diffuse;
               vec3 nightCol = texture2D(uNightMap, vUv).rgb;
 
-              // Gerçek alacakaranlık kuşağı
-              float twilight = exp(-pow(ndl * 7.5, 2.0)) * 0.24;
+              // -3° alacakaranlık kuşağı
+              float twilight = exp(-pow((ndl + 0.05234) * 14.0, 2.0)) * 0.24;
               vec3 col = mix(nightCol, dayCol, dayFactor) + vec3(0.92, 0.50, 0.24) * twilight;
 
               gl_FragColor = vec4(col, 1.0);
@@ -708,8 +760,12 @@ function EarthMesh({
         />
       </mesh>
 
-      {/* Yarı-Saydam Dönen Küresel Bulut Kabuğu */}
-      <GlobalCloudShell sunDir={sunDir} />
+      {/* Gerçeklik Kenetlemeli Yarı-Saydam Küresel Bulut Kabuğu */}
+      <GlobalCloudShell
+        sunDir={sunDir}
+        targetDir={selectedUnitDir}
+        selectedCloudCover={selectedCloudCover}
+      />
 
       {/* İnce Rayleigh Atmosfer Limbi */}
       <mesh>
@@ -741,8 +797,8 @@ function EarthMesh({
             void main() {
               float fresnel = pow(1.0 - max(dot(normalize(vNormalView), normalize(vViewPos)), 0.0), 3.1);
               float ndl = dot(normalize(vWorldNormal), normalize(uSunDir));
-              float dayLit = smoothstep(-0.25, 0.45, ndl);
-              float twilight = exp(-pow(ndl * 5.0, 2.0));
+              float dayLit = smoothstep(-0.10453, 0.0, ndl);
+              float twilight = exp(-pow((ndl + 0.05234) * 10.0, 2.0));
               vec3 col = mix(vec3(0.18, 0.34, 0.58), vec3(0.36, 0.75, 1.0), dayLit);
               col += vec3(0.95, 0.52, 0.22) * twilight * 0.32;
               gl_FragColor = vec4(col, fresnel * (0.40 + 0.48 * dayLit));
@@ -780,7 +836,8 @@ function EarthMesh({
             varying vec3 vViewPos;
             void main() {
               float rim = pow(clamp(0.68 - dot(normalize(vNormalView), normalize(-vViewPos)), 0.0, 1.0), 3.2);
-              float dayLit = smoothstep(-0.3, 0.5, dot(normalize(vWorldNormal), normalize(uSunDir)));
+              float ndl = dot(normalize(vWorldNormal), normalize(uSunDir));
+              float dayLit = smoothstep(-0.10453, 0.0, ndl);
               vec3 col = mix(vec3(0.14, 0.30, 0.58), vec3(0.35, 0.72, 1.0), dayLit);
               gl_FragColor = vec4(col, rim * (0.28 + 0.32 * dayLit));
             }
@@ -824,23 +881,27 @@ function EarthMesh({
   );
 }
 
+export interface GlobeSceneProps {
+  selectedLat: number;
+  selectedLon: number;
+  homeLat?: number;
+  homeLon?: number;
+  presetCities: GeoLocation[];
+  selectedCloudCover?: number;
+  onPickCoords: (lat: number, lon: number) => void;
+  onPickCity: (city: GeoLocation) => void;
+}
+
 function GlobeSceneBase({
   selectedLat,
   selectedLon,
   homeLat,
   homeLon,
   presetCities,
+  selectedCloudCover,
   onPickCoords,
   onPickCity
-}: {
-  selectedLat: number;
-  selectedLon: number;
-  homeLat?: number;
-  homeLon?: number;
-  presetCities: GeoLocation[];
-  onPickCoords: (lat: number, lon: number) => void;
-  onPickCity: (city: GeoLocation) => void;
-}) {
+}: GlobeSceneProps) {
   const [subsolar, setSubsolar] = useState(() => computeSubsolarPoint(new Date()));
   const [tabHidden, setTabHidden] = useState(false);
 
@@ -886,6 +947,7 @@ function GlobeSceneBase({
           homeLon={homeLon}
           presetCities={presetCities}
           sunDir={sunDir}
+          selectedCloudCover={selectedCloudCover}
           onPickCoords={onPickCoords}
           onPickCity={onPickCity}
         />

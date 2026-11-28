@@ -2,22 +2,39 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChevronDown,
+  ChevronUp,
   CloudRain,
   Crosshair,
   Layers,
+  Lock,
   Minus,
   Pause,
   Play,
   Plus,
   RefreshCw,
   Satellite,
+  Unlock,
   Wind
 } from "lucide-react";
 import { useWeatherStatus } from "@/context/WeatherContext";
+import {
+  RAINVIEWER_LEGEND_GRADIENT,
+  buildRainViewerTileUrl,
+  dbzToRainRateMmHr
+} from "@/lib/radar-palette";
+import {
+  ATMOS_REFRESH_ALL_EVENT,
+  formatPrecip,
+  formatRadarClock,
+  formatWindSpeed
+} from "@/lib/weather-client";
 import type {
   GeoLocation,
+  LightningCellVector,
   RadarFrame,
   RadarMetadata,
+  UnitSystem,
   WindGridBundle
 } from "@/lib/weather-types";
 import WindStreamOverlay from "./WindStreamOverlay";
@@ -46,6 +63,31 @@ export interface RadarTileLayout {
   overzoomScale: number;
   displayTileSize: number;
   tiles: PositionedSlippyTile[];
+}
+
+export interface LiveRadarFrameState {
+  timeSec: number;
+  deltaMin: number;
+  isForecast: boolean;
+}
+
+export interface LiveRadarMapProps {
+  selectedLat: number;
+  selectedLon: number;
+  presetCities: GeoLocation[];
+  onPickCoords: (lat: number, lon: number) => void;
+  onPickCity: (city: GeoLocation) => void;
+  unit?: UnitSystem;
+  timeZone?: string;
+  utcOffsetSeconds?: number;
+  convectiveCells?: LightningCellVector[];
+  advectionFromDeg?: number;
+  advectionSpeedKmh?: number;
+  onFrameStateChange?: (state: LiveRadarFrameState) => void;
+}
+
+function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
 }
 
 function clampLat(lat: number): number {
@@ -82,6 +124,39 @@ export function worldYToLat(wy: number, zoom: number): number {
   const clamped = Math.max(0, Math.min(scale, wy));
   const n = Math.PI - (2 * Math.PI * clamped) / scale;
   return clampLat((180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))));
+}
+
+/**
+ * Spherical forward geodesic projection (R = 6371 km) from origin (lat, lon)
+ * along meteorological/compass bearing (0° = N, 90° = E) and distanceKm.
+ */
+export function projectGeodesicPoint(
+  latDeg: number,
+  lonDeg: number,
+  bearingDeg: number,
+  distanceKm: number
+): { lat: number; lon: number } {
+  const R = 6371;
+  const angDist = Math.max(0, distanceKm) / R;
+  const phi1 = (latDeg * Math.PI) / 180;
+  const lam1 = (lonDeg * Math.PI) / 180;
+  const brng = (bearingDeg * Math.PI) / 180;
+
+  const sinPhi1 = Math.sin(phi1);
+  const cosPhi1 = Math.cos(phi1);
+  const sinD = Math.sin(angDist);
+  const cosD = Math.cos(angDist);
+
+  const sinPhi2 = sinPhi1 * cosD + cosPhi1 * sinD * Math.cos(brng);
+  const phi2 = Math.asin(clamp(sinPhi2, -1, 1));
+  const y = Math.sin(brng) * sinD * cosPhi1;
+  const x = cosD - sinPhi1 * sinPhi2;
+  const lam2 = lam1 + Math.atan2(y, x);
+
+  return {
+    lat: clampLat((phi2 * 180) / Math.PI),
+    lon: wrapLon((lam2 * 180) / Math.PI)
+  };
 }
 
 /**
@@ -140,17 +215,6 @@ export function computeRadarTileLayout(params: {
   };
 }
 
-function formatRadarClock(unixSec: number): string {
-  try {
-    return new Intl.DateTimeFormat("tr-TR", {
-      hour: "2-digit",
-      minute: "2-digit"
-    }).format(new Date(unixSec * 1000));
-  } catch {
-    return "--:--";
-  }
-}
-
 function resolveInitialObservedFrameIndex(data: RadarMetadata): number {
   if (
     typeof data.lastPastIndex === "number" &&
@@ -165,23 +229,38 @@ function resolveInitialObservedFrameIndex(data: RadarMetadata): number {
   return Math.max(0, data.frames.length - 1);
 }
 
+interface ActivePointerSample {
+  x: number;
+  y: number;
+  startX: number;
+  startY: number;
+  pointerType: string;
+}
+
 function LiveRadarMapBase({
   selectedLat,
   selectedLon,
   presetCities,
   onPickCoords,
-  onPickCity
-}: {
-  selectedLat: number;
-  selectedLon: number;
-  presetCities: GeoLocation[];
-  onPickCoords: (lat: number, lon: number) => void;
-  onPickCity: (city: GeoLocation) => void;
-}) {
+  onPickCity,
+  unit = "metric",
+  timeZone,
+  utcOffsetSeconds,
+  convectiveCells,
+  advectionFromDeg,
+  advectionSpeedKmh,
+  onFrameStateChange
+}: LiveRadarMapProps) {
   const { recoveryCount, isOffline } = useWeatherStatus();
   const [isDragging, setIsDragging] = useState(false);
+  const [mobileHudOpen, setMobileHudOpen] = useState(false);
+  const [mobileDragLock, setMobileDragLock] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
   const panRafRef = useRef<number>(0);
   const pendingCenterRef = useRef<{ lat: number; lon: number } | null>(null);
+  const mobileDragLockRef = useRef<boolean>(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 760, height: 540 });
@@ -189,6 +268,7 @@ function LiveRadarMapBase({
     center: { lat: selectedLat, lon: selectedLon },
     zoom: 6
   });
+  const viewRef = useRef(view);
   const { center, zoom } = view;
 
   const [basemap, setBasemap] = useState<BasemapMode>("dark");
@@ -210,9 +290,24 @@ function LiveRadarMapBase({
   const decodedFrameSetRef = useRef<Set<string>>(new Set());
   const wheelAccumRef = useRef<{ sum: number; lastMs: number }>({ sum: 0, lastMs: 0 });
 
-  useEffect(() => {
-    radarRef.current = radar;
-  }, [radar]);
+  const pointersRef = useRef<Map<number, ActivePointerSample>>(new Map());
+  const hadMultiTouchRef = useRef<boolean>(false);
+  const maxGestureTravelRef = useRef<number>(0);
+  const touchAxisRef = useRef<"horizontal" | "vertical" | null>(null);
+  const touchStartRawRef = useRef<{ x: number; y: number } | null>(null);
+  const pinchRef = useRef<{
+    active: boolean;
+    startDist: number;
+    startZoom: number;
+    anchorLat: number;
+    anchorLon: number;
+  }>({
+    active: false,
+    startDist: 1,
+    startZoom: 6,
+    anchorLat: selectedLat,
+    anchorLon: selectedLon
+  });
 
   const dragRef = useRef<{
     active: boolean;
@@ -229,6 +324,38 @@ function LiveRadarMapBase({
     startWorldY: 0,
     moved: false
   });
+
+  useEffect(() => {
+    radarRef.current = radar;
+  }, [radar]);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
+    mobileDragLockRef.current = mobileDragLock;
+  }, [mobileDragLock]);
+
+  // Respect prefers-reduced-motion: pause automatic playback loop by default & when enabled
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
+    queueMicrotask(() => {
+      setPrefersReducedMotion(mql.matches);
+      if (mql.matches) {
+        setPlaying(false);
+      }
+    });
+    const onChange = (ev: MediaQueryListEvent) => {
+      setPrefersReducedMotion(ev.matches);
+      if (ev.matches) {
+        setPlaying(false);
+      }
+    };
+    mql.addEventListener?.("change", onChange);
+    return () => mql.removeEventListener?.("change", onChange);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -260,7 +387,10 @@ function LiveRadarMapBase({
     return () => ro.disconnect();
   }, []);
 
-  // Non-passive wheel listener: blocks background page scroll AND anchors zoom to cursor lat/lon!
+  // Non-passive wheel + mobile scroll-friendly touchmove listener:
+  // - Desktop wheel zooms anchored to cursor lat/lon without scrolling page.
+  // - Mobile touch allows vertical page scrolling by default, while intercepting 2-finger pinch/pan,
+  //   horizontal-dominant swipes (|dx| > 1.15 * |dy|), or explicit mobile drag lock.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -285,7 +415,7 @@ function LiveRadarMapBase({
       const cursorY = e.clientY - rect.top;
 
       setView((prev) => {
-        const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev.zoom + stepDir));
+        const nextZoom = clamp(prev.zoom + stepDir, MIN_ZOOM, MAX_ZOOM);
         if (nextZoom === prev.zoom || rect.width <= 0 || rect.height <= 0) return prev;
 
         const prevCWX = lonToWorldX(prev.center.lon, prev.zoom);
@@ -308,8 +438,58 @@ function LiveRadarMapBase({
       });
     };
 
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        hadMultiTouchRef.current = true;
+        touchAxisRef.current = "horizontal";
+        return;
+      }
+      if (e.touches.length === 1) {
+        touchStartRawRef.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY
+        };
+        touchAxisRef.current = null;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (mobileDragLockRef.current || e.touches.length >= 2) {
+        if (e.cancelable) e.preventDefault();
+        return;
+      }
+      if (e.touches.length === 1 && touchStartRawRef.current) {
+        const dx = e.touches[0].clientX - touchStartRawRef.current.x;
+        const dy = e.touches[0].clientY - touchStartRawRef.current.y;
+        if (touchAxisRef.current === null && Math.hypot(dx, dy) > 6) {
+          touchAxisRef.current =
+            Math.abs(dx) > 1.15 * Math.abs(dy) ? "horizontal" : "vertical";
+        }
+        if (touchAxisRef.current === "horizontal" && e.cancelable) {
+          e.preventDefault();
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) {
+        touchStartRawRef.current = null;
+        touchAxisRef.current = null;
+      }
+    };
+
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+    };
   }, []);
 
   const loadRadar = useCallback(async (background = false) => {
@@ -388,6 +568,16 @@ function LiveRadarMapBase({
     });
   }, [recoveryCount, loadRadar]);
 
+  // Global ATMOS_REFRESH_ALL_EVENT listener: refreshes both /api/radar and /api/wind-grid
+  useEffect(() => {
+    const onGlobalRefresh = () => {
+      void loadRadar(true);
+      setRefreshNonce((n) => n + 1);
+    };
+    window.addEventListener(ATMOS_REFRESH_ALL_EVENT, onGlobalRefresh);
+    return () => window.removeEventListener(ATMOS_REFRESH_ALL_EVENT, onGlobalRefresh);
+  }, [loadRadar]);
+
   // Self-healing retry timer when radar is stale or unreachable while online
   useEffect(() => {
     if (isOffline || (!radarStale && !radarError) || loadingRadar) return;
@@ -415,42 +605,43 @@ function LiveRadarMapBase({
     [centerWorldX, centerWorldY, size.height, size.width, zoom]
   );
 
-  // Fetch 25-point real 10m wind vector grid with minimum 0.36° sampling window so Z8-Z10 pans never stall!
+  // Fetch 25-point real 10m wind vector grid with antimeridian (±180°) pixel-scale spanLon math
   useEffect(() => {
     if (overlayMode === "radar") return;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       const nw = screenToLatLon(0, 0);
       const se = screenToLatLon(size.width, size.height);
-      const midLat = Math.max(-77.5, Math.min(77.5, (nw.lat + se.lat) / 2));
+      const midLat = clamp((nw.lat + se.lat) / 2, -77.5, 77.5);
       const rawLatHalf = Math.abs(nw.lat - se.lat) / 2;
       const halfLat = Math.max(0.18, rawLatHalf);
 
       const south = Math.max(-78, midLat - halfLat);
-      const north = Math.min(78, midLat + halfLat);
+      const north = Math.min(78, Math.max(south + 0.36, midLat + halfLat));
 
-      let west = nw.lon;
-      let east = se.lon;
-      if (east <= west) {
-        west = Math.max(-180, center.lon - 14);
-        east = Math.min(180, center.lon + 14);
-      } else if (east - west < 0.36) {
-        const midLon = (west + east) / 2;
-        west = Math.max(-180, midLon - 0.18);
-        east = Math.min(180, midLon + 0.18);
+      const spanLon = clamp((size.width / (256 * Math.pow(2, view.zoom))) * 360, 0.36, 140);
+      const westLon = wrapLon(center.lon - spanLon / 2);
+      let eastLon = wrapLon(center.lon + spanLon / 2);
+
+      const wRounded = Number(westLon.toFixed(2));
+      const eRounded = Number(eastLon.toFixed(2));
+      const roundedDelta =
+        eRounded > wRounded ? eRounded - wRounded : eRounded + 360 - wRounded;
+      if (roundedDelta > 140) {
+        eastLon = wrapLon(eastLon - 0.02);
       }
 
       setWindLoading(true);
       try {
         const qs = new URLSearchParams({
           south: south.toFixed(2),
-          west: west.toFixed(2),
+          west: westLon.toFixed(2),
           north: north.toFixed(2),
-          east: east.toFixed(2)
+          east: eastLon.toFixed(2)
         });
         const res = await fetch(`/api/wind-grid?${qs.toString()}`, {
           signal: controller.signal,
-          cache: recoveryCount > 0 ? "no-store" : "default"
+          cache: recoveryCount > 0 || refreshNonce > 0 ? "no-store" : "default"
         });
         if (res.ok) {
           const data: WindGridBundle = await res.json();
@@ -476,11 +667,12 @@ function LiveRadarMapBase({
     overlayMode,
     center.lat,
     center.lon,
-    zoom,
+    view.zoom,
     size.width,
     size.height,
     screenToLatLon,
-    recoveryCount
+    recoveryCount,
+    refreshNonce
   ]);
 
   const tiles = useMemo(() => {
@@ -526,7 +718,14 @@ function LiveRadarMapBase({
 
   const buildRadarTileUrl = useCallback(
     (host: string, framePath: string, rZoom: number, wrapX: number, ty: number) =>
-      `${host}${framePath}/${RADAR_TILE_REQUEST_SIZE}/${rZoom}/${wrapX}/${ty}/6/1_1.png`,
+      buildRainViewerTileUrl(
+        host,
+        framePath,
+        RADAR_TILE_REQUEST_SIZE,
+        rZoom,
+        wrapX,
+        ty
+      ),
     []
   );
 
@@ -537,22 +736,34 @@ function LiveRadarMapBase({
 
   // Flicker-free atomic frame promotion: decode next frame's visible tiles in memory BEFORE swapping `src`!
   useEffect(() => {
+    let cancelled = false;
     if (!radar || !activeFrame) {
-      setRenderedFrame(null);
-      return;
+      queueMicrotask(() => {
+        if (!cancelled) setRenderedFrame(null);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     if (overlayMode === "wind" || radarLayout.tiles.length === 0) {
-      setRenderedFrame(activeFrame);
-      return;
+      queueMicrotask(() => {
+        if (!cancelled) setRenderedFrame(activeFrame);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
     const cacheSig = `${radarViewportSig}:${activeFrame.path}`;
     if (decodedFrameSetRef.current.has(cacheSig)) {
-      setRenderedFrame(activeFrame);
-      return;
+      queueMicrotask(() => {
+        if (!cancelled) setRenderedFrame(activeFrame);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    let cancelled = false;
     const loaders: HTMLImageElement[] = [];
 
     const waitAll = Promise.allSettled(
@@ -597,9 +808,9 @@ function LiveRadarMapBase({
     };
   }, [radar, activeFrame, overlayMode, radarLayout, radarViewportSig, buildRadarTileUrl]);
 
-  // Playback loop gated on renderedFrame synchronization so frames never skip while loading
+  // Playback loop gated on renderedFrame synchronization & prefers-reduced-motion
   useEffect(() => {
-    if (!playing || !radar || radar.frames.length < 2) return;
+    if (!playing || prefersReducedMotion || !radar || radar.frames.length < 2) return;
     if (renderedFrame && activeFrame && renderedFrame.time !== activeFrame.time) return;
 
     const isLast = frameIdx === radar.frames.length - 1;
@@ -614,7 +825,7 @@ function LiveRadarMapBase({
     }, delayMs);
 
     return () => window.clearTimeout(timer);
-  }, [playing, frameIdx, radar, renderedFrame, activeFrame]);
+  }, [playing, prefersReducedMotion, frameIdx, radar, renderedFrame, activeFrame]);
 
   // Preload ALL visible radar tiles across ALL timeline frames after pan/zoom settles (400ms debounce)
   useEffect(() => {
@@ -688,9 +899,58 @@ function LiveRadarMapBase({
     [centerWorldX, centerWorldY, size.height, size.width, zoom]
   );
 
+  const initPinchState = () => {
+    const pts = Array.from(pointersRef.current.values());
+    if (pts.length < 2 || !containerRef.current) return;
+    const [p1, p2] = pts;
+    const rect = containerRef.current.getBoundingClientRect();
+    const midX = (p1.x + p2.x) / 2 - rect.left;
+    const midY = (p1.y + p2.y) / 2 - rect.top;
+    const curView = viewRef.current;
+    const curCWX = lonToWorldX(curView.center.lon, curView.zoom);
+    const curCWY = latToWorldY(curView.center.lat, curView.zoom);
+    const anchorLon = worldXToLon(curCWX + (midX - rect.width / 2), curView.zoom);
+    const anchorLat = worldYToLat(curCWY + (midY - rect.height / 2), curView.zoom);
+
+    pinchRef.current = {
+      active: true,
+      startDist: Math.max(12, Math.hypot(p2.x - p1.x, p2.y - p1.y)),
+      startZoom: curView.zoom,
+      anchorLat,
+      anchorLon
+    };
+    dragRef.current.active = false;
+    dragRef.current.moved = true;
+    hadMultiTouchRef.current = true;
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    try {
+      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    } catch {
+      // ignore synthetic pointer capture errors
+    }
+
+    if (pointersRef.current.size === 0) {
+      hadMultiTouchRef.current = false;
+      maxGestureTravelRef.current = 0;
+    }
+
+    pointersRef.current.set(e.pointerId, {
+      x: e.clientX,
+      y: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      pointerType: e.pointerType
+    });
+
+    if (pointersRef.current.size >= 2) {
+      initPinchState();
+      setIsDragging(true);
+      return;
+    }
+
     dragRef.current = {
       active: true,
       startX: e.clientX,
@@ -702,20 +962,83 @@ function LiveRadarMapBase({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current.active) return;
+    const rec = pointersRef.current.get(e.pointerId);
+    if (rec) {
+      rec.x = e.clientX;
+      rec.y = e.clientY;
+      const travel = Math.hypot(rec.x - rec.startX, rec.y - rec.startY);
+      if (travel > maxGestureTravelRef.current) {
+        maxGestureTravelRef.current = travel;
+      }
+    }
+
+    // Two-finger Pinch-to-Zoom + Midpoint Geo-Anchored Pan
+    if (pointersRef.current.size >= 2 && containerRef.current) {
+      if (!pinchRef.current.active) {
+        initPinchState();
+      }
+      const pts = Array.from(pointersRef.current.values());
+      const [p1, p2] = pts;
+      const dist = Math.max(12, Math.hypot(p2.x - p1.x, p2.y - p1.y));
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const midX = (p1.x + p2.x) / 2 - rect.left;
+      const midY = (p1.y + p2.y) / 2 - rect.top;
+      const zoomFloat = clamp(
+        pinchRef.current.startZoom + Math.log2(dist / pinchRef.current.startDist),
+        3,
+        10
+      );
+      const nextZoom = Math.round(zoomFloat);
+      const anchorWX = lonToWorldX(pinchRef.current.anchorLon, nextZoom);
+      const anchorWY = latToWorldY(pinchRef.current.anchorLat, nextZoom);
+      const nextCWX = anchorWX - (midX - rect.width / 2);
+      const nextCWY = anchorWY - (midY - rect.height / 2);
+
+      if (!isDragging) setIsDragging(true);
+      setView({
+        zoom: nextZoom,
+        center: {
+          lat: worldYToLat(nextCWY, nextZoom),
+          lon: worldXToLon(nextCWX, nextZoom)
+        }
+      });
+      return;
+    }
+
+    if (!dragRef.current.active || hadMultiTouchRef.current) return;
     const dx = e.clientX - dragRef.current.startX;
     const dy = e.clientY - dragRef.current.startY;
-    if (Math.hypot(dx, dy) > 5) {
+    const dist = Math.hypot(dx, dy);
+
+    if (e.pointerType === "touch" && !mobileDragLockRef.current) {
+      if (dist <= 6) return;
+      if (touchAxisRef.current === null) {
+        touchAxisRef.current =
+          Math.abs(dx) > 1.15 * Math.abs(dy) ? "horizontal" : "vertical";
+      }
+      if (touchAxisRef.current === "vertical") {
+        // Yield cleanly to native vertical page scroll without firing coordinate pick
+        dragRef.current.moved = true;
+        dragRef.current.active = false;
+        setIsDragging(false);
+        return;
+      }
+    }
+
+    if (dist > 5) {
       dragRef.current.moved = true;
     }
     if (!dragRef.current.moved) return;
 
     if (!isDragging) setIsDragging(true);
+    const curZoom = viewRef.current.zoom;
     const nextWX = dragRef.current.startWorldX - dx;
     const nextWY = dragRef.current.startWorldY - dy;
     pendingCenterRef.current = {
-      lat: worldYToLat(nextWY, zoom),
-      lon: worldXToLon(nextWX, zoom)
+      lat: worldYToLat(nextWY, curZoom),
+      lon: worldXToLon(nextWX, curZoom)
     };
     if (!panRafRef.current) {
       panRafRef.current = window.requestAnimationFrame(() => {
@@ -729,27 +1052,124 @@ function LiveRadarMapBase({
     }
   };
 
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current.active) return;
-    const wasMoved = dragRef.current.moved;
-    dragRef.current.active = false;
-    setIsDragging(false);
-    if (panRafRef.current) {
-      window.cancelAnimationFrame(panRafRef.current);
-      panRafRef.current = 0;
-    }
+  const finalizePointerEnd = (
+    e: React.PointerEvent<HTMLDivElement>,
+    allowPick: boolean
+  ) => {
+    pointersRef.current.delete(e.pointerId);
     try {
       (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
     } catch {
       // ignore
     }
 
-    if (!wasMoved && containerRef.current) {
+    if (pointersRef.current.size === 1) {
+      // Transition smoothly from 2 fingers down to 1 remaining finger without jumping
+      pinchRef.current.active = false;
+      const remaining = Array.from(pointersRef.current.values())[0];
+      const curView = viewRef.current;
+      dragRef.current = {
+        active: true,
+        startX: remaining.x,
+        startY: remaining.y,
+        startWorldX: lonToWorldX(curView.center.lon, curView.zoom),
+        startWorldY: latToWorldY(curView.center.lat, curView.zoom),
+        moved: true
+      };
+      return;
+    }
+
+    if (pointersRef.current.size > 1) {
+      initPinchState();
+      return;
+    }
+
+    // All pointers lifted
+    const wasMoved = dragRef.current.moved;
+    const hadMultiTouch = hadMultiTouchRef.current;
+    const maxTravel = maxGestureTravelRef.current;
+
+    pinchRef.current.active = false;
+    dragRef.current.active = false;
+    setIsDragging(false);
+    if (panRafRef.current) {
+      window.cancelAnimationFrame(panRafRef.current);
+      panRafRef.current = 0;
+    }
+
+    if (
+      allowPick &&
+      !hadMultiTouch &&
+      !wasMoved &&
+      maxTravel <= 6 &&
+      containerRef.current
+    ) {
       const rect = containerRef.current.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
       const clickY = e.clientY - rect.top;
       const pt = screenToLatLon(clickX, clickY);
       onPickCoords(Number(pt.lat.toFixed(3)), Number(pt.lon.toFixed(3)));
+    }
+
+    hadMultiTouchRef.current = false;
+    maxGestureTravelRef.current = 0;
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    finalizePointerEnd(e, true);
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    finalizePointerEnd(e, false);
+  };
+
+  const handleMapKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const panStepPx = 64;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const dx = e.key === "ArrowLeft" ? -panStepPx : e.key === "ArrowRight" ? panStepPx : 0;
+      const dy = e.key === "ArrowUp" ? -panStepPx : e.key === "ArrowDown" ? panStepPx : 0;
+      setView((prev) => {
+        const nextWX = lonToWorldX(prev.center.lon, prev.zoom) + dx;
+        const nextWY = latToWorldY(prev.center.lat, prev.zoom) + dy;
+        return {
+          ...prev,
+          center: {
+            lat: worldYToLat(nextWY, prev.zoom),
+            lon: worldXToLon(nextWX, prev.zoom)
+          }
+        };
+      });
+      return;
+    }
+    if (e.key === "+" || e.key === "=") {
+      e.preventDefault();
+      setView((prev) => ({ ...prev, zoom: Math.min(MAX_ZOOM, prev.zoom + 1) }));
+      return;
+    }
+    if (e.key === "-" || e.key === "_") {
+      e.preventDefault();
+      setView((prev) => ({ ...prev, zoom: Math.max(MIN_ZOOM, prev.zoom - 1) }));
+      return;
+    }
+    if (e.key === " ") {
+      if ((overlayMode === "both" || overlayMode === "radar") && radar && radar.frames.length >= 2) {
+        e.preventDefault();
+        setPlaying((p) => !p);
+      }
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onPickCoords(Number(center.lat.toFixed(3)), Number(center.lon.toFixed(3)));
+      return;
+    }
+    if (e.key === "Home") {
+      e.preventDefault();
+      setView({
+        center: { lat: selectedLat, lon: selectedLon },
+        zoom: 7
+      });
     }
   };
 
@@ -757,31 +1177,48 @@ function LiveRadarMapBase({
 
   const frameTimingInfo = useMemo(() => {
     if (!radar || !activeFrame) {
-      return { label: "", isForecast: false, isHistoricalOrFuture: false };
+      return { label: "", deltaMin: 0, isForecast: false, isHistoricalOrFuture: false };
     }
     const anchorIdx = resolveInitialObservedFrameIndex(radar);
     const anchorFrame = radar.frames[anchorIdx] ?? radar.frames[radar.frames.length - 1];
     if (!anchorFrame) {
-      return { label: "", isForecast: false, isHistoricalOrFuture: false };
+      return { label: "", deltaMin: 0, isForecast: false, isHistoricalOrFuture: false };
     }
-    const deltaMin = Math.round((activeFrame.time - anchorFrame.time) / 60);
-    const isForecast = Boolean(activeFrame.isForecast || deltaMin > 0);
+    const rawDeltaMin = Math.round((activeFrame.time - anchorFrame.time) / 60);
+    const isForecast = Boolean(activeFrame.isForecast || rawDeltaMin > 0);
+    const deltaMin = isForecast ? Math.max(5, rawDeltaMin) : rawDeltaMin;
     if (isForecast) {
       return {
-        label: `+${Math.max(5, deltaMin)} dk · Tahmin`,
+        label: `+${deltaMin} dk · Tahmin`,
+        deltaMin,
         isForecast: true,
         isHistoricalOrFuture: true
       };
     }
     if (deltaMin === 0) {
-      return { label: "Canlı Ölçüm", isForecast: false, isHistoricalOrFuture: false };
+      return { label: "Canlı Ölçüm", deltaMin: 0, isForecast: false, isHistoricalOrFuture: false };
     }
     return {
       label: `${deltaMin} dk`,
+      deltaMin,
       isForecast: false,
       isHistoricalOrFuture: true
     };
   }, [radar, activeFrame]);
+
+  const onFrameStateChangeRef = useRef(onFrameStateChange);
+  useEffect(() => {
+    onFrameStateChangeRef.current = onFrameStateChange;
+  }, [onFrameStateChange]);
+
+  useEffect(() => {
+    if (!activeFrame || !onFrameStateChangeRef.current) return;
+    onFrameStateChangeRef.current({
+      timeSec: activeFrame.time,
+      deltaMin: frameTimingInfo.deltaMin,
+      isForecast: frameTimingInfo.isForecast
+    });
+  }, [activeFrame, frameTimingInfo.deltaMin, frameTimingInfo.isForecast]);
 
   const baseTileUrl = (z: number, y: number, x: number) =>
     basemap === "satellite"
@@ -796,18 +1233,134 @@ function LiveRadarMapBase({
   );
   const isOverzoomActive = zoom > NATIVE_RADAR_MAX_ZOOM;
 
+  // 8-Octant Convective Cell Geodesic Projection + 30-min Advection Arrowhead
+  const projectedConvectiveCells = useMemo(() => {
+    if (
+      !showRadar ||
+      Math.abs(frameTimingInfo.deltaMin) > 15 ||
+      !convectiveCells ||
+      convectiveCells.length === 0
+    ) {
+      return [];
+    }
+
+    const hasAdvection =
+      typeof advectionFromDeg === "number" &&
+      Number.isFinite(advectionFromDeg) &&
+      typeof advectionSpeedKmh === "number" &&
+      Number.isFinite(advectionSpeedKmh) &&
+      advectionSpeedKmh > 0;
+    const motionToDeg = hasAdvection ? ((advectionFromDeg! + 180) % 360 + 360) % 360 : 0;
+    const dist30MinKm = hasAdvection ? advectionSpeedKmh! * 0.5 : 0;
+
+    return convectiveCells
+      .map((cell) => {
+        const cellGeo = projectGeodesicPoint(
+          selectedLat,
+          selectedLon,
+          cell.bearingDeg,
+          cell.distanceKm
+        );
+        const pt = projectToScreen(cellGeo.lat, cellGeo.lon);
+        if (
+          pt.x < -36 ||
+          pt.x > size.width + 36 ||
+          pt.y < -36 ||
+          pt.y > size.height + 36
+        ) {
+          return null;
+        }
+
+        let tipPt: { x: number; y: number } | null = null;
+        let arrowPolygon: string | null = null;
+        if (hasAdvection && dist30MinKm >= 1) {
+          const tipGeo = projectGeodesicPoint(
+            cellGeo.lat,
+            cellGeo.lon,
+            motionToDeg,
+            dist30MinKm
+          );
+          const rawTip = projectToScreen(tipGeo.lat, tipGeo.lon);
+          const vx = rawTip.x - pt.x;
+          const vy = rawTip.y - pt.y;
+          const segLen = Math.hypot(vx, vy);
+          if (segLen >= 8) {
+            tipPt = rawTip;
+            const ang = Math.atan2(vy, vx);
+            const headLen = 6.5;
+            const wingAng = 0.52;
+            const pLeftX = rawTip.x - headLen * Math.cos(ang - wingAng);
+            const pLeftY = rawTip.y - headLen * Math.sin(ang - wingAng);
+            const pRightX = rawTip.x - headLen * Math.cos(ang + wingAng);
+            const pRightY = rawTip.y - headLen * Math.sin(ang + wingAng);
+            arrowPolygon = `${rawTip.x.toFixed(1)},${rawTip.y.toFixed(1)} ${pLeftX.toFixed(1)},${pLeftY.toFixed(1)} ${pRightX.toFixed(1)},${pRightY.toFixed(1)}`;
+          }
+        }
+
+        const badgeText = `${Math.round(cell.peakDbz)} dBZ${
+          cell.etaMinutes ? ` · ~${cell.etaMinutes}dk` : ""
+        }`;
+        const strokeColor =
+          cell.peakDbz >= 50
+            ? "#f43f5e"
+            : cell.peakDbz >= 42
+              ? "#f97316"
+              : cell.kind === "thundersnow_dek"
+                ? "#38bdf8"
+                : "#facc15";
+
+        return {
+          id: cell.id,
+          x: pt.x,
+          y: pt.y,
+          tipPt,
+          arrowPolygon,
+          badgeText,
+          strokeColor
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  }, [
+    showRadar,
+    frameTimingInfo.deltaMin,
+    convectiveCells,
+    advectionFromDeg,
+    advectionSpeedKmh,
+    selectedLat,
+    selectedLon,
+    projectToScreen,
+    size.width,
+    size.height
+  ]);
+
+  const activeClockLabel = activeFrame
+    ? formatRadarClock(activeFrame.time, timeZone, utcOffsetSeconds)
+    : "--:--";
+
+  const lowLegendRate = formatPrecip(dbzToRainRateMmHr(20), unit, { per: "hour" });
+  const highLegendRate = formatPrecip(dbzToRainRateMmHr(50), unit, { per: "hour" });
+  const windFallbackCap = unit === "imperial" ? "37+ mph" : "60+ km/s";
+
+  const sliderValueText = activeFrame
+    ? `${activeClockLabel} — ${isRadarArchive ? "Arşiv Kare" : frameTimingInfo.label}`
+    : "Radar karesi yükleniyor";
+
   return (
     <div className="relative h-full w-full select-none overflow-hidden bg-[#0a0f18]">
       {/* Etkileşimli Harita Yüzeyi */}
       <div
         ref={containerRef}
+        tabIndex={0}
+        role="region"
+        aria-label="Canlı yağış radarı ve rüzgar akışı haritası"
+        onKeyDown={handleMapKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-        className="relative h-full w-full cursor-crosshair active:cursor-grabbing touch-none"
-        role="application"
-        aria-label="Canlı yağış radarı ve rüzgar akışı haritası"
+        onPointerCancel={handlePointerCancel}
+        className={`relative h-full w-full cursor-crosshair active:cursor-grabbing focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 focus-visible:ring-inset ${
+          mobileDragLock ? "touch-none" : "sm:touch-none touch-pan-y"
+        }`}
       >
         {/* Filigransız Esri Koyu Harita veya Gerçek Uydu Tabanı */}
         <div
@@ -836,7 +1389,7 @@ function LiveRadarMapBase({
           ))}
         </div>
 
-        {/* Canlı RainViewer 512px HD Doppler Yağış Katmanı (Z8-Z10 Kesintisiz Overzoom Destekli) */}
+        {/* Canlı RainViewer 512px HD Scheme 2 Doppler Yağış Katmanı (Z8-Z10 Kesintisiz Overzoom Destekli) */}
         {showRadar && radar && displayRadarFrame && (
           <div className="pointer-events-none absolute inset-0 opacity-85">
             {radarLayout.tiles.map((t) => (
@@ -878,6 +1431,7 @@ function LiveRadarMapBase({
             height={size.height}
             zoom={zoom}
             isInteracting={isDragging}
+            timeOffsetMinutes={showRadar && activeFrame ? frameTimingInfo.deltaMin : 0}
             screenToLatLon={screenToLatLon}
           />
         )}
@@ -903,6 +1457,79 @@ function LiveRadarMapBase({
             />
           ))}
         </div>
+
+        {/* 8-Oktant Konvektif Fırtına Hücre Vektörleri & 30dk İlerleme Okları (SVG Katmanı) */}
+        {projectedConvectiveCells.length > 0 && (
+          <svg
+            viewBox={`0 0 ${Math.max(1, size.width)} ${Math.max(1, size.height)}`}
+            className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-hidden"
+            aria-hidden="true"
+          >
+            {projectedConvectiveCells.map((cell) => {
+              const badgeWidth = Math.max(58, cell.badgeText.length * 6.1 + 12);
+              const placeLeft = cell.x + 10 + badgeWidth > size.width - 8;
+              const badgeX = placeLeft ? cell.x - 10 - badgeWidth : cell.x + 10;
+              const badgeY = Math.max(46, Math.min(size.height - 62, cell.y - 11));
+              return (
+                <g key={cell.id}>
+                  {cell.tipPt && (
+                    <line
+                      x1={cell.x}
+                      y1={cell.y}
+                      x2={cell.tipPt.x}
+                      y2={cell.tipPt.y}
+                      stroke={cell.strokeColor}
+                      strokeWidth="1.75"
+                      strokeDasharray="4 3"
+                      strokeOpacity="0.92"
+                    />
+                  )}
+                  {cell.arrowPolygon && (
+                    <polygon
+                      points={cell.arrowPolygon}
+                      fill={cell.strokeColor}
+                      fillOpacity="0.95"
+                    />
+                  )}
+                  <circle
+                    cx={cell.x}
+                    cy={cell.y}
+                    r="8"
+                    fill={cell.strokeColor}
+                    fillOpacity="0.18"
+                    stroke={cell.strokeColor}
+                    strokeWidth="1.3"
+                  />
+                  <circle cx={cell.x} cy={cell.y} r="3" fill={cell.strokeColor} />
+                  <g transform={`translate(${badgeX.toFixed(1)}, ${badgeY.toFixed(1)})`}>
+                    <rect
+                      x="0"
+                      y="0"
+                      width={badgeWidth}
+                      height="19"
+                      rx="5"
+                      fill="rgba(7, 12, 22, 0.88)"
+                      stroke={cell.strokeColor}
+                      strokeOpacity="0.65"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x={badgeWidth / 2}
+                      y="13"
+                      textAnchor="middle"
+                      fill="#f8fafc"
+                      fontSize="10"
+                      fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                      fontWeight="600"
+                    >
+                      {cell.badgeText}
+                    </text>
+                  </g>
+                </g>
+              );
+            })}
+          </svg>
+        )}
 
         {/* Hazır Şehir İşaretçileri (Üst/alt HUD barlarıyla çakışmaması için z-10 ve güvenli kenar marjı) */}
         {presetCities.map((city) => {
@@ -952,7 +1579,11 @@ function LiveRadarMapBase({
                 <svg
                   viewBox="0 0 44 44"
                   className="h-11 w-11"
-                  style={{ animation: "atmosIsobarSpin 14s linear infinite" }}
+                  style={
+                    prefersReducedMotion
+                      ? undefined
+                      : { animation: "atmosIsobarSpin 14s linear infinite" }
+                  }
                   aria-hidden="true"
                 >
                   <circle
@@ -979,204 +1610,317 @@ function LiveRadarMapBase({
           )}
       </div>
 
-      {/* Birleşik Çakışmasız Üst HUD Kuşağı (Dar ekranda alt alta sarar, geniş ekranda sol-sağ ayrılır) */}
+      {/* Birleşik Çakışmasız Üst HUD Kuşağı (Dar ekranda kompakt çekmece, geniş ekranda sol-sağ ayrılır) */}
       <div className="pointer-events-none absolute inset-x-3 top-3 z-20 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="atmos-hud-glass max-w-full rounded-xl px-2.5 py-1.5 sm:max-w-[54%]">
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono text-ink-secondary tabular">
-            <span className="font-semibold text-ink-primary">
-              {overlayMode === "wind"
-                ? "CANLI RÜZGAR AKIŞI"
-                : overlayMode === "radar"
-                  ? "DOPPLER RADAR"
-                  : "DOPPLER + RÜZGAR AKIŞI"}
-            </span>
-            {showRadar && (
-              <>
-                <span className="text-ink-muted">·</span>
-                <span
-                  className={
-                    isRadarArchive
-                      ? "text-amber-200"
-                      : frameTimingInfo.isForecast
-                        ? "text-sky-300"
-                        : ""
-                  }
-                >
-                  {activeFrame
-                    ? `${formatRadarClock(activeFrame.time)} (${
-                        isRadarArchive ? "Arşiv Kare" : frameTimingInfo.label
-                      })`
-                    : loadingRadar
-                      ? "Yükleniyor..."
-                      : "Çevrimdışı"}
+        <div className="flex flex-col gap-1.5 sm:max-w-[56%]">
+          <div className="atmos-hud-glass pointer-events-auto sm:pointer-events-none max-w-full rounded-xl px-2.5 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono text-ink-secondary tabular">
+                <span className="font-semibold text-ink-primary">
+                  {overlayMode === "wind"
+                    ? "CANLI RÜZGAR AKIŞI"
+                    : overlayMode === "radar"
+                      ? "DOPPLER RADAR"
+                      : "DOPPLER + RÜZGAR"}
                 </span>
-                {isOverzoomActive && (
-                  <span className="rounded border border-sky-400/25 bg-sky-400/10 px-1.5 py-0.2 text-[10px] text-sky-200">
-                    Z{zoom} HD Ölçekli
-                  </span>
+                {showRadar && (
+                  <>
+                    <span className="text-ink-muted">·</span>
+                    <span
+                      className={
+                        isRadarArchive
+                          ? "text-amber-200"
+                          : frameTimingInfo.isForecast
+                            ? "text-sky-300"
+                            : ""
+                      }
+                    >
+                      {activeFrame
+                        ? `${activeClockLabel} (${
+                            isRadarArchive ? "Arşiv Kare" : frameTimingInfo.label
+                          })`
+                        : loadingRadar
+                          ? "Yükleniyor..."
+                          : "Çevrimdışı"}
+                    </span>
+                    {isOverzoomActive && (
+                      <span className="rounded border border-sky-400/25 bg-sky-400/10 px-1.5 py-0.2 text-[10px] text-sky-200">
+                        Z{zoom} HD Ölçekli
+                      </span>
+                    )}
+                  </>
                 )}
-              </>
-            )}
-          </div>
-          {showRadar && (
-            <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted tabular">
-              <span>20 dBZ (~0.5)</span>
-              <span className="h-1.5 w-24 rounded-full bg-gradient-to-r from-[#38bdf8] via-[#10b981] via-[#facc15] via-[#f97316] to-[#ef4444]" />
-              <span>50+ dBZ (~48 mm/sa)</span>
+              </div>
+
+              {/* < 640px Kompakt "Katman & Lejant" Çekmece Tetikleyicisi */}
+              <button
+                type="button"
+                aria-expanded={mobileHudOpen}
+                onClick={() => setMobileHudOpen((v) => !v)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/15 bg-obsidian-950/85 px-2 py-1 text-[10px] font-medium text-ink-primary hover:bg-white/10 sm:hidden"
+              >
+                <span>Katman & Lejant</span>
+                {mobileHudOpen ? (
+                  <ChevronUp className="h-3 w-3 text-signal-sky" />
+                ) : (
+                  <ChevronDown className="h-3 w-3 text-ink-muted" />
+                )}
+              </button>
             </div>
-          )}
-          {showWind && (
-            <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted tabular">
-              <span>
-                {showRadar && frameTimingInfo.isHistoricalOrFuture
-                  ? "Canlı 10m"
-                  : "Rüzgar 0"}
-              </span>
-              <span className="h-1.5 w-24 rounded-full bg-gradient-to-r from-[#93c5fd] via-[#38bdf8] via-[#34d399] via-[#f59e0b] to-[#f87171]" />
-              <span className={windStale && windGrid ? "text-amber-200" : ""}>
-                {windGrid
-                  ? `Maks ${Math.round(windGrid.maxSpeedKmh)} km/s${
-                      windStale ? " · Arşiv" : ""
-                    }`
-                  : windLoading
-                    ? "Alan yükleniyor..."
-                    : "60+ km/s"}
-              </span>
+
+            {/* Z-R Scheme 2 & Rüzgar Lejantı: Masaüstünde açık, mobilde çekmece içinde */}
+            <div className={mobileHudOpen ? "mt-2 block space-y-1.5" : "hidden sm:block"}>
+              {showRadar && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted tabular">
+                  <span>20 dBZ ({lowLegendRate})</span>
+                  <span
+                    className="h-1.5 w-20 sm:w-24 shrink-0 rounded-full"
+                    style={{ background: RAINVIEWER_LEGEND_GRADIENT }}
+                  />
+                  <span>50+ dBZ ({highLegendRate})</span>
+                </div>
+              )}
+              {showWind && (
+                <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-ink-muted tabular">
+                  <span>
+                    {showRadar && frameTimingInfo.isHistoricalOrFuture
+                      ? "Canlı 10m"
+                      : "Rüzgar 0"}
+                  </span>
+                  <span className="h-1.5 w-20 sm:w-24 shrink-0 rounded-full bg-gradient-to-r from-[#93c5fd] via-[#38bdf8] via-[#34d399] via-[#f59e0b] to-[#f87171]" />
+                  <span className={windStale && windGrid ? "text-amber-200" : ""}>
+                    {windGrid
+                      ? `Maks ${formatWindSpeed(windGrid.maxSpeedKmh, unit)}${
+                          windStale ? " · Arşiv" : ""
+                        }`
+                      : windLoading
+                        ? "Alan yükleniyor..."
+                        : windFallbackCap}
+                  </span>
+                </div>
+              )}
+
+              {/* Mobil Çekmece İçi Katman & Taban Seçicileri */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 sm:hidden">
+                <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/90 p-0.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setOverlayMode("both")}
+                    className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                      overlayMode === "both"
+                        ? "bg-white/15 text-ink-primary"
+                        : "text-ink-muted hover:text-ink-primary"
+                    }`}
+                  >
+                    İkisi
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOverlayMode("radar")}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                      overlayMode === "radar"
+                        ? "bg-white/15 text-ink-primary"
+                        : "text-ink-muted hover:text-ink-primary"
+                    }`}
+                  >
+                    <CloudRain className="h-3 w-3" />
+                    <span>Yağış</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOverlayMode("wind")}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                      overlayMode === "wind"
+                        ? "bg-white/15 text-ink-primary"
+                        : "text-ink-muted hover:text-ink-primary"
+                    }`}
+                  >
+                    <Wind className="h-3 w-3" />
+                    <span>Rüzgar</span>
+                  </button>
+                </div>
+
+                <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/90 p-0.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setBasemap("dark")}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                      basemap === "dark"
+                        ? "bg-white/15 text-ink-primary"
+                        : "text-ink-muted hover:text-ink-primary"
+                    }`}
+                  >
+                    <Layers className="h-3 w-3" />
+                    <span>Koyu</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBasemap("satellite")}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                      basemap === "satellite"
+                        ? "bg-white/15 text-ink-primary"
+                        : "text-ink-muted hover:text-ink-primary"
+                    }`}
+                  >
+                    <Satellite className="h-3 w-3" />
+                    <span>Uydu</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Radar Hatası (HUD akışı içinde çakışmasız durur; yalnızca elde kayıtlı kare yoksa gösterilir) */}
+          {showRadar && radarError && !radar && (
+            <div className="atmos-hud-glass pointer-events-auto max-w-sm rounded-xl border border-signal-rose/40 bg-obsidian-950/90 p-2.5 text-xs text-ink-primary flex items-center justify-between gap-2.5">
+              <span>{radarError}</span>
+              <button
+                type="button"
+                onClick={() => void loadRadar(false)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs hover:bg-white/10"
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> Tekrar
+              </button>
             </div>
           )}
         </div>
 
-        {/* Üst Sağ: Katman & Taban Seçiciler + Yakınlaştır */}
+        {/* Üst Sağ: Masaüstü Katman & Taban Seçiciler + Yakınlaştır & Mobil Sürükleme Kilidi */}
         <div className="pointer-events-auto flex flex-col items-end gap-1.5 self-end sm:self-auto">
-          <div className="flex flex-wrap justify-end gap-1.5">
-          {/* Canlı Atmosfer Katman Seçici */}
-          <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
-            <button
-              type="button"
-              onClick={() => setOverlayMode("both")}
-              className={`rounded-md px-2 py-1 font-medium transition-colors ${
-                overlayMode === "both"
-                  ? "bg-white/15 text-ink-primary"
-                  : "text-ink-muted hover:text-ink-primary"
-              }`}
-            >
-              İkisi
-            </button>
-            <button
-              type="button"
-              onClick={() => setOverlayMode("radar")}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
-                overlayMode === "radar"
-                  ? "bg-white/15 text-ink-primary"
-                  : "text-ink-muted hover:text-ink-primary"
-              }`}
-            >
-              <CloudRain className="h-3 w-3" />
-              <span>Yağış</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setOverlayMode("wind")}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
-                overlayMode === "wind"
-                  ? "bg-white/15 text-ink-primary"
-                  : "text-ink-muted hover:text-ink-primary"
-              }`}
-            >
-              <Wind className="h-3 w-3" />
-              <span>Rüzgar</span>
-            </button>
+          <div className="hidden sm:flex flex-wrap justify-end gap-1.5">
+            {/* Canlı Atmosfer Katman Seçici */}
+            <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setOverlayMode("both")}
+                className={`rounded-md px-2 py-1 font-medium transition-colors ${
+                  overlayMode === "both"
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-muted hover:text-ink-primary"
+                }`}
+              >
+                İkisi
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverlayMode("radar")}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                  overlayMode === "radar"
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-muted hover:text-ink-primary"
+                }`}
+              >
+                <CloudRain className="h-3 w-3" />
+                <span>Yağış</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverlayMode("wind")}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                  overlayMode === "wind"
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-muted hover:text-ink-primary"
+                }`}
+              >
+                <Wind className="h-3 w-3" />
+                <span>Rüzgar</span>
+              </button>
+            </div>
+
+            {/* Taban Harita Seçici */}
+            <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setBasemap("dark")}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                  basemap === "dark"
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-muted hover:text-ink-primary"
+                }`}
+              >
+                <Layers className="h-3 w-3" />
+                <span>Koyu</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBasemap("satellite")}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                  basemap === "satellite"
+                    ? "bg-white/15 text-ink-primary"
+                    : "text-ink-muted hover:text-ink-primary"
+                }`}
+              >
+                <Satellite className="h-3 w-3" />
+                <span>Uydu</span>
+              </button>
+            </div>
           </div>
 
-          {/* Taban Harita Seçici */}
-          <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
+          <div className="flex flex-row sm:flex-col gap-1.5">
             <button
               type="button"
-              onClick={() => setBasemap("dark")}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
-                basemap === "dark"
-                  ? "bg-white/15 text-ink-primary"
-                  : "text-ink-muted hover:text-ink-primary"
+              aria-pressed={mobileDragLock}
+              aria-label="Harita Sürükleme Kilidi"
+              title="Harita Sürükleme Kilidi"
+              onClick={() => setMobileDragLock((v) => !v)}
+              className={`flex sm:hidden h-8 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-colors ${
+                mobileDragLock
+                  ? "border-sky-400/50 bg-sky-400/20 text-sky-200"
+                  : "border-white/10 bg-obsidian-950/85 text-ink-secondary hover:text-ink-primary"
               }`}
             >
-              <Layers className="h-3 w-3" />
-              <span>Koyu</span>
+              {mobileDragLock ? (
+                <Lock className="h-3.5 w-3.5 text-sky-300" />
+              ) : (
+                <Unlock className="h-3.5 w-3.5" />
+              )}
+              <span>Sürükle</span>
             </button>
             <button
               type="button"
-              onClick={() => setBasemap("satellite")}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
-                basemap === "satellite"
-                  ? "bg-white/15 text-ink-primary"
-                  : "text-ink-muted hover:text-ink-primary"
-              }`}
+              onClick={() =>
+                setView((prev) => ({
+                  ...prev,
+                  zoom: Math.min(MAX_ZOOM, prev.zoom + 1)
+                }))
+              }
+              disabled={zoom >= MAX_ZOOM}
+              aria-label="Haritayı yakınlaştır"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 transition-colors"
             >
-              <Satellite className="h-3 w-3" />
-              <span>Uydu</span>
+              <Plus className="h-4 w-4" />
             </button>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() =>
-              setView((prev) => ({
-                ...prev,
-                zoom: Math.min(MAX_ZOOM, prev.zoom + 1)
-              }))
-            }
-            disabled={zoom >= MAX_ZOOM}
-            aria-label="Haritayı yakınlaştır"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              setView((prev) => ({
-                ...prev,
-                zoom: Math.max(MIN_ZOOM, prev.zoom - 1)
-              }))
-            }
-            disabled={zoom <= MIN_ZOOM}
-            aria-label="Haritayı uzaklaştır"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 transition-colors"
-          >
-            <Minus className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setView({
-                center: { lat: selectedLat, lon: selectedLon },
-                zoom: 7
-              });
-            }}
-            aria-label="Seçili konuma odaklan"
-            title="Seçili konuma odaklan"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-secondary hover:text-ink-primary hover:bg-obsidian-800 transition-colors"
-          >
-            <Crosshair className="h-4 w-4" />
-          </button>
+            <button
+              type="button"
+              onClick={() =>
+                setView((prev) => ({
+                  ...prev,
+                  zoom: Math.max(MIN_ZOOM, prev.zoom - 1)
+                }))
+              }
+              disabled={zoom <= MIN_ZOOM}
+              aria-label="Haritayı uzaklaştır"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-primary hover:bg-obsidian-800 disabled:opacity-40 transition-colors"
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setView({
+                  center: { lat: selectedLat, lon: selectedLon },
+                  zoom: 7
+                });
+              }}
+              aria-label="Seçili konuma odaklan"
+              title="Seçili konuma odaklan"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-obsidian-950/85 text-ink-secondary hover:text-ink-primary hover:bg-obsidian-800 transition-colors"
+            >
+              <Crosshair className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </div>
-
-      {/* Radar Hatası (Yalnızca elde hiçbir kayıtlı kare yoksa gösterilir) */}
-      {showRadar && radarError && !radar && (
-        <div className="atmos-hud-glass absolute inset-x-4 top-28 z-20 mx-auto max-w-sm rounded-xl border border-signal-rose/40 bg-obsidian-950/90 p-3 text-xs text-ink-primary flex items-center justify-between gap-3">
-          <span>{radarError}</span>
-          <button
-            type="button"
-            onClick={() => void loadRadar(false)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs hover:bg-white/10"
-          >
-            <RefreshCw className="h-3.5 w-3.5" /> Tekrar
-          </button>
-        </div>
-      )}
 
       {/* Alt Zaman Oynatıcı & İpucu */}
       <div className="absolute inset-x-3 bottom-3 z-20 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1197,6 +1941,7 @@ function LiveRadarMapBase({
               min={0}
               max={Math.max(0, (radar?.frames.length ?? 1) - 1)}
               value={frameIdx}
+              aria-valuetext={sliderValueText}
               onChange={(e) => {
                 setPlaying(false);
                 setFrameIdx(Number(e.target.value));
@@ -1211,8 +1956,8 @@ function LiveRadarMapBase({
                   Tahmin
                 </span>
               )}
-              <span className="min-w-[44px] text-right text-ink-primary">
-                {activeFrame ? formatRadarClock(activeFrame.time) : "--:--"}
+              <span className="min-w-[68px] text-right text-ink-primary">
+                {activeClockLabel}
               </span>
             </div>
           </div>

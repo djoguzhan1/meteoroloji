@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { cookies, headers } from "next/headers";
 import "./globals.css";
+import { ATMOS_LOCATION_COOKIE } from "@/lib/location-url";
+import { resolveInitialServerLocation } from "@/lib/geocode-server";
 import { fetchWeatherBundle } from "@/lib/weather";
-import { DEFAULT_LOCATION } from "@/lib/weather-client";
 import { WeatherProvider } from "@/context/WeatherContext";
 import AppShell from "@/components/AppShell";
 
@@ -45,10 +47,26 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  let searchStr: string | null = null;
+  let cookieVal: string | null = null;
+  try {
+    const hdrs = await headers();
+    const ck = await cookies();
+    searchStr = hdrs.get("x-atmos-search");
+    cookieVal = ck.get(ATMOS_LOCATION_COOKIE)?.value ?? null;
+  } catch {
+    // Request scope unavailable fallback
+  }
+
+  const { location: initialLocation } = await resolveInitialServerLocation({
+    searchStr,
+    cookieVal
+  });
+
   let initialBundle = null;
   let initialError: string | null = null;
   try {
-    initialBundle = await fetchWeatherBundle(DEFAULT_LOCATION);
+    initialBundle = await fetchWeatherBundle(initialLocation);
   } catch {
     initialError = "Meteoroloji veri servisine şu an ulaşılamıyor.";
   }
@@ -59,7 +77,11 @@ export default async function RootLayout({
       className={`dark ${inter.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable}`}
     >
       <body className="min-h-screen bg-obsidian-950 text-ink-primary antialiased">
-        <WeatherProvider initialBundle={initialBundle} initialError={initialError}>
+        <WeatherProvider
+          initialBundle={initialBundle}
+          initialLocation={initialLocation}
+          initialError={initialError}
+        >
           <AppShell>{children}</AppShell>
         </WeatherProvider>
       </body>

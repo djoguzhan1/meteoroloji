@@ -16,6 +16,7 @@ import {
 } from "@/lib/forecast-resilience";
 import { CORE_MODEL_KEYS, CORE_MODEL_META } from "@/lib/model-registry";
 import {
+  ATMOS_REFRESH_ALL_EVENT,
   convertPrecipMm,
   convertTempValue,
   convertWindSpeed,
@@ -31,8 +32,157 @@ import type {
   UnitSystem
 } from "@/lib/weather-types";
 
-type MetricTab = "temp2m" | "temp850" | "precip" | "wind10m";
-type HorizonHours = 72 | 168 | 360;
+export type MetricTab = "temp2m" | "temp850" | "precip" | "wind10m";
+export type HorizonHours = 72 | 168 | 360;
+
+export interface ModelComparisonChartProps {
+  location: GeoLocation;
+  unit: UnitSystem;
+  syncedTimeIso?: string | null;
+  onInspectTimeChange?: (iso: string | null) => void;
+}
+
+export interface HorizonModelItemSummary {
+  key: CoreModelKey;
+  validCount: number;
+  isPartialHorizon: boolean;
+  rawValue: number | null;
+  formatted: string;
+}
+
+export interface HorizonModelSummaryResult {
+  horizonHours: HorizonHours;
+  activeModelKeys: CoreModelKey[];
+  precipByModel: Record<CoreModelKey, HorizonModelItemSummary>;
+  min850ByModel: Record<CoreModelKey, HorizonModelItemSummary>;
+  maxSpreadTemp2mC: number | null;
+  maxSpreadFormatted: string;
+  maxSpreadTimeIso: string | null;
+  maxSpreadTimeLabel: string | null;
+}
+
+/**
+ * Seçili ufuk (`72 | 168 | 360` saat) ve görünür modellere (`visibleModels`) duyarlı,
+ * kısa vadeli modellerin gerçek veri kapsamını (`(114s)` vb.) dürüstçe raporlayan saf özet hesaplayıcı.
+ */
+export function computeHorizonModelSummary(params: {
+  temp2m: ModelSeriesPoint[];
+  temp850: ModelSeriesPoint[];
+  precip: ModelSeriesPoint[];
+  horizonHours: HorizonHours;
+  visibleModels?: Partial<Record<CoreModelKey, boolean>>;
+  unit?: UnitSystem;
+}): HorizonModelSummaryResult {
+  const { horizonHours } = params;
+  const unit: UnitSystem = params.unit ?? "metric";
+  const activeModelKeys = CORE_MODEL_KEYS.filter((k) =>
+    params.visibleModels ? Boolean(params.visibleModels[k]) : true
+  );
+
+  const precipSlice = params.precip.slice(0, horizonHours);
+  const precipByModel = {} as Record<CoreModelKey, HorizonModelItemSummary>;
+
+  for (const k of CORE_MODEL_KEYS) {
+    const validVals = precipSlice
+      .map((p) => p[k])
+      .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
+    const validCount = validVals.length;
+    if (validCount === 0) {
+      precipByModel[k] = {
+        key: k,
+        validCount: 0,
+        isPartialHorizon: false,
+        rawValue: null,
+        formatted: "—"
+      };
+    } else {
+      const sumMm = Number(
+        validVals.reduce((acc, v) => acc + Math.max(0, v), 0).toFixed(2)
+      );
+      const isPartialHorizon = validCount < horizonHours - 2;
+      const baseFormatted = formatPrecip(sumMm, unit);
+      precipByModel[k] = {
+        key: k,
+        validCount,
+        isPartialHorizon,
+        rawValue: sumMm,
+        formatted: isPartialHorizon ? `${baseFormatted} (${validCount}s)` : baseFormatted
+      };
+    }
+  }
+
+  const temp850Slice = params.temp850.slice(0, horizonHours);
+  const min850ByModel = {} as Record<CoreModelKey, HorizonModelItemSummary>;
+
+  for (const k of CORE_MODEL_KEYS) {
+    const validVals = temp850Slice
+      .map((p) => p[k])
+      .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
+    const validCount = validVals.length;
+    if (validCount === 0) {
+      min850ByModel[k] = {
+        key: k,
+        validCount: 0,
+        isPartialHorizon: false,
+        rawValue: null,
+        formatted: "—"
+      };
+    } else {
+      const minC = Number(Math.min(...validVals).toFixed(2));
+      const isPartialHorizon = validCount < horizonHours - 2;
+      const baseFormatted = formatTemperature(minC, unit, {
+        decimals: 1,
+        showUnit: true
+      });
+      min850ByModel[k] = {
+        key: k,
+        validCount,
+        isPartialHorizon,
+        rawValue: minC,
+        formatted: isPartialHorizon ? `${baseFormatted} (${validCount}s)` : baseFormatted
+      };
+    }
+  }
+
+  const temp2mSlice = params.temp2m.slice(0, horizonHours);
+  let maxSpreadTemp2mC: number | null = null;
+  let maxSpreadTimeIso: string | null = null;
+  let maxSpreadTimeLabel: string | null = null;
+
+  for (const pt of temp2mSlice) {
+    const vals = activeModelKeys
+      .map((k) => pt[k])
+      .filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
+    if (vals.length >= 2) {
+      const spreadC = Math.max(...vals) - Math.min(...vals);
+      if (maxSpreadTemp2mC === null || spreadC > maxSpreadTemp2mC) {
+        maxSpreadTemp2mC = Number(spreadC.toFixed(2));
+        maxSpreadTimeIso = pt.time;
+        maxSpreadTimeLabel = `${pt.dayLabel} ${pt.hourLabel}`.trim();
+      }
+    }
+  }
+
+  const maxSpreadFormatted =
+    maxSpreadTemp2mC !== null
+      ? formatTempDelta(maxSpreadTemp2mC, unit, {
+          decimals: 1,
+          signed: false,
+          showUnit: true
+        })
+      : "—";
+
+  return {
+    horizonHours,
+    activeModelKeys,
+    precipByModel,
+    min850ByModel,
+    maxSpreadTemp2mC,
+    maxSpreadFormatted,
+    maxSpreadTimeIso,
+    maxSpreadTimeLabel
+  };
+}
 
 const TAB_CONFIG: Record<
   MetricTab,
@@ -101,13 +251,35 @@ function buildLinePath(points: Array<{ x: number; y: number | null }>): string {
   return d.trim();
 }
 
+function buildModelsApiQuery(location: GeoLocation): URLSearchParams {
+  const qs = new URLSearchParams({
+    lat: String(location.lat),
+    lon: String(location.lon)
+  });
+  if (location.name?.trim()) {
+    qs.set("name", location.name.trim());
+  }
+  if (location.admin1?.trim()) {
+    qs.set("admin1", location.admin1.trim());
+  }
+  if (location.country?.trim()) {
+    qs.set("country", location.country.trim());
+  }
+  if (location.id?.trim()) {
+    qs.set("id", location.id.trim());
+  }
+  if (location.elevation !== undefined && Number.isFinite(location.elevation)) {
+    qs.set("elevation", String(Math.round(location.elevation)));
+  }
+  return qs;
+}
+
 function ModelComparisonChartBase({
   location,
-  unit
-}: {
-  location: GeoLocation;
-  unit: UnitSystem;
-}) {
+  unit,
+  syncedTimeIso,
+  onInspectTimeChange
+}: ModelComparisonChartProps) {
   const { recoveryCount, isOffline } = useWeatherStatus();
 
   const [models, setModels] = useState<MultiModelBundle | null>(null);
@@ -117,6 +289,7 @@ function ModelComparisonChartBase({
   const [tab, setTab] = useState<MetricTab>("temp2m");
   const [horizonHours, setHorizonHours] = useState<HorizonHours>(72);
   const [hoverIdx, setHoverIdx] = useState<number>(0);
+  const [chartWidth, setChartWidth] = useState<number>(760);
   const [visibleModels, setVisibleModels] = useState<Record<CoreModelKey, boolean>>({
     ecmwfIfs: true,
     ecmwfAifs: true,
@@ -136,9 +309,11 @@ function ModelComparisonChartBase({
     });
   };
 
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const reqSeqRef = useRef(0);
   const modelsRef = useRef<MultiModelBundle | null>(null);
   const locRef = useRef<GeoLocation>(location);
+  const lastEmittedIsoRef = useRef<string | null>(null);
 
   useEffect(() => {
     modelsRef.current = models;
@@ -149,16 +324,28 @@ function ModelComparisonChartBase({
   }, [location]);
 
   const loadModels = useCallback(
-    async (opts?: { background?: boolean }) => {
+    async (opts?: { background?: boolean; forceNoStore?: boolean }) => {
       const seq = ++reqSeqRef.current;
-      const targetLat = location.lat;
-      const targetLon = location.lon;
+      const targetLoc: GeoLocation = {
+        id: location.id,
+        name: location.name,
+        admin1: location.admin1,
+        country: location.country,
+        lat: location.lat,
+        lon: location.lon,
+        elevation: location.elevation,
+        timezone: location.timezone
+      };
 
       const hasMatching =
         modelsRef.current !== null &&
         areLocationsEquivalent(
-          { lat: modelsRef.current.lat, lon: modelsRef.current.lon },
-          { lat: targetLat, lon: targetLon }
+          {
+            lat: modelsRef.current.lat,
+            lon: modelsRef.current.lon,
+            elevation: modelsRef.current.elevation
+          },
+          targetLoc
         );
       const isBg = Boolean(opts?.background || hasMatching);
 
@@ -170,12 +357,11 @@ function ModelComparisonChartBase({
       }
 
       try {
-        const qs = new URLSearchParams({
-          lat: String(targetLat),
-          lon: String(targetLon)
-        });
+        const qs = buildModelsApiQuery(targetLoc);
         const bypassCache =
-          isBg || modelsRef.current?.freshness?.status !== "live";
+          Boolean(opts?.forceNoStore) ||
+          isBg ||
+          modelsRef.current?.freshness?.status !== "live";
         const res = await fetch(`/api/models?${qs.toString()}`, {
           cache: bypassCache ? "no-store" : "default"
         });
@@ -185,12 +371,7 @@ function ModelComparisonChartBase({
         }
         const data: MultiModelBundle = await res.json();
         if (seq !== reqSeqRef.current) return;
-        if (
-          !areLocationsEquivalent(locRef.current, {
-            lat: targetLat,
-            lon: targetLon
-          })
-        ) {
+        if (!areLocationsEquivalent(locRef.current, targetLoc)) {
           return;
         }
 
@@ -199,7 +380,7 @@ function ModelComparisonChartBase({
         }
         setModels(data);
         setError(null);
-        if (!isBg) setHoverIdx(0);
+        if (!isBg && !syncedTimeIso) setHoverIdx(0);
       } catch (e) {
         if (seq !== reqSeqRef.current) return;
         const msg =
@@ -210,8 +391,12 @@ function ModelComparisonChartBase({
         if (
           modelsRef.current &&
           areLocationsEquivalent(
-            { lat: modelsRef.current.lat, lon: modelsRef.current.lon },
-            { lat: targetLat, lon: targetLon }
+            {
+              lat: modelsRef.current.lat,
+              lon: modelsRef.current.lon,
+              elevation: modelsRef.current.elevation
+            },
+            targetLoc
           )
         ) {
           const reanchored = reanchorMultiModelBundleToNow(
@@ -235,8 +420,8 @@ function ModelComparisonChartBase({
           setError(null);
         } else {
           const cached = await readCachedModelsBundleAsync(
-            targetLat,
-            targetLon,
+            targetLoc.lat,
+            targetLoc.lon,
             Date.now(),
             { forceStale: true, staleReason: msg }
           );
@@ -244,7 +429,7 @@ function ModelComparisonChartBase({
           if (cached) {
             setModels(cached);
             setError(null);
-            setHoverIdx(0);
+            if (!syncedTimeIso) setHoverIdx(0);
           } else {
             setModels(null);
             setError(msg);
@@ -257,7 +442,17 @@ function ModelComparisonChartBase({
         }
       }
     },
-    [location.lat, location.lon]
+    [
+      location.lat,
+      location.lon,
+      location.id,
+      location.name,
+      location.admin1,
+      location.country,
+      location.elevation,
+      location.timezone,
+      syncedTimeIso
+    ]
   );
 
   // Hydrate city-isolated cache immediately on location change, then fetch live
@@ -268,7 +463,10 @@ function ModelComparisonChartBase({
       const cur = modelsRef.current;
       const sameLoc =
         cur !== null &&
-        areLocationsEquivalent({ lat: cur.lat, lon: cur.lon }, location);
+        areLocationsEquivalent(
+          { lat: cur.lat, lon: cur.lon, elevation: cur.elevation },
+          location
+        );
 
       if (!sameLoc) {
         const syncHit = readCachedModelsBundleSync(
@@ -277,7 +475,13 @@ function ModelComparisonChartBase({
           Date.now(),
           { forceStale: isOffline }
         );
-        if (syncHit) {
+        if (
+          syncHit &&
+          areLocationsEquivalent(
+            { lat: syncHit.lat, lon: syncHit.lon, elevation: syncHit.elevation },
+            location
+          )
+        ) {
           modelsRef.current = syncHit;
           setModels(syncHit);
           setError(null);
@@ -293,15 +497,33 @@ function ModelComparisonChartBase({
     return () => {
       active = false;
     };
-  }, [location.lat, location.lon, loadModels]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    location.lat,
+    location.lon,
+    location.id,
+    location.elevation,
+    loadModels
+  ]);
 
   // Re-fetch automatically when global WeatherContext recovers live connectivity
   useEffect(() => {
     if (recoveryCount <= 0) return;
     queueMicrotask(() => {
-      void loadModels({ background: Boolean(modelsRef.current) });
+      void loadModels({ background: Boolean(modelsRef.current), forceNoStore: true });
     });
   }, [recoveryCount, loadModels]);
+
+  // Listen for global ATMOS_REFRESH_ALL_EVENT to force no-store refresh
+  useEffect(() => {
+    const handleRefreshAll = () => {
+      void loadModels({ background: Boolean(modelsRef.current), forceNoStore: true });
+    };
+    window.addEventListener(ATMOS_REFRESH_ALL_EVENT, handleRefreshAll);
+    return () => {
+      window.removeEventListener(ATMOS_REFRESH_ALL_EVENT, handleRefreshAll);
+    };
+  }, [loadModels]);
 
   // Self-healing retry loop if models chart is stale or failed while online
   const isModelsStale =
@@ -312,24 +534,79 @@ function ModelComparisonChartBase({
       return;
     }
     const timer = window.setTimeout(() => {
-      void loadModels({ background: Boolean(modelsRef.current) });
+      void loadModels({ background: Boolean(modelsRef.current), forceNoStore: true });
     }, 18_000);
     return () => window.clearTimeout(timer);
   }, [isOffline, isModelsStale, error, loading, revalidating, loadModels]);
+
+  // Sync external `syncedTimeIso` onto chart cursor (and expand horizon if needed)
+  useEffect(() => {
+    if (!syncedTimeIso || !models) return;
+    const fullSeries = models[tab] ?? [];
+    if (fullSeries.length === 0) return;
+
+    let matchIdx = fullSeries.findIndex((pt) => pt.time === syncedTimeIso);
+    if (matchIdx === -1) {
+      const hourPrefix = syncedTimeIso.slice(0, 13);
+      matchIdx = fullSeries.findIndex((pt) => pt.time.slice(0, 13) === hourPrefix);
+    }
+    if (matchIdx === -1) return;
+
+    lastEmittedIsoRef.current = fullSeries[matchIdx].time;
+    queueMicrotask(() => {
+      if (matchIdx >= horizonHours) {
+        if (matchIdx < 168) {
+          setHorizonHours(168);
+        } else {
+          setHorizonHours(360);
+        }
+      }
+      setHoverIdx(matchIdx);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncedTimeIso, models, tab]);
 
   const activeSeries: ModelSeriesPoint[] = useMemo(() => {
     if (!models) return [];
     return (models[tab] ?? []).slice(0, horizonHours);
   }, [models, tab, horizonHours]);
 
+  const hasChartDom = Boolean(models && activeSeries.length > 0);
+
+  // Measure real CSS pixel width via ResizeObserver so 360px mobile renders 1:1 native text
+  useEffect(() => {
+    const el = chartContainerRef.current;
+    if (!el) return;
+
+    const applyWidth = (rawW: number) => {
+      const rounded = Math.round(rawW);
+      if (rounded > 0) {
+        setChartWidth(Math.max(300, rounded));
+      }
+    };
+
+    applyWidth(el.clientWidth);
+
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        applyWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasChartDom]);
+
+  const chartHeight = chartWidth < 480 ? 228 : 248;
+
   const chart = useMemo(() => {
-    const W = 920;
-    const H = 230;
-    const padL = 44;
-    const padR = 16;
+    const W = Math.max(300, chartWidth);
+    const H = chartHeight;
+    const padL = W < 420 ? 38 : 44;
+    const padR = 14;
     const padT = 16;
     const padB = 30;
-    const plotW = W - padL - padR;
+    const plotW = Math.max(120, W - padL - padR);
     const plotH = H - padT - padB;
 
     const allVals: number[] = [];
@@ -350,7 +627,10 @@ function ModelComparisonChartBase({
           ? Math.max(0.2, Math.ceil((maxRaw + 0.05) * 10) / 10)
           : Math.max(2, Math.ceil(maxRaw + 0.5))
         : Math.ceil(maxRaw + 2);
-    const span = Math.max(tab === "precip" && unit === "imperial" ? 0.1 : 1, maxVal - minVal);
+    const span = Math.max(
+      tab === "precip" && unit === "imperial" ? 0.1 : 1,
+      maxVal - minVal
+    );
 
     const n = Math.max(2, activeSeries.length);
     const xAt = (i: number) => padL + (i / (n - 1)) * plotW;
@@ -400,6 +680,54 @@ function ModelComparisonChartBase({
         ? yAt(freezeIso)
         : null;
 
+    // Non-overlapping X-axis tick selection adapted to real pixel plotW
+    const maxTicks = Math.max(4, Math.floor(plotW / 68));
+    const baseMinStride = horizonHours === 360 ? 48 : horizonHours === 168 ? 24 : 12;
+    const candidateStrides = [6, 12, 18, 24, 36, 48, 72, 96, 120];
+    let stride = candidateStrides[candidateStrides.length - 1];
+    for (const s of candidateStrides) {
+      if (s < baseMinStride) continue;
+      const estCount = Math.floor(Math.max(0, activeSeries.length - 1) / s) + 1;
+      if (estCount <= maxTicks) {
+        stride = s;
+        break;
+      }
+    }
+
+    const xTicks: Array<{
+      idx: number;
+      time: string;
+      x: number;
+      label: string;
+      anchor: "start" | "middle" | "end";
+    }> = [];
+    let lastX = -Infinity;
+    const minPxGap = W < 420 ? 58 : 66;
+    const compactLabels = W < 480;
+
+    for (let idx = 0; idx < activeSeries.length; idx += stride) {
+      const pt = activeSeries[idx];
+      const x = xAt(idx);
+      if (x - lastX < minPxGap) continue;
+      lastX = x;
+
+      let label: string;
+      if (compactLabels && horizonHours >= 168) {
+        label = pt.dayLabel;
+      } else if (pt.hourLabel === "00:00" || idx === 0 || horizonHours >= 168) {
+        label = compactLabels
+          ? `${pt.dayLabel} ${pt.hourLabel.slice(0, 2)}s`
+          : `${pt.dayLabel} ${pt.hourLabel}`;
+      } else {
+        label = pt.hourLabel;
+      }
+
+      const anchor: "start" | "middle" | "end" =
+        idx === 0 ? "start" : x > W - padR - 36 ? "end" : "middle";
+
+      xTicks.push({ idx, time: pt.time, x, label, anchor });
+    }
+
     return {
       W,
       H,
@@ -414,9 +742,10 @@ function ModelComparisonChartBase({
       paths,
       envelopePath,
       yTicks,
+      xTicks,
       zeroY
     };
-  }, [activeSeries, tab, unit, visibleModels]);
+  }, [activeSeries, tab, unit, visibleModels, chartWidth, chartHeight, horizonHours]);
 
   const clampedIdx = Math.max(0, Math.min(activeSeries.length - 1, hoverIdx));
   const inspected = activeSeries[clampedIdx] ?? null;
@@ -438,6 +767,18 @@ function ModelComparisonChartBase({
     return { map, spread };
   }, [inspected, tab, unit, visibleModels]);
 
+  const horizonSummary = useMemo(() => {
+    if (!models) return null;
+    return computeHorizonModelSummary({
+      temp2m: models.temp2m ?? [],
+      temp850: models.temp850 ?? [],
+      precip: models.precip ?? [],
+      horizonHours,
+      visibleModels,
+      unit
+    });
+  }, [models, horizonHours, visibleModels, unit]);
+
   const rawUnitSuffix =
     unit === "imperial" ? TAB_CONFIG[tab].unitImperial : TAB_CONFIG[tab].unitMetric;
   const unitSuffix = rawUnitSuffix.startsWith("°") ? rawUnitSuffix : ` ${rawUnitSuffix}`;
@@ -446,24 +787,31 @@ function ModelComparisonChartBase({
       ? TAB_CONFIG[tab].subtitleImperial
       : TAB_CONFIG[tab].subtitle;
 
+  const emitInspectTime = useCallback(
+    (nextIdx: number, series: ModelSeriesPoint[]) => {
+      const nextPt = series[nextIdx];
+      if (!nextPt || !onInspectTimeChange) return;
+      if (lastEmittedIsoRef.current !== nextPt.time) {
+        lastEmittedIsoRef.current = nextPt.time;
+        onInspectTimeChange(nextPt.time);
+      }
+    },
+    [onInspectTimeChange]
+  );
+
   const handlePointer = (e: React.PointerEvent<SVGSVGElement>) => {
     if (activeSeries.length < 2) return;
     const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
     const relX = ((e.clientX - rect.left) / rect.width) * chart.W;
     const frac = Math.max(0, Math.min(1, (relX - chart.padL) / chart.plotW));
-    setHoverIdx(Math.round(frac * (activeSeries.length - 1)));
+    const nextIdx = Math.round(frac * (activeSeries.length - 1));
+    setHoverIdx(nextIdx);
+    emitInspectTime(nextIdx, activeSeries);
   };
 
-  const tickStride = horizonHours === 360 ? 48 : horizonHours === 168 ? 24 : 12;
-  const activePrecipSummary =
-    horizonHours === 360
-      ? (models?.summary.precip360h ?? models?.summary.precip168h)
-      : horizonHours === 168
-        ? models?.summary.precip168h
-        : models?.summary.precip72h;
-  const showArchiveBadge = Boolean(
-    models && (isModelsStale || isOffline)
-  );
+  const showArchiveBadge = Boolean(models && (isModelsStale || isOffline));
+  const axisFontSize = chartWidth < 480 ? 10.5 : 11;
 
   return (
     <section className="surface-panel p-5 sm:p-6 space-y-5">
@@ -491,7 +839,9 @@ function ModelComparisonChartBase({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void loadModels({ background: Boolean(models) })}
+            onClick={() =>
+              void loadModels({ background: Boolean(models), forceNoStore: true })
+            }
             disabled={loading || revalidating}
             title="8-Model serisini yenile"
             aria-label="8-Model serisini yenile"
@@ -509,7 +859,14 @@ function ModelComparisonChartBase({
                 type="button"
                 onClick={() => {
                   setHorizonHours(h);
-                  setHoverIdx((prev) => Math.min(prev, h - 1));
+                  setHoverIdx((prev) => {
+                    const nextIdx = Math.min(prev, h - 1);
+                    if (models) {
+                      const nextSeries = (models[tab] ?? []).slice(0, h);
+                      emitInspectTime(nextIdx, nextSeries);
+                    }
+                    return nextIdx;
+                  });
                 }}
                 className={`rounded-lg px-2.5 py-1.5 font-mono text-xs font-medium transition-colors ${
                   horizonHours === h
@@ -548,7 +905,7 @@ function ModelComparisonChartBase({
           </span>
           <button
             type="button"
-            onClick={() => void loadModels()}
+            onClick={() => void loadModels({ forceNoStore: true })}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10"
           >
             <RefreshCw className="h-3.5 w-3.5" /> Tekrar Dene
@@ -557,7 +914,7 @@ function ModelComparisonChartBase({
       )}
 
       {loading && !models && !error && (
-        <div className="h-[260px] rounded-xl border border-white/[0.06] bg-obsidian-950/60 flex items-center justify-center font-mono text-xs text-ink-muted">
+        <div className="h-[248px] rounded-xl border border-white/[0.06] bg-obsidian-950/60 flex items-center justify-center font-mono text-xs text-ink-muted">
           8 küresel ve mezoskaleli model verisi çekiliyor...
         </div>
       )}
@@ -590,7 +947,7 @@ function ModelComparisonChartBase({
                     />
                     <span className="text-ink-muted">{meta.shortLabel}</span>
                     <strong className="text-ink-primary">
-                      {val !== null && val !== undefined ? `${val}${unitSuffix}` : "--"}
+                      {val !== null && val !== undefined ? `${val}${unitSuffix}` : "—"}
                     </strong>
                   </button>
                 );
@@ -609,209 +966,213 @@ function ModelComparisonChartBase({
           </div>
 
           <div className="rounded-xl border border-white/[0.07] bg-[#070b14] p-2">
-            <svg
-              viewBox={`0 0 ${chart.W} ${chart.H}`}
-              onPointerMove={handlePointer}
-              onPointerDown={handlePointer}
-              className="h-60 w-full cursor-crosshair select-none touch-none"
-              role="img"
-              aria-label={`8 meteoroloji modeli ${horizonHours} saatlik karşılaştırma grafiği`}
-            >
-              {chart.yTicks.map((tick) => (
-                <g key={tick.id}>
+            <div ref={chartContainerRef} className="w-full">
+              <svg
+                width={chart.W}
+                height={chart.H}
+                viewBox={`0 0 ${chart.W} ${chart.H}`}
+                style={{ height: `${chart.H}px` }}
+                onPointerMove={handlePointer}
+                onPointerDown={handlePointer}
+                className="block w-full cursor-crosshair select-none touch-pan-y"
+                role="img"
+                aria-label={`8 meteoroloji modeli ${horizonHours} saatlik karşılaştırma grafiği`}
+              >
+                {chart.yTicks.map((tick) => (
+                  <g key={tick.id}>
+                    <line
+                      x1={chart.padL}
+                      x2={chart.W - chart.padR}
+                      y1={tick.y}
+                      y2={tick.y}
+                      stroke="rgba(148, 163, 184, 0.12)"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x={chart.padL - 6}
+                      y={tick.y + 3.5}
+                      textAnchor="end"
+                      fill="rgba(167, 180, 200, 0.8)"
+                      fontSize={axisFontSize}
+                      fontFamily="monospace"
+                    >
+                      {tick.val}
+                    </text>
+                  </g>
+                ))}
+
+                {chart.zeroY !== null && (
                   <line
                     x1={chart.padL}
                     x2={chart.W - chart.padR}
-                    y1={tick.y}
-                    y2={tick.y}
-                    stroke="rgba(148, 163, 184, 0.12)"
-                    strokeWidth="1"
+                    y1={chart.zeroY}
+                    y2={chart.zeroY}
+                    stroke="rgba(56, 189, 248, 0.45)"
+                    strokeDasharray="4 4"
+                    strokeWidth="1.2"
                   />
-                  <text
-                    x={chart.padL - 8}
-                    y={tick.y + 3.5}
-                    textAnchor="end"
-                    fill="rgba(167, 180, 200, 0.72)"
-                    fontSize="10"
-                    fontFamily="monospace"
-                  >
-                    {tick.val}
-                  </text>
-                </g>
-              ))}
+                )}
 
-              {chart.zeroY !== null && (
-                <line
-                  x1={chart.padL}
-                  x2={chart.W - chart.padR}
-                  y1={chart.zeroY}
-                  y2={chart.zeroY}
-                  stroke="rgba(56, 189, 248, 0.45)"
-                  strokeDasharray="4 4"
-                  strokeWidth="1.2"
-                />
-              )}
-
-              {activeSeries.map((pt, idx) => {
-                if (idx % tickStride !== 0) return null;
-                const x = chart.xAt(idx);
-                return (
-                  <g key={pt.time}>
+                {chart.xTicks.map((xt) => (
+                  <g key={xt.time}>
                     <line
-                      x1={x}
-                      x2={x}
+                      x1={xt.x}
+                      x2={xt.x}
                       y1={chart.padT}
                       y2={chart.H - chart.padB}
                       stroke="rgba(148, 163, 184, 0.08)"
                       strokeWidth="1"
                     />
                     <text
-                      x={x}
-                      y={chart.H - 10}
-                      textAnchor={
-                        idx === 0
-                          ? "start"
-                          : x > chart.W - chart.padR - 38
-                            ? "end"
-                            : "middle"
-                      }
-                      fill="rgba(167, 180, 200, 0.7)"
-                      fontSize="10"
+                      x={xt.x}
+                      y={chart.H - 9}
+                      textAnchor={xt.anchor}
+                      fill="rgba(167, 180, 200, 0.78)"
+                      fontSize={axisFontSize}
                       fontFamily="monospace"
                     >
-                      {pt.hourLabel === "00:00" || idx === 0 || horizonHours >= 168
-                        ? `${pt.dayLabel} ${pt.hourLabel}`
-                        : pt.hourLabel}
+                      {xt.label}
                     </text>
                   </g>
-                );
-              })}
+                ))}
 
-              {chart.envelopePath && (
-                <path
-                  d={chart.envelopePath}
-                  fill="rgba(56, 189, 248, 0.10)"
-                  stroke="rgba(56, 189, 248, 0.16)"
-                  strokeWidth="0.7"
+                {chart.envelopePath && (
+                  <path
+                    d={chart.envelopePath}
+                    fill="rgba(56, 189, 248, 0.10)"
+                    stroke="rgba(56, 189, 248, 0.16)"
+                    strokeWidth="0.7"
+                  />
+                )}
+
+                <g key={`${tab}-${horizonHours}-${unit}`}>
+                  {CORE_MODEL_KEYS.map((k) => {
+                    if (!visibleModels[k] || !chart.paths[k]) return null;
+                    return (
+                      <path
+                        key={k}
+                        d={chart.paths[k]}
+                        fill="none"
+                        stroke={CORE_MODEL_META[k].color}
+                        strokeWidth={k === "ecmwfIfs" || k === "ecmwfAifs" ? 2.3 : 1.75}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        className="atmos-line-draw"
+                      />
+                    );
+                  })}
+                </g>
+
+                <line
+                  x1={chart.xAt(clampedIdx)}
+                  x2={chart.xAt(clampedIdx)}
+                  y1={chart.padT}
+                  y2={chart.H - chart.padB}
+                  stroke="rgba(243, 246, 251, 0.52)"
+                  strokeDasharray="3 3"
+                  strokeWidth="1.2"
                 />
-              )}
 
-              <g key={`${tab}-${horizonHours}-${unit}`}>
-                {CORE_MODEL_KEYS.map((k) => {
-                  if (!visibleModels[k] || !chart.paths[k]) return null;
-                  return (
-                    <path
-                      key={k}
-                      d={chart.paths[k]}
-                      fill="none"
-                      stroke={CORE_MODEL_META[k].color}
-                      strokeWidth={k === "ecmwfIfs" || k === "ecmwfAifs" ? 2.3 : 1.75}
-                      strokeLinejoin="round"
-                      strokeLinecap="round"
-                      className="atmos-line-draw"
-                    />
-                  );
-                })}
-              </g>
-
-              <line
-                x1={chart.xAt(clampedIdx)}
-                x2={chart.xAt(clampedIdx)}
-                y1={chart.padT}
-                y2={chart.H - chart.padB}
-                stroke="rgba(243, 246, 251, 0.52)"
-                strokeDasharray="3 3"
-                strokeWidth="1.2"
-              />
-
-              {inspectedValues &&
-                CORE_MODEL_KEYS.map((k) => {
-                  if (!visibleModels[k]) return null;
-                  const val = inspectedValues.map[k];
-                  if (val === null || val === undefined) return null;
-                  const cx = chart.xAt(clampedIdx);
-                  const cy = chart.yAt(val);
-                  return (
-                    <g key={`node-${k}`}>
-                      <circle
-                        cx={cx}
-                        cy={cy}
-                        r={6.5}
-                        fill={CORE_MODEL_META[k].color}
-                        fillOpacity={0.22}
-                      />
-                      <circle
-                        cx={cx}
-                        cy={cy}
-                        r={3.2}
-                        fill={CORE_MODEL_META[k].color}
-                        stroke="#070b14"
-                        strokeWidth="1.4"
-                      />
-                    </g>
-                  );
-                })}
-            </svg>
-            {horizonHours === 360 && (
+                {inspectedValues &&
+                  CORE_MODEL_KEYS.map((k) => {
+                    if (!visibleModels[k]) return null;
+                    const val = inspectedValues.map[k];
+                    if (val === null || val === undefined) return null;
+                    const cx = chart.xAt(clampedIdx);
+                    const cy = chart.yAt(val);
+                    return (
+                      <g key={`node-${k}`}>
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={6.5}
+                          fill={CORE_MODEL_META[k].color}
+                          fillOpacity={0.22}
+                        />
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={3.2}
+                          fill={CORE_MODEL_META[k].color}
+                          stroke="#070b14"
+                          strokeWidth="1.4"
+                        />
+                      </g>
+                    );
+                  })}
+              </svg>
+            </div>
+            {horizonHours > 72 && (
               <p className="mt-1.5 px-2 font-mono text-[10px] text-ink-muted">
-                Doğal model vade sınırları: AROME/ARP 4.8g · UKMO 7g · ICON 8g · GEM 10.5g · JMA 11.2g · ECMWF IFS / AIFS AI / NOAA GFS 15g+
+                Doğal model vade sınırları: AROME/ARP 114s (4.8g) · UKMO 168s (7g) · ICON 192s (8g) · GEM 252s (10.5g) · JMA 270s (11.2g) · ECMWF IFS / AIFS AI / NOAA GFS 360s (15g)
               </p>
             )}
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 text-xs font-mono tabular">
-            <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">
-                {horizonHours} Saat Toplam Yağış ({unit === "imperial" ? "in" : "mm"})
-              </span>
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {CORE_MODEL_KEYS.map((k) => (
-                  <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
-                    {CORE_MODEL_META[k].shortLabel}:{" "}
-                    {formatPrecip(activePrecipSummary?.[k] ?? 0, unit)}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">
-                En Düşük 850 hPa ({unit === "imperial" ? "°F" : "°C"})
-              </span>
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {CORE_MODEL_KEYS.map((k) => (
-                  <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
-                    {CORE_MODEL_META[k].shortLabel}:{" "}
-                    {models.summary.min850hPa[k] !== null
-                      ? formatTemperature(models.summary.min850hPa[k] as number, unit, {
-                          decimals: 1,
-                          showUnit: true
-                        })
-                      : "—"}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="surface-tile p-3.5 space-y-1.5">
-              <span className="text-[11px] text-ink-muted">Maks. 2m 8-Model Sapması</span>
-              <p className="text-sm font-semibold text-ink-primary">
-                ±
-                {formatTempDelta(models.summary.maxSpreadTemp2m, unit, {
-                  decimals: 1,
-                  signed: false,
-                  showUnit: true
-                })}{" "}
-                <span className="text-[11px] font-normal text-ink-muted">
-                  ({models.summary.maxSpreadTemp2m <= 2.5
-                    ? "Yüksek uzlaşı"
-                    : models.summary.maxSpreadTemp2m <= 5
-                      ? "Orta belirsizlik"
-                      : "Yüksek ayrışma"})
+          {horizonSummary && (
+            <div className="grid gap-3 sm:grid-cols-3 text-xs font-mono tabular">
+              <div className="surface-tile p-3.5 space-y-1.5">
+                <span className="text-[11px] text-ink-muted">
+                  {horizonHours} Saat Toplam Yağış ({unit === "imperial" ? "in" : "mm"})
                 </span>
-              </p>
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {horizonSummary.activeModelKeys.map((k) => {
+                    const item = horizonSummary.precipByModel[k];
+                    return (
+                      <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
+                        {CORE_MODEL_META[k].shortLabel}: {item.formatted}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="surface-tile p-3.5 space-y-1.5">
+                <span className="text-[11px] text-ink-muted">
+                  En Düşük 850 hPa ({horizonHours}s · {unit === "imperial" ? "°F" : "°C"})
+                </span>
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {horizonSummary.activeModelKeys.map((k) => {
+                    const item = horizonSummary.min850ByModel[k];
+                    return (
+                      <span key={k} style={{ color: CORE_MODEL_META[k].color }}>
+                        {CORE_MODEL_META[k].shortLabel}: {item.formatted}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="surface-tile p-3.5 space-y-1.5">
+                <span className="text-[11px] text-ink-muted">
+                  Maks. 2m {horizonSummary.activeModelKeys.length}-Model Sapması ({horizonHours}s)
+                </span>
+                {horizonSummary.maxSpreadTemp2mC !== null ? (
+                  <div className="space-y-0.5">
+                    <p className="text-sm font-semibold text-ink-primary">
+                      Δ{horizonSummary.maxSpreadFormatted}{" "}
+                      <span className="text-[11px] font-normal text-ink-muted">
+                        ({horizonSummary.maxSpreadTemp2mC <= 2.5
+                          ? "Yüksek uzlaşı"
+                          : horizonSummary.maxSpreadTemp2mC <= 5
+                            ? "Orta belirsizlik"
+                            : "Yüksek ayrışma"})
+                      </span>
+                    </p>
+                    {horizonSummary.maxSpreadTimeLabel && (
+                      <p className="text-[11px] text-ink-muted">
+                        Zirve ayrışma: {horizonSummary.maxSpreadTimeLabel}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold text-ink-muted">
+                    — (Karşılaştırma için en az 2 model seçin)
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </>
       )}
     </section>

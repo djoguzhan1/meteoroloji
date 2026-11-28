@@ -1357,14 +1357,55 @@ function SnowAndLightningObservatoryBase({
     }, dayHours[0]);
   }, [dayHours]);
 
-  const snowDatesCount15d = useMemo(
+  const refElevM = Math.round(summary?.referenceElevationM ?? 100);
+  const isSummitRef = refElevM >= 1150;
+  const isFoothillRef = refElevM >= 380 && refElevM < 1150;
+  const refRoleShortTr = isSummitRef
+    ? "Seçili Zirve"
+    : isFoothillRef
+      ? "Seçili Yamaç"
+      : "Seçili Merkez";
+
+  const refSnowDatesCount15d = useMemo(
     () =>
       daily.filter(
-        (d) =>
-          (d.airSnowSumCm ?? 0) >= 0.1 ||
-          (d.snowProbMaxPct ?? 0) >= 20 ||
-          (d.elevationSnowBands?.some((b) => b.airSnowCm >= 0.5) ?? false)
+        (d) => (d.airSnowSumCm ?? 0) >= 0.1 || (d.snowProbMaxPct ?? 0) >= 20
       ).length,
+    [daily]
+  );
+
+  const highBandOnlySnowDatesCount15d = useMemo(
+    () =>
+      daily.filter((d) => {
+        const hasRef = (d.airSnowSumCm ?? 0) >= 0.1 || (d.snowProbMaxPct ?? 0) >= 20;
+        if (hasRef) return false;
+        return (
+          d.elevationSnowBands?.some(
+            (b) => Math.abs(b.elevationM - refElevM) >= 250 && b.airSnowCm >= 0.5
+          ) ?? false
+        );
+      }).length,
+    [daily, refElevM]
+  );
+
+  const summit15dStats = useMemo(() => {
+    let totalAirCm = 0;
+    let summitElev: number | null = null;
+    for (const d of daily) {
+      const sb = d.elevationSnowBands?.[d.elevationSnowBands.length - 1];
+      if (sb && Math.abs(sb.elevationM - refElevM) >= 250) {
+        summitElev = sb.elevationM;
+        totalAirCm += sb.airSnowCm ?? 0;
+      }
+    }
+    return {
+      summitElevM: summitElev,
+      total15dSummitAirCm: Number(totalAirCm.toFixed(1))
+    };
+  }, [daily, refElevM]);
+
+  const minTemp15dC = useMemo(
+    () => daily.reduce((m, d) => Math.min(m, d.tempMin), Infinity),
     [daily]
   );
 
@@ -1789,6 +1830,31 @@ function SnowAndLightningObservatoryBase({
   const elevationBands: ElevationSnowBand[] =
     (isHourView ? activeHour.elevationSnowBands : activeDay.elevationSnowBands) ?? [];
 
+  const inspectedAirTempC = isHourView ? activeHour.temperature : activeDay.tempMin;
+  const isDryColdNoSnow = !showActiveSnowLine && inspectedAirTempC <= 4.0;
+  const activeSummitBand =
+    elevationBands.length > 0 ? elevationBands[elevationBands.length - 1] : undefined;
+  const hasOnlyHigherBandSnowActive =
+    airSnowValCm < 0.1 &&
+    snowProbPct < 20 &&
+    activeSummitBand !== undefined &&
+    Math.abs(activeSummitBand.elevationM - refElevM) >= 250 &&
+    activeSummitBand.airSnowCm >= 0.4;
+
+  const activeReferenceBandId = (() => {
+    if (elevationBands.length === 0) return null;
+    let bestId: string | null = null;
+    let bestDiff = Infinity;
+    for (const b of elevationBands) {
+      const diff = Math.abs(b.elevationM - refElevM);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestId = b.id;
+      }
+    }
+    return bestDiff <= 60 ? bestId : null;
+  })();
+
   const snowRatePerOpt = isHourView
     ? ({ per: "hour" } as const)
     : ({ per: "day" } as const);
@@ -1941,7 +2007,7 @@ function SnowAndLightningObservatoryBase({
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-obsidian-950/65 px-3.5 py-2.5 font-mono text-xs tabular">
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-ink-secondary">
-                15 Gün Merkez Havada:{" "}
+                15 Gün {refRoleShortTr} ({formatElevation(refElevM, unit)}) Havada:{" "}
                 <strong className="text-sky-200">
                   {formatSnowDepth(summary.total15dAirSnowCm, unit)}
                 </strong>
@@ -1960,6 +2026,18 @@ function SnowAndLightningObservatoryBase({
                   {formatSnowDepth(summary.total15dRoadSnowCm, unit)}
                 </strong>
               </span>
+              {summit15dStats.summitElevM !== null &&
+                summit15dStats.total15dSummitAirCm >= 0.5 && (
+                  <>
+                    <span className="text-white/20">·</span>
+                    <span className="text-indigo-200">
+                      Zirve ({formatElevation(summit15dStats.summitElevM, unit)}):{" "}
+                      <strong>
+                        {formatSnowDepth(summit15dStats.total15dSummitAirCm, unit)}
+                      </strong>
+                    </span>
+                  </>
+                )}
             </div>
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
               {hasAnyRelevantSnowLine15d && summary.lowest15dSnowLineM !== null ? (
@@ -1968,13 +2046,17 @@ function SnowAndLightningObservatoryBase({
                 </span>
               ) : (
                 <span className="rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-ink-muted">
-                  Kar Koşulu Yok (Sıcak Profil)
+                  {minTemp15dC <= 4.0
+                    ? "Yağışsız Kuru Soğuk Profil"
+                    : "Kar Koşulu Yok (Sıcak Profil)"}
                 </span>
               )}
               <span className="text-ink-muted">
-                {snowDatesCount15d > 0
-                  ? `${snowDatesCount15d} tarihte merkez/zirve kar sinyali`
-                  : "15 günde merkezde kar sinyali düşük"}
+                {refSnowDatesCount15d > 0
+                  ? `${refSnowDatesCount15d} tarihte seçili rakımda kar sinyali`
+                  : highBandOnlySnowDatesCount15d > 0
+                    ? `Seçili rakımda 0 · ${highBandOnlySnowDatesCount15d} tarihte yalnızca zirvede kar`
+                    : "15 günde seçili rakımda kar sinyali yok"}
               </span>
             </div>
           </div>
@@ -2011,8 +2093,12 @@ function SnowAndLightningObservatoryBase({
                 const summitBand =
                   d.elevationSnowBands?.[d.elevationSnowBands.length - 1];
                 const summitAir = summitBand?.airSnowCm ?? 0;
+                const isSummitDistinct =
+                  summitBand !== undefined &&
+                  Math.abs(summitBand.elevationM - refElevM) >= 250;
                 const hasCenterSnow = dAir >= 0.1 || dProb >= 20;
-                const hasOnlySummitSnow = !hasCenterSnow && summitAir >= 0.4;
+                const hasOnlySummitSnow =
+                  !hasCenterSnow && isSummitDistinct && summitAir >= 0.4;
 
                 return (
                   <button
@@ -2070,7 +2156,7 @@ function SnowAndLightningObservatoryBase({
                     ) : hasOnlySummitSnow ? (
                       <div className="rounded-lg border border-indigo-300/20 bg-indigo-400/10 px-2 py-1 font-mono text-[10px] text-indigo-200">
                         <div className="flex items-center justify-between">
-                          <span>Merkez:</span>
+                          <span>{isFoothillRef ? "Yamaç:" : "Merkez:"}</span>
                           <span>{formatSnowDepth(0, unit)}</span>
                         </div>
                         <div className="flex items-center justify-between">
@@ -2090,6 +2176,24 @@ function SnowAndLightningObservatoryBase({
             </div>
           </div>
 
+          {/* Merkez vs. Zirve Ayrım Şeridi: Seçili rakımda 0 kar olup yalnızca zirvede kar varsa açıkça bildir */}
+          {hasOnlyHigherBandSnowActive && activeSummitBand && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3.5 py-2 font-mono text-[11px] text-indigo-100 tabular">
+              <span>
+                {refRoleShortTr} ({formatElevation(refElevM, unit)}) için kar beklenmiyor (
+                <strong>{formatSnowDepth(0, unit)}</strong>); kar yağışı yüksek rakım/zirve kuşağında (
+                <strong>
+                  {activeSummitBand.labelTr} · {formatElevation(activeSummitBand.elevationM, unit)}
+                </strong>
+                ) etkili:{" "}
+                <strong className="text-sky-200">
+                  {formatSnowDepth(activeSummitBand.airSnowCm, unit, snowRatePerOpt)}
+                </strong>
+                .
+              </span>
+            </div>
+          )}
+
           {/* 3. Seçili Tarih (24s) veya Seçili Saat (1s) İçin 4 Ana Keskin Kar Bütçe Kartı */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 tabular">
             {/* Kart 1: Havada Yağan Saf Kar */}
@@ -2107,6 +2211,19 @@ function SnowAndLightningObservatoryBase({
               </p>
               <p className="font-mono text-[10px] text-ink-secondary">
                 İhtimal <strong className="text-sky-300">%{snowProbPct}</strong>
+                {isHourView &&
+                  airSnowValCm >= 0.1 &&
+                  activeHour.temperature > 0.5 &&
+                  activeHour.wetBulbC !== undefined && (
+                    <span>
+                      {" "}
+                      · Tw{" "}
+                      {formatTemperature(activeHour.wetBulbC, unit, {
+                        decimals: 1,
+                        showUnit: true
+                      })}
+                    </span>
+                  )}
                 {airSnowP90Cm > airSnowValCm + 0.1 && (
                   <span>
                     {" "}
@@ -2139,6 +2256,9 @@ function SnowAndLightningObservatoryBase({
                   decimals: 1,
                   showUnit: true
                 })}
+                {airSnowValCm >= 0.2 && groundSnowValCm === 0 && soilTempValC > 0.3 && (
+                  <span className="text-amber-200"> · Ilık zemin erimesi</span>
+                )}
               </p>
             </div>
 
@@ -2171,7 +2291,7 @@ function SnowAndLightningObservatoryBase({
               </p>
             </div>
 
-            {/* Kart 4: SLR, Kar Kalitesi & Fiziksel Sıcak Gün Kapılı Kar Sınırı */}
+            {/* Kart 4: SLR, Kar Kalitesi & Fiziksel Sıcak/Kuru Gün Kapılı Kar Sınırı */}
             <div className="surface-tile p-3 space-y-1">
               <div className="flex items-center justify-between gap-1 text-[11px] text-ink-secondary">
                 <span>Kar Kalitesi & Sınır</span>
@@ -2181,8 +2301,10 @@ function SnowAndLightningObservatoryBase({
                 {snowQuality !== "Yok"
                   ? snowQuality
                   : showActiveSnowLine
-                    ? "Yağışta Kar Yok"
-                    : "Kar Koşulu Yok (Sıcak Profil)"}
+                    ? "Seçili Rakımda Yağmur"
+                    : isDryColdNoSnow
+                      ? "Yağış Yok (Kuru Soğuk)"
+                      : "Kar Koşulu Yok (Sıcak Profil)"}
               </p>
               <p className="font-mono text-[10px] text-ink-secondary">
                 {showActiveSnowLine && snowLineM !== null ? (
@@ -2195,7 +2317,9 @@ function SnowAndLightningObservatoryBase({
                   </>
                 ) : (
                   <span className="text-ink-muted">
-                    Kar Koşulu Yok (Sıcak Profil)
+                    {isDryColdNoSnow
+                      ? "Aktif yağış / nem sinyali yok"
+                      : "Kar Koşulu Yok (Sıcak Profil)"}
                   </span>
                 )}
               </p>
@@ -2261,22 +2385,32 @@ function SnowAndLightningObservatoryBase({
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 font-mono text-xs tabular">
                 {elevationBands.map((b) => {
                   const hasSnow = b.airSnowCm >= 0.1 || b.snowProbPct >= 20;
+                  const isRefBand = activeReferenceBandId === b.id;
                   return (
                     <div
                       key={b.id}
                       className={`rounded-xl border p-3 space-y-1.5 ${
-                        hasSnow
-                          ? "border-sky-300/30 bg-[#091426]/85"
-                          : "border-white/[0.07] bg-obsidian-950/55"
+                        isRefBand
+                          ? "border-sky-300/55 bg-sky-400/[0.11] shadow-[inset_0_1px_0_rgba(125,211,252,0.22)]"
+                          : hasSnow
+                            ? "border-sky-300/30 bg-[#091426]/85"
+                            : "border-white/[0.07] bg-obsidian-950/55"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1">
                         <span className="font-sans text-xs font-semibold text-ink-primary truncate">
                           {b.labelTr}
                         </span>
-                        <span className="shrink-0 rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-sky-200">
-                          {formatElevation(b.elevationM, unit)}
-                        </span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {isRefBand && (
+                            <span className="rounded bg-sky-400/20 px-1.5 py-0.5 text-[9px] font-semibold text-sky-100">
+                              Aktif
+                            </span>
+                          )}
+                          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-sky-200">
+                            {formatElevation(b.elevationM, unit)}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="flex items-center justify-between gap-1 text-[10px] text-ink-muted">
@@ -2367,7 +2501,12 @@ function SnowAndLightningObservatoryBase({
               </strong>
             </span>
             {!hasAnyRelevantSnowLine15d && (
-              <span className="text-ink-muted">· Kar Koşulu Yok (Sıcak Profil)</span>
+              <span className="text-ink-muted">
+                ·{" "}
+                {minTemp15dC <= 4.0
+                  ? "Yağışsız Kuru Soğuk Profil"
+                  : "Kar Koşulu Yok (Sıcak Profil)"}
+              </span>
             )}
           </div>
           <button

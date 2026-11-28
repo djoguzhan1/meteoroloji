@@ -3,6 +3,7 @@
 import { memo, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
+  AlertTriangle,
   CheckCircle2,
   Clock,
   Radio,
@@ -24,8 +25,9 @@ import { atmosUiSfx } from "@/lib/ui-sfx";
 
 function ForecastFreshnessBannerBase() {
   const pathname = usePathname();
-  const { bundle } = useWeatherData();
+  const { bundle, activeLocation } = useWeatherData();
   const {
+    error,
     freshness,
     isStale,
     isDegraded,
@@ -39,10 +41,13 @@ function ForecastFreshnessBannerBase() {
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
+  const hasHardFailure = !bundle && Boolean(error || isOffline);
+
   const visible =
     pathname !== "/play" &&
     Boolean(
       justRecovered ||
+        hasHardFailure ||
         (bundle && (isStale || isDegraded || isOffline))
     );
 
@@ -56,7 +61,7 @@ function ForecastFreshnessBannerBase() {
 
   if (!visible) return null;
 
-  if (justRecovered && !isStale && !isOffline) {
+  if (justRecovered && !isStale && !isOffline && !hasHardFailure) {
     return (
       <div
         role="status"
@@ -83,7 +88,96 @@ function ForecastFreshnessBannerBase() {
     );
   }
 
-  if (!bundle) return null;
+  if (!bundle) {
+    if (!hasHardFailure) return null;
+
+    const hardBorderCls = isOffline
+      ? "border-signal-amber/45 bg-[#161006]/95"
+      : "border-rose-500/40 bg-[#19080c]/95";
+    const hardAccentTextCls = isOffline ? "text-amber-200" : "text-rose-200";
+    const hardBadgeCls = isOffline
+      ? "border-signal-amber/35 bg-signal-amber/15 text-amber-200"
+      : "border-rose-500/35 bg-rose-500/15 text-rose-200";
+
+    return (
+      <div
+        role="alert"
+        aria-live="polite"
+        className="mx-auto mb-4 max-w-7xl px-4 sm:px-6 lg:px-8"
+      >
+        <div
+          className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs shadow-[0_12px_34px_rgba(0,0,0,0.42)] ${hardBorderCls}`}
+        >
+          <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
+            <div
+              className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border sm:mt-0 ${hardBadgeCls}`}
+            >
+              {isOffline ? (
+                <WifiOff className="h-4 w-4" />
+              ) : (
+                <AlertTriangle className="h-4 w-4" />
+              )}
+            </div>
+
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`font-display text-xs sm:text-sm font-semibold ${hardAccentTextCls}`}
+                >
+                  {activeLocation.name} ·{" "}
+                  {isOffline ? "Çevrimdışı Mod" : "Canlı Model Servisi Kesintisi"}
+                </span>
+                <span
+                  className={`rounded-md border px-1.5 py-0.5 font-mono text-[10px] tabular ${hardBadgeCls}`}
+                >
+                  {isOffline ? "Önbellek Yok" : "Bağlantı Hatası"}
+                </span>
+              </div>
+              <p className="text-[11px] sm:text-xs text-ink-secondary leading-relaxed">
+                {error ??
+                  "Çevrimdışı mod — önbellekte bu istasyon için kayıt bulunamadı."}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2 font-mono text-[11px] tabular">
+            {!isOffline &&
+              retryCountdownSec !== null &&
+              retryCountdownSec > 0 &&
+              !loading &&
+              !isRevalidating && (
+                <span className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-ink-secondary">
+                  Oto-kontrol: {retryCountdownSec} sn
+                </span>
+              )}
+
+            <button
+              type="button"
+              disabled={loading || isRevalidating}
+              onClick={() => {
+                atmosUiSfx.playNavTick();
+                void refreshWeather();
+              }}
+              className="atmos-btn inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.08] px-3 py-1.5 font-medium text-ink-primary hover:bg-white/[0.14] disabled:opacity-60"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${
+                  loading || isRevalidating
+                    ? "animate-spin text-[var(--atmos-accent)]"
+                    : ""
+                }`}
+              />
+              <span>
+                {loading || isRevalidating
+                  ? "Kontrol Ediliyor..."
+                  : "Şimdi Denetle"}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const effectiveFreshness = freshness ?? {
     status: isOffline ? ("stale" as const) : ("live" as const),
@@ -96,7 +190,12 @@ function ForecastFreshnessBannerBase() {
     )
   };
 
-  const desc = describeFreshnessBannerTr({ freshness: effectiveFreshness, isOffline, timezone: bundle.timezone, nowMs });
+  const desc = describeFreshnessBannerTr({
+    freshness: effectiveFreshness,
+    isOffline,
+    timezone: bundle.timezone,
+    nowMs
+  });
   const ageText = formatFreshnessAgeTr(bundle.fetchedAt, nowMs);
   const clockText = formatClockTr(bundle.fetchedAt, bundle.timezone);
   const tierLabel = formatSourceTierTr(effectiveFreshness.sourceTier);
@@ -132,7 +231,9 @@ function ForecastFreshnessBannerBase() {
 
           <div className="min-w-0 space-y-0.5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className={`font-display text-xs sm:text-sm font-semibold ${accentTextCls}`}>
+              <span
+                className={`font-display text-xs sm:text-sm font-semibold ${accentTextCls}`}
+              >
                 {desc.headline}
               </span>
               <span
@@ -152,11 +253,14 @@ function ForecastFreshnessBannerBase() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2 font-mono text-[11px] tabular">
-          {!isOffline && retryCountdownSec !== null && retryCountdownSec > 0 && !isRevalidating && (
-            <span className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-ink-secondary">
-              Oto-kontrol: {retryCountdownSec} sn
-            </span>
-          )}
+          {!isOffline &&
+            retryCountdownSec !== null &&
+            retryCountdownSec > 0 &&
+            !isRevalidating && (
+              <span className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-ink-secondary">
+                Oto-kontrol: {retryCountdownSec} sn
+              </span>
+            )}
 
           <button
             type="button"
@@ -168,10 +272,16 @@ function ForecastFreshnessBannerBase() {
             className="atmos-btn inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.08] px-3 py-1.5 font-medium text-ink-primary hover:bg-white/[0.14] disabled:opacity-60"
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 ${loading || isRevalidating ? "animate-spin text-[var(--atmos-accent)]" : ""}`}
+              className={`h-3.5 w-3.5 ${
+                loading || isRevalidating
+                  ? "animate-spin text-[var(--atmos-accent)]"
+                  : ""
+              }`}
             />
             <span>
-              {loading || isRevalidating ? "Kontrol Ediliyor..." : "Şimdi Denetle"}
+              {loading || isRevalidating
+                ? "Kontrol Ediliyor..."
+                : "Şimdi Denetle"}
             </span>
           </button>
         </div>

@@ -119,9 +119,19 @@
 #haftalik,
 #hava-kalitesi,
 #hibrit {
-  scroll-margin-top: 5.5rem;
+  scroll-margin-top: 7rem;
   content-visibility: visible;
   contain-intrinsic-size: none;
+}
+
+@media (min-width: 640px) {
+  #kar-simsek,
+  #saatlik,
+  #haftalik,
+  #hava-kalitesi,
+  #hibrit {
+    scroll-margin-top: 4.75rem;
+  }
 }
 
 .surface-tile {

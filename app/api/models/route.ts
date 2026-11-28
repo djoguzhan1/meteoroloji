@@ -21,8 +21,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Geçersiz koordinat." }, { status: 400 });
   }
 
+  const id = searchParams.get("id")?.trim() || undefined;
+  const name = searchParams.get("name")?.trim() || undefined;
+  const admin1 = searchParams.get("admin1")?.trim() || undefined;
+  const country = searchParams.get("country")?.trim() || undefined;
+  const rawElev = searchParams.get("elevation");
+  const parsedElev =
+    rawElev !== null && rawElev.trim() !== "" ? Number(rawElev) : undefined;
+  const elevation =
+    parsedElev !== undefined &&
+    Number.isFinite(parsedElev) &&
+    parsedElev >= -500 &&
+    parsedElev <= 9000
+      ? parsedElev
+      : undefined;
+
   try {
-    const data = await fetchMultiModelBundle(lat, lon);
+    const data = await fetchMultiModelBundle(lat, lon, {
+      id,
+      name,
+      admin1,
+      country,
+      elevation
+    });
     const freshnessStatus = data.freshness?.status ?? "live";
     const sourceTier = data.freshness?.sourceTier ?? "live";
     const isFullyLive = freshnessStatus === "live";

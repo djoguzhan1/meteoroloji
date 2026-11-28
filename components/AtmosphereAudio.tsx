@@ -1,6 +1,7 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { extractStormSceneDrive } from "@/lib/temporal-view";
 import type { SceneAtmosphereInput } from "@/lib/weather-types";
 
 type AtmosphereAudioProps = {
@@ -8,20 +9,28 @@ type AtmosphereAudioProps = {
   enabled: boolean;
   volume: number;
   muffled: boolean;
+  suspended?: boolean;
 };
 
 function AtmosphereAudioBase({
   atmosphere,
   enabled,
   volume,
-  muffled
+  muffled,
+  suspended = false
 }: AtmosphereAudioProps) {
   const ctxRef = useRef<AudioContext | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
   const windGainRef = useRef<GainNode | null>(null);
   const rainGainRef = useRef<GainNode | null>(null);
+  const rainBandRef = useRef<BiquadFilterNode | null>(null);
   const filterRef = useRef<BiquadFilterNode | null>(null);
   const pannerRef = useRef<StereoPannerNode | null>(null);
+
+  const sceneDrive = useMemo(
+    () => extractStormSceneDrive(atmosphere),
+    [atmosphere]
+  );
 
   const ensureContext = useCallback(() => {
     if (ctxRef.current) return ctxRef.current;
@@ -99,6 +108,7 @@ function AtmosphereAudioBase({
       masterGainRef.current = masterGain;
       windGainRef.current = windGain;
       rainGainRef.current = rainGain;
+      rainBandRef.current = rainBand;
       filterRef.current = mainFilter;
       pannerRef.current = panner;
 
@@ -108,14 +118,64 @@ function AtmosphereAudioBase({
     }
   }, []);
 
+  // Autoplay Kalkanı: enabled && !suspended iken suspended AudioContext'i ilk etkileşimde uyandırır
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || suspended) return;
+
+    const ctx = ensureContext();
+    if (!ctx) return;
+
+    if (ctx.state !== "suspended") return;
+
+    ctx.resume().catch(() => {});
+
+    const wakeContext = () => {
+      window.removeEventListener("pointerdown", wakeContext);
+      window.removeEventListener("keydown", wakeContext);
+      if (ctxRef.current && ctxRef.current.state === "suspended") {
+        ctxRef.current.resume().catch(() => {});
+      }
+    };
+
+    window.addEventListener("pointerdown", wakeContext, {
+      once: true,
+      passive: true
+    });
+    window.addEventListener("keydown", wakeContext, {
+      once: true,
+      passive: true
+    });
+
+    return () => {
+      window.removeEventListener("pointerdown", wakeContext);
+      window.removeEventListener("keydown", wakeContext);
+    };
+  }, [enabled, suspended, ensureContext]);
+
+  useEffect(() => {
+    if (!enabled || suspended) {
+      let suspendTimer: number | null = null;
       if (ctxRef.current && masterGainRef.current) {
         const now = ctxRef.current.currentTime;
         masterGainRef.current.gain.cancelScheduledValues(now);
+        masterGainRef.current.gain.setValueAtTime(
+          masterGainRef.current.gain.value,
+          now
+        );
         masterGainRef.current.gain.linearRampToValueAtTime(0, now + 0.25);
       }
-      return;
+      if (suspended === true && ctxRef.current?.state === "running") {
+        suspendTimer = window.setTimeout(() => {
+          if (ctxRef.current?.state === "running") {
+            ctxRef.current.suspend().catch(() => {});
+          }
+        }, 280);
+      }
+      return () => {
+        if (suspendTimer !== null) {
+          window.clearTimeout(suspendTimer);
+        }
+      };
     }
 
     const ctx = ensureContext();
@@ -129,16 +189,37 @@ function AtmosphereAudioBase({
     const master = masterGainRef.current;
     const windGain = windGainRef.current;
     const rainGain = rainGainRef.current;
+    const rainBand = rainBandRef.current;
     const filter = filterRef.current;
     const panner = pannerRef.current;
 
-    if (!master || !windGain || !rainGain || !filter || !panner) return;
+    if (!master || !windGain || !rainGain || !rainBand || !filter || !panner) {
+      return;
+    }
 
     const windNorm = Math.min(1, Math.max(0.12, atmosphere.windSpeed / 65));
-    const rainNorm =
-      atmosphere.precipType === "rain"
-        ? Math.min(1, Math.max(0.25, atmosphere.precipIntensity))
-        : 0;
+
+    let targetRainGain = 0;
+    let isSnowActive = false;
+
+    if (!sceneDrive.isWet || sceneDrive.effectivePrecipType === "none") {
+      targetRainGain = 0;
+    } else if (sceneDrive.effectivePrecipType === "snow") {
+      isSnowActive = true;
+      rainBand.frequency.cancelScheduledValues(now);
+      rainBand.frequency.linearRampToValueAtTime(760, now + 0.25);
+      rainBand.Q.cancelScheduledValues(now);
+      rainBand.Q.linearRampToValueAtTime(1.15, now + 0.25);
+      targetRainGain =
+        Math.min(1, 0.16 + sceneDrive.effectivePrecipIntensity * 0.74) * 0.28;
+    } else {
+      rainBand.frequency.cancelScheduledValues(now);
+      rainBand.frequency.linearRampToValueAtTime(1800, now + 0.25);
+      rainBand.Q.cancelScheduledValues(now);
+      rainBand.Q.linearRampToValueAtTime(0.7, now + 0.25);
+      targetRainGain =
+        Math.min(1, 0.18 + sceneDrive.effectivePrecipIntensity * 0.82) * 0.5;
+    }
 
     master.gain.cancelScheduledValues(now);
     master.gain.linearRampToValueAtTime(volume * 0.45, now + 0.3);
@@ -147,9 +228,9 @@ function AtmosphereAudioBase({
     windGain.gain.linearRampToValueAtTime(windNorm, now + 0.35);
 
     rainGain.gain.cancelScheduledValues(now);
-    rainGain.gain.linearRampToValueAtTime(rainNorm * 0.5, now + 0.35);
+    rainGain.gain.linearRampToValueAtTime(targetRainGain, now + 0.35);
 
-    const targetCutoff = muffled ? 620 : 3400;
+    const targetCutoff = muffled ? 620 : isSnowActive ? 2150 : 3400;
     filter.frequency.cancelScheduledValues(now);
     filter.frequency.linearRampToValueAtTime(targetCutoff, now + 0.25);
 
@@ -158,17 +239,19 @@ function AtmosphereAudioBase({
     panner.pan.linearRampToValueAtTime(pan, now + 0.2);
   }, [
     enabled,
+    suspended,
     volume,
     muffled,
     atmosphere.windSpeed,
     atmosphere.windDirection,
-    atmosphere.precipType,
-    atmosphere.precipIntensity,
+    sceneDrive.isWet,
+    sceneDrive.effectivePrecipType,
+    sceneDrive.effectivePrecipIntensity,
     ensureContext
   ]);
 
   useEffect(() => {
-    if (!enabled || !atmosphere.isStorm) return;
+    if (!enabled || suspended || !sceneDrive.canFlashLightning) return;
 
     const triggerThunder = () => {
       const ctx = ctxRef.current;
@@ -192,12 +275,23 @@ function AtmosphereAudioBase({
       osc.stop(now + 2.0);
     };
 
+    const intervalMs = Math.max(
+      3500,
+      Math.round(8500 - sceneDrive.flashFrequencyHz * 1400)
+    );
+
     const timer = window.setInterval(() => {
       if (Math.random() < 0.45) triggerThunder();
-    }, 6500);
+    }, intervalMs);
 
     return () => window.clearInterval(timer);
-  }, [enabled, atmosphere.isStorm, volume]);
+  }, [
+    enabled,
+    suspended,
+    sceneDrive.canFlashLightning,
+    sceneDrive.flashFrequencyHz,
+    volume
+  ]);
 
   useEffect(() => {
     return () => {

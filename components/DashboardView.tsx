@@ -28,7 +28,21 @@ import {
   formatFreshnessAgeTr,
   reanchorWeatherBundleToNow
 } from "@/lib/forecast-resilience";
-import { formatTemperature, formatWindSpeed } from "@/lib/weather-client";
+import { buildLocationHref } from "@/lib/location-url";
+import {
+  resolveActiveTemporalView,
+  type ActiveTemporalView
+} from "@/lib/temporal-view";
+import {
+  ATMOS_REFRESH_ALL_EVENT,
+  buildWeatherApiUrl,
+  canonicalizeStationIdentity,
+  createFastZonedTimeResolver,
+  formatElevation,
+  formatPressure,
+  formatTemperature,
+  formatWindSpeed
+} from "@/lib/weather-client";
 import type {
   AlertMetric,
   GeoLocation,
@@ -41,39 +55,49 @@ import CitySearch from "./CitySearch";
 import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
-function formatLocalClock(timezone: string): string {
+const MPH_PER_KMH = 0.621371;
+
+function formatStationLocalClock(
+  timezone: string | undefined,
+  utcOffsetSeconds: number | undefined,
+  nowMs: number
+): string {
+  const safeOffset =
+    typeof utcOffsetSeconds === "number" && Number.isFinite(utcOffsetSeconds)
+      ? utcOffsetSeconds
+      : 0;
+  const effectiveTz =
+    timezone === "UTC" && safeOffset !== 0 ? undefined : timezone;
   try {
-    return new Intl.DateTimeFormat("tr-TR", {
-      timeZone: timezone,
-      hour: "2-digit",
-      minute: "2-digit"
-    }).format(new Date());
+    return createFastZonedTimeResolver(effectiveTz, safeOffset).epochMsToLocalParts(
+      nowMs
+    ).hm;
   } catch {
     return "--:--";
   }
 }
 
-function stationAccentBorder(bundle: WeatherBundle, isStaleCard: boolean): string {
+function stationAccentBorder(tv: ActiveTemporalView, isStaleCard: boolean): string {
   if (isStaleCard) return "border-t-signal-amber/55";
-  if (bundle.current.isStorm) return "border-t-signal-amber/70";
-  if (bundle.current.precipType !== "none") return "border-t-signal-sky/60";
+  if (tv.telemetry.isStorm || tv.stormChip.score >= 35) return "border-t-signal-amber/70";
+  if (tv.telemetry.precipType !== "none") return "border-t-signal-sky/60";
   return "border-t-white/10";
 }
 
-function stationAmbientGlow(b: WeatherBundle): string {
-  if (b.current.isStorm || (b.storm?.score ?? 0) >= 50) {
+function stationAmbientGlow(tv: ActiveTemporalView): string {
+  if (tv.telemetry.isStorm || tv.stormChip.score >= 50) {
     return "radial-gradient(280px circle at 85% 0%, rgba(245, 158, 11, 0.16), transparent 70%)";
   }
-  if (b.current.precipType === "snow" || b.current.temperature <= 1) {
+  if (tv.telemetry.precipType === "snow" || tv.telemetry.temperature <= 1) {
     return "radial-gradient(280px circle at 85% 0%, rgba(186, 230, 253, 0.16), transparent 70%)";
   }
-  if (b.current.precipType === "rain") {
+  if (tv.telemetry.precipType === "rain") {
     return "radial-gradient(280px circle at 85% 0%, rgba(56, 189, 248, 0.16), transparent 70%)";
   }
-  if (b.current.solarElevationDeg > 4 && b.current.cloudCover < 65) {
+  if (tv.telemetry.solarElevationDeg > 4 && tv.telemetry.cloudCover < 65) {
     return "radial-gradient(280px circle at 85% 0%, rgba(251, 191, 36, 0.15), transparent 70%)";
   }
-  if (b.current.solarElevationDeg < -4) {
+  if (tv.telemetry.solarElevationDeg < -4) {
     return "radial-gradient(280px circle at 85% 0%, rgba(129, 140, 248, 0.14), transparent 70%)";
   }
   return "radial-gradient(280px circle at 85% 0%, rgba(148, 163, 184, 0.10), transparent 70%)";
@@ -146,59 +170,266 @@ function getMetricMeta(metric: AlertMetric, unit: UnitSystem): { label: string; 
   return { label: "Hava Kalitesi (EAQI)", unit: "" };
 }
 
-function toDisplayRuleThreshold(
+export function normalizeName(value: string | undefined | null): string {
+  return (value ?? "")
+    .trim()
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ı/g, "i")
+    .replace(/ş/g, "s")
+    .replace(/ğ/g, "g")
+    .replace(/ü/g, "u")
+    .replace(/ö/g, "o")
+    .replace(/ç/g, "c")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * 3 kademeli kırılmaz alarm-istasyon eşleştiricisi:
+ * 1) `rule.cityId === c.id`
+ * 2) `rule.lat !== undefined && areLocationsEquivalent(rule, c)`
+ * 3) `normalizeName(rule.cityName) === normalizeName(c.name)`
+ * Eşleşme favorilerde henüz yoksa `activeBundle` üzerinden de aynı 3 kademeyi dener.
+ */
+export function resolveBundleForAlertRule(
+  rule: WeatherAlertRule,
+  favorites: GeoLocation[],
+  bundlesMap: Record<string, WeatherBundle>,
+  activeBundle: WeatherBundle | null
+): WeatherBundle | undefined {
+  // Kademe 1: Doğrudan ID eşleşmesi
+  const directFav = favorites.find((c) => rule.cityId === c.id);
+  if (directFav && bundlesMap[directFav.id]) {
+    return bundlesMap[directFav.id];
+  }
+  if (bundlesMap[rule.cityId]) {
+    return bundlesMap[rule.cityId];
+  }
+
+  // Kademe 2: Koordinat + rakım (< 65m) eşdeğerliği
+  if (
+    rule.lat !== undefined &&
+    rule.lon !== undefined &&
+    Number.isFinite(rule.lat) &&
+    Number.isFinite(rule.lon)
+  ) {
+    const ruleGeo = {
+      lat: rule.lat,
+      lon: rule.lon,
+      elevation: rule.elevation
+    };
+    const coordFav = favorites.find((c) => areLocationsEquivalent(ruleGeo, c));
+    if (coordFav && bundlesMap[coordFav.id]) {
+      return bundlesMap[coordFav.id];
+    }
+    for (const candidate of Object.values(bundlesMap)) {
+      if (areLocationsEquivalent(ruleGeo, candidate.location)) {
+        return candidate;
+      }
+    }
+  }
+
+  // Kademe 3: Normalize şehir adı eşleşmesi
+  const targetName = normalizeName(rule.cityName);
+  if (targetName) {
+    const nameFav = favorites.find((c) => normalizeName(c.name) === targetName);
+    if (nameFav && bundlesMap[nameFav.id]) {
+      return bundlesMap[nameFav.id];
+    }
+    for (const candidate of Object.values(bundlesMap)) {
+      if (normalizeName(candidate.location.name) === targetName) {
+        return candidate;
+      }
+    }
+  }
+
+  // Aktif bağlam paketi yedeği (istasyon favorilerden silinmiş ama aktif seçiliyse)
+  if (activeBundle) {
+    if (activeBundle.location.id === rule.cityId) {
+      return activeBundle;
+    }
+    if (
+      rule.lat !== undefined &&
+      rule.lon !== undefined &&
+      areLocationsEquivalent(
+        { lat: rule.lat, lon: rule.lon, elevation: rule.elevation },
+        activeBundle.location
+      )
+    ) {
+      return activeBundle;
+    }
+    if (targetName && normalizeName(activeBundle.location.name) === targetName) {
+      return activeBundle;
+    }
+  }
+
+  return undefined;
+}
+
+export function getSmartDefaultThreshold(
   metric: AlertMetric,
-  metricThreshold: number,
+  operator: ">" | "<",
+  unit: UnitSystem
+): number {
+  if (metric === "temperature") {
+    if (operator === "<") {
+      return unit === "imperial" ? 32 : 0;
+    }
+    return unit === "imperial" ? 86 : 30;
+  }
+  if (metric === "windSpeed") {
+    if (operator === "<") {
+      return unit === "imperial" ? 6 : 10;
+    }
+    return unit === "imperial" ? 28 : 45;
+  }
+  if (metric === "precipProbability") {
+    return operator === "<" ? 20 : 70;
+  }
+  return operator === "<" ? 25 : 60;
+}
+
+/**
+ * Kayıpsız tam IEEE-754 metrik eşik dönüşümü (ara yuvarlama YOK!):
+ * Örn: 76°F -> 24.444444444444443°C
+ */
+export function toMetricThreshold(
+  metric: AlertMetric,
+  rawNumericInput: number,
   unit: UnitSystem
 ): number {
   if (unit === "imperial") {
-    if (metric === "temperature") return Math.round((metricThreshold * 9) / 5 + 32);
-    if (metric === "windSpeed") return Math.round(metricThreshold * 0.621371);
+    if (metric === "temperature") {
+      return ((rawNumericInput - 32) * 5) / 9;
+    }
+    if (metric === "windSpeed") {
+      return rawNumericInput / MPH_PER_KMH;
+    }
   }
-  return metricThreshold;
+  return rawNumericInput;
 }
 
-function toMetricThreshold(
+function convertMetricScalarToDisplay(
   metric: AlertMetric,
-  inputVal: number,
+  metricValue: number,
   unit: UnitSystem
 ): number {
   if (unit === "imperial") {
-    if (metric === "temperature") return Math.round(((inputVal - 32) * 5) / 9);
-    if (metric === "windSpeed") return Math.round(inputVal / 0.621371);
+    if (metric === "temperature") {
+      return (metricValue * 9) / 5 + 32;
+    }
+    if (metric === "windSpeed") {
+      return metricValue * MPH_PER_KMH;
+    }
   }
-  return inputVal;
+  return metricValue;
 }
 
-function evaluateRule(
+function roundSingleStep(value: number, decimals: number): number {
+  const factor = 10 ** Math.max(0, decimals);
+  const rounded = Math.round(value * factor) / factor;
+  return Math.abs(rounded) < 1e-9 ? 0 : rounded;
+}
+
+function resolveAlertRuleDecimals(rule: WeatherAlertRule): number {
+  if (rule.metric !== "temperature") return 0;
+  if (rule.sourceValue !== undefined && Number.isFinite(rule.sourceValue)) {
+    return Math.abs(rule.sourceValue - Math.round(rule.sourceValue)) > 1e-6 ? 1 : 0;
+  }
+  if (rule.sourceUnit === undefined) {
+    return Math.abs(rule.threshold - Math.round(rule.threshold)) > 1e-6 ? 1 : 0;
+  }
+  return 0;
+}
+
+export function toDisplayRuleThreshold(
+  rule: WeatherAlertRule,
+  unit: UnitSystem
+): number {
+  const decimals = resolveAlertRuleDecimals(rule);
+  const rawDisplay =
+    rule.sourceUnit === unit &&
+    rule.sourceValue !== undefined &&
+    Number.isFinite(rule.sourceValue)
+      ? rule.sourceValue
+      : convertMetricScalarToDisplay(rule.metric, rule.threshold, unit);
+  return roundSingleStep(rawDisplay, decimals);
+}
+
+/**
+ * Sıfır-sapmalı görüntü uzayı değerlendirmesi:
+ * Hem `currentDisplayVal` hem `thresholdDisplayVal` aynı tek adımlı yuvarlamadan geçer;
+ * böylece `6 mph > 6 mph` paradoksu %100 imkânsızdır ve karttaki değer ile birebir örtüşür.
+ */
+export function evaluateRule(
   rule: WeatherAlertRule,
   bundle: WeatherBundle | undefined,
-  unit: UnitSystem
+  unit: UnitSystem,
+  precomputedTemporalView?: ActiveTemporalView
 ): { triggered: boolean; currentVal: number | null; displayThreshold: number } {
-  const displayThreshold = toDisplayRuleThreshold(rule.metric, rule.threshold, unit);
-  if (!bundle || !rule.enabled) {
-    return { triggered: false, currentVal: null, displayThreshold };
+  const decimals = resolveAlertRuleDecimals(rule);
+  const thresholdDisplayVal = toDisplayRuleThreshold(rule, unit);
+
+  if (!bundle) {
+    return { triggered: false, currentVal: null, displayThreshold: thresholdDisplayVal };
   }
-  let metricVal = 0;
-  if (rule.metric === "temperature") metricVal = Math.round(bundle.current.temperature);
-  else if (rule.metric === "windSpeed") metricVal = Math.round(bundle.current.windSpeed);
-  else if (rule.metric === "precipProbability") metricVal = bundle.current.precipProbability;
-  else metricVal = bundle.airQuality.europeanAqi;
+
+  const tv = precomputedTemporalView ?? resolveActiveTemporalView(bundle, 0);
+  let rawMetricVal = 0;
+  if (rule.metric === "temperature") {
+    rawMetricVal = tv.telemetry.temperature;
+  } else if (rule.metric === "windSpeed") {
+    rawMetricVal = tv.telemetry.windSpeed;
+  } else if (rule.metric === "precipProbability") {
+    rawMetricVal = tv.telemetry.precipProbability;
+  } else {
+    rawMetricVal = bundle.airQuality.europeanAqi;
+  }
+
+  const rawCurrentDisplay = convertMetricScalarToDisplay(rule.metric, rawMetricVal, unit);
+  const currentDisplayVal = roundSingleStep(rawCurrentDisplay, decimals);
+
+  if (!rule.enabled) {
+    return {
+      triggered: false,
+      currentVal: currentDisplayVal,
+      displayThreshold: thresholdDisplayVal
+    };
+  }
 
   const triggered =
-    rule.operator === ">" ? metricVal > rule.threshold : metricVal < rule.threshold;
-  const currentVal = toDisplayRuleThreshold(rule.metric, metricVal, unit);
-  return { triggered, currentVal, displayThreshold };
+    rule.operator === ">"
+      ? currentDisplayVal > thresholdDisplayVal
+      : currentDisplayVal < thresholdDisplayVal;
+
+  return {
+    triggered,
+    currentVal: currentDisplayVal,
+    displayThreshold: thresholdDisplayVal
+  };
+}
+
+function mergeStationIntoBundle(data: WeatherBundle, loc: GeoLocation): WeatherBundle {
+  return {
+    ...data,
+    location: {
+      ...data.location,
+      ...loc,
+      elevation: loc.elevation ?? data.location.elevation,
+      timezone: data.location.timezone ?? loc.timezone
+    }
+  };
 }
 
 export default function DashboardView() {
   const router = useRouter();
   const {
     bundle: activeContextBundle,
+    activeLocation,
     favorites,
     addFavorite,
     removeFavorite,
     setActiveLocation,
+    syncExternalBundle,
     alerts,
     addAlert,
     removeAlert,
@@ -209,115 +440,329 @@ export default function DashboardView() {
 
   const [cityBundles, setCityBundles] = useState<Record<string, WeatherBundle>>({});
   const [failedCities, setFailedCities] = useState<Record<string, string>>({});
+  const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
   const [loadingMap, setLoadingMap] = useState(false);
   const [showAlertForm, setShowAlertForm] = useState(false);
-  const fetchSeqRef = useRef(0);
+  const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
+
+  const mountedRef = useRef(true);
+  const inFlightCountRef = useRef(0);
+  const cityAbortMapRef = useRef<Map<string, AbortController>>(new Map());
   const bundlesRef = useRef<Record<string, WeatherBundle>>({});
+  const favoritesRef = useRef<GeoLocation[]>(favorites);
+  const activeContextBundleRef = useRef<WeatherBundle | null>(activeContextBundle);
+  const activeLocationRef = useRef<GeoLocation>(activeLocation);
+  const isOfflineRef = useRef<boolean>(isOffline);
 
   useEffect(() => {
     bundlesRef.current = cityBundles;
   }, [cityBundles]);
 
-  // Yeni eşik form state
+  useEffect(() => {
+    favoritesRef.current = favorites;
+  }, [favorites]);
+
+  useEffect(() => {
+    activeContextBundleRef.current = activeContextBundle;
+  }, [activeContextBundle]);
+
+  useEffect(() => {
+    activeLocationRef.current = activeLocation;
+  }, [activeLocation]);
+
+  useEffect(() => {
+    isOfflineRef.current = isOffline;
+  }, [isOffline]);
+
+  // Unmount anında açık tüm ağ isteklerini iptal et
+  useEffect(() => {
+    mountedRef.current = true;
+    const abortMap = cityAbortMapRef.current;
+    return () => {
+      mountedRef.current = false;
+      for (const ctrl of abortMap.values()) {
+        ctrl.abort();
+      }
+      abortMap.clear();
+      inFlightCountRef.current = 0;
+    };
+  }, []);
+
+  // Sayfa görünürken 30 saniyede bir canlı yerel duvar saatini ilerlet
+  useEffect(() => {
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      setClockNowMs(Date.now());
+    };
+    const timer = window.setInterval(tick, 30_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        setClockNowMs(Date.now());
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // Favoriden silinen istasyonun devam eden isteğini iptal et ve hata/önbellek haritasından anında temizle
+  useEffect(() => {
+    const activeIds = new Set(favorites.map((f) => f.id));
+
+    for (const [cityId, ctrl] of cityAbortMapRef.current.entries()) {
+      if (!activeIds.has(cityId)) {
+        ctrl.abort();
+        cityAbortMapRef.current.delete(cityId);
+      }
+    }
+
+    queueMicrotask(() => {
+      setFailedCities((prev) => {
+        const keys = Object.keys(prev);
+        if (keys.every((k) => activeIds.has(k))) return prev;
+        const next: Record<string, string> = {};
+        for (const k of keys) {
+          if (activeIds.has(k)) next[k] = prev[k];
+        }
+        return next;
+      });
+
+      setCityBundles((prev) => {
+        const keys = Object.keys(prev);
+        if (keys.every((k) => activeIds.has(k))) return prev;
+        const next: Record<string, WeatherBundle> = {};
+        for (const k of keys) {
+          if (activeIds.has(k)) next[k] = prev[k];
+        }
+        bundlesRef.current = next;
+        return next;
+      });
+    });
+  }, [favorites]);
+
+  // İleri Yön Senkronu: WeatherContext'teki aktif istasyon güncellendiğinde eşleşen favori kartını anında güncelle
+  useEffect(() => {
+    if (!activeContextBundle) return;
+    const matchedFavs = favorites.filter((c) =>
+      areLocationsEquivalent(c, activeContextBundle.location)
+    );
+    if (matchedFavs.length === 0) return;
+
+    queueMicrotask(() => {
+    setCityBundles((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const fav of matchedFavs) {
+        const cur = prev[fav.id];
+        if (
+          !cur ||
+          cur.fetchedAt !== activeContextBundle.fetchedAt ||
+          cur.current.time !== activeContextBundle.current.time ||
+          cur.current.temperature !== activeContextBundle.current.temperature ||
+          cur.freshness?.status !== activeContextBundle.freshness?.status
+        ) {
+          next[fav.id] = mergeStationIntoBundle(activeContextBundle, fav);
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      bundlesRef.current = next;
+      return next;
+    });
+
+    setFailedCities((prev) => {
+      const hasFailedMatch = matchedFavs.some((f) => f.id in prev);
+      if (!hasFailedMatch) return prev;
+      const next = { ...prev };
+      for (const fav of matchedFavs) {
+        delete next[fav.id];
+      }
+      return next;
+    });
+    });
+  }, [activeContextBundle, favorites]);
+
+  // Yeni eşik form state (metin tamponlu, negatif / ondalık dostu)
   const [alertCityId, setAlertCityId] = useState(favorites[0]?.id ?? "");
   const [alertMetric, setAlertMetric] = useState<AlertMetric>("windSpeed");
   const [alertOperator, setAlertOperator] = useState<">" | "<">(">");
-  const [alertThreshold, setAlertThreshold] = useState(45);
+  const [thresholdInput, setThresholdInput] = useState<string>(() =>
+    String(getSmartDefaultThreshold("windSpeed", ">", unit))
+  );
+  const [isCustomThreshold, setIsCustomThreshold] = useState(false);
+  const [thresholdError, setThresholdError] = useState<string | null>(null);
+  const prevUnitRef = useRef<UnitSystem>(unit);
+
+  useEffect(() => {
+    if (prevUnitRef.current === unit) return;
+    prevUnitRef.current = unit;
+    if (!isCustomThreshold) {
+      queueMicrotask(() => {
+        setThresholdInput(String(getSmartDefaultThreshold(alertMetric, alertOperator, unit)));
+      });
+    }
+  }, [unit, alertMetric, alertOperator, isCustomThreshold]);
 
   const effectiveAlertCityId = favorites.some((f) => f.id === alertCityId)
     ? alertCityId
     : (favorites[0]?.id ?? "");
 
+  // Kilitlenmeyen (deadlock-free) istasyon yükleyici
   const fetchCityList = useCallback(
     async (list: GeoLocation[], forceAll = false) => {
-      const seq = ++fetchSeqRef.current;
+      if (!mountedRef.current || list.length === 0) {
+        if (mountedRef.current) {
+          setLoadingMap(inFlightCountRef.current > 0);
+        }
+        return;
+      }
 
-      // 1. Pre-hydrate missing cities synchronously from L4 browser vault or active context bundle
       const nowMs = Date.now();
+      const ctxBundle = activeContextBundleRef.current;
+      const offlineNow = isOfflineRef.current;
       const hydratedSeed: Record<string, WeatherBundle> = {};
+
       for (const loc of list) {
-        if (bundlesRef.current[loc.id]) continue;
+        if (!forceAll && bundlesRef.current[loc.id]) continue;
         if (
-          activeContextBundle &&
-          areLocationsEquivalent(activeContextBundle.location, loc)
+          !forceAll &&
+          ctxBundle &&
+          areLocationsEquivalent(ctxBundle.location, loc)
         ) {
-          hydratedSeed[loc.id] = {
-            ...activeContextBundle,
-            location: { ...activeContextBundle.location, ...loc }
-          };
+          hydratedSeed[loc.id] = mergeStationIntoBundle(ctxBundle, loc);
           continue;
         }
-        const syncHit = readCachedWeatherBundleSync(loc, nowMs, {
-          forceStale: isOffline
-        });
-        if (syncHit) {
-          hydratedSeed[loc.id] = syncHit;
+        if (!forceAll) {
+          const syncHit = readCachedWeatherBundleSync(loc, nowMs, {
+            forceStale: offlineNow
+          });
+          if (syncHit) {
+            hydratedSeed[loc.id] = mergeStationIntoBundle(syncHit, loc);
+          }
         }
       }
 
-      const activeIds = new Set(list.map((l) => l.id));
-      setCityBundles((prev) => {
-        const mergedMap: Record<string, WeatherBundle> = { ...hydratedSeed };
-        for (const [k, v] of Object.entries(prev)) {
-          if (activeIds.has(k)) mergedMap[k] = v;
-        }
-        bundlesRef.current = mergedMap;
-        return mergedMap;
+      if (Object.keys(hydratedSeed).length > 0 && mountedRef.current) {
+        setCityBundles((prev) => {
+          const next = { ...prev, ...hydratedSeed };
+          bundlesRef.current = next;
+          return next;
+        });
+        setFailedCities((prev) => {
+          const hasAny = Object.keys(hydratedSeed).some((id) => id in prev);
+          if (!hasAny) return prev;
+          const next = { ...prev };
+          for (const id of Object.keys(hydratedSeed)) {
+            delete next[id];
+          }
+          return next;
+        });
+      }
+
+      const toFetch = list.filter((loc) => {
+        if (forceAll) return true;
+        if (cityAbortMapRef.current.has(loc.id)) return false;
+        const cur = hydratedSeed[loc.id] ?? bundlesRef.current[loc.id];
+        if (!cur) return true;
+        return (cur.freshness?.status ?? "live") !== "live";
       });
 
-      const toFetch = forceAll
-        ? list
-        : list.filter((loc) => {
-            const cur = bundlesRef.current[loc.id];
-            if (!cur) return true;
-            // Revalidate any cached/stale station in background if online
-            return (cur.freshness?.status ?? "live") !== "live";
-          });
-
-      if (toFetch.length === 0) return;
-
-      setLoadingMap(true);
-      const nextFailed: Record<string, string> = {};
+      if (toFetch.length === 0) {
+        if (mountedRef.current) {
+          setLoadingMap(inFlightCountRef.current > 0);
+        }
+        return;
+      }
 
       const CONCURRENCY = 2;
       let cursor = 0;
+
       const worker = async () => {
         while (cursor < toFetch.length) {
-          if (seq !== fetchSeqRef.current) return;
+          if (!mountedRef.current) return;
           const loc = toFetch[cursor++];
-          try {
-            const qs = new URLSearchParams({
-              lat: String(loc.lat),
-              lon: String(loc.lon),
-              name: loc.name,
-              country: loc.country ?? ""
+
+          if (forceAll) {
+            const existingCtrl = cityAbortMapRef.current.get(loc.id);
+            if (existingCtrl) {
+              existingCtrl.abort();
+              cityAbortMapRef.current.delete(loc.id);
+            }
+          } else if (cityAbortMapRef.current.has(loc.id)) {
+            continue;
+          }
+
+          const controller = new AbortController();
+          cityAbortMapRef.current.set(loc.id, controller);
+          inFlightCountRef.current += 1;
+
+          if (mountedRef.current) {
+            setLoadingMap(true);
+            setLoadingIds((prev) => {
+              if (prev.has(loc.id)) return prev;
+              const next = new Set(prev);
+              next.add(loc.id);
+              return next;
             });
-            const res = await fetch(`/api/weather?${qs.toString()}`, {
+          }
+
+          try {
+            const res = await fetch(buildWeatherApiUrl(loc), {
+              signal: controller.signal,
               cache: forceAll ? "no-store" : "default"
             });
-            if (seq !== fetchSeqRef.current) return;
+            if (controller.signal.aborted || !mountedRef.current) return;
             if (!res.ok) {
               throw new Error(`HTTP ${res.status}`);
             }
+
             const data: WeatherBundle = await res.json();
-            if (seq !== fetchSeqRef.current) return;
-            const merged: WeatherBundle = {
-              ...data,
-              location: { ...data.location, ...loc }
-            };
+            if (controller.signal.aborted || !mountedRef.current) return;
+
+            const isStillFavorite = favoritesRef.current.some((f) => f.id === loc.id);
+            const merged = mergeStationIntoBundle(data, loc);
+
             if ((merged.freshness?.status ?? "live") === "live") {
               writeCachedWeatherBundle(merged);
             }
-            setCityBundles((prev) => {
-              const next = { ...prev, [loc.id]: merged };
-              bundlesRef.current = next;
-              return next;
-            });
+
+            if (isStillFavorite) {
+              setCityBundles((prev) => {
+                const next = { ...prev, [loc.id]: merged };
+                bundlesRef.current = next;
+                return next;
+              });
+              setFailedCities((prev) => {
+                if (!(loc.id in prev)) return prev;
+                const next = { ...prev };
+                delete next[loc.id];
+                return next;
+              });
+            }
+
+            // Ters Yön Senkronu: Yenilenen kart aktif istasyonla eşleşiyorsa WeatherContext'e taze paketi aktar
+            if (areLocationsEquivalent(loc, activeLocationRef.current)) {
+              syncExternalBundle(merged);
+            }
           } catch (err) {
-            if (seq !== fetchSeqRef.current) return;
-            const errText =
-              err instanceof Error ? err.message : "Bağlantı hatası";
+            if (
+              controller.signal.aborted ||
+              !mountedRef.current ||
+              (err instanceof Error && err.name === "AbortError")
+            ) {
+              return;
+            }
+
+            const isStillFavorite = favoritesRef.current.some((f) => f.id === loc.id);
+            if (!isStillFavorite) return;
+
+            const errText = err instanceof Error ? err.message : "Bağlantı hatası";
             const existing = bundlesRef.current[loc.id];
+
             if (existing) {
               const reanchored = reanchorWeatherBundleToNow(
                 existing,
@@ -346,16 +791,39 @@ export default function DashboardView() {
                 Date.now(),
                 { forceStale: true, staleReason: errText }
               );
-              if (seq !== fetchSeqRef.current) return;
+              if (controller.signal.aborted || !mountedRef.current) return;
+              if (!favoritesRef.current.some((f) => f.id === loc.id)) return;
+
               if (idbFallback) {
+                const mergedFallback = mergeStationIntoBundle(idbFallback, loc);
                 setCityBundles((prev) => {
-                  const next = { ...prev, [loc.id]: idbFallback };
+                  const next = { ...prev, [loc.id]: mergedFallback };
                   bundlesRef.current = next;
                   return next;
                 });
+                setFailedCities((prev) => {
+                  if (!(loc.id in prev)) return prev;
+                  const next = { ...prev };
+                  delete next[loc.id];
+                  return next;
+                });
               } else {
-                nextFailed[loc.id] = errText;
+                setFailedCities((prev) => ({ ...prev, [loc.id]: errText }));
               }
+            }
+          } finally {
+            if (cityAbortMapRef.current.get(loc.id) === controller) {
+              cityAbortMapRef.current.delete(loc.id);
+            }
+            inFlightCountRef.current = Math.max(0, inFlightCountRef.current - 1);
+            if (mountedRef.current) {
+              setLoadingIds((prev) => {
+                if (!prev.has(loc.id)) return prev;
+                const next = new Set(prev);
+                next.delete(loc.id);
+                return next;
+              });
+              setLoadingMap(inFlightCountRef.current > 0);
             }
           }
         }
@@ -366,15 +834,11 @@ export default function DashboardView() {
           worker()
         )
       );
-
-      if (seq === fetchSeqRef.current) {
-        setFailedCities(nextFailed);
-        setLoadingMap(false);
-      }
     },
-    [activeContextBundle, isOffline]
+    [syncExternalBundle]
   );
 
+  // Favoriler değiştiğinde yeni istasyonları yükle
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -385,13 +849,24 @@ export default function DashboardView() {
     };
   }, [favorites, fetchCityList]);
 
-  // Auto-refresh stale or failed station cards when global live connectivity recovers
+  // Canlı bağlantı kurtarıldığında tüm istasyonları tazele
   useEffect(() => {
     if (recoveryCount <= 0) return;
     queueMicrotask(() => {
-      void fetchCityList(favorites, true);
+      void fetchCityList(favoritesRef.current, true);
     });
-  }, [recoveryCount, favorites, fetchCityList]);
+  }, [recoveryCount, fetchCityList]);
+
+  // Küresel `ATMOS_REFRESH_ALL_EVENT` olayını dinleyerek tüm favorileri tazele
+  useEffect(() => {
+    const onRefreshAll = () => {
+      void fetchCityList(favoritesRef.current, true);
+    };
+    window.addEventListener(ATMOS_REFRESH_ALL_EVENT, onRefreshAll);
+    return () => {
+      window.removeEventListener(ATMOS_REFRESH_ALL_EVENT, onRefreshAll);
+    };
+  }, [fetchCityList]);
 
   const hasImpairedStation = useMemo(
     () =>
@@ -405,49 +880,81 @@ export default function DashboardView() {
   useEffect(() => {
     if (isOffline || !hasImpairedStation || loadingMap) return;
     const timer = window.setTimeout(() => {
-      const targetCities = favorites.filter((c) => {
+      const targetCities = favoritesRef.current.filter((c) => {
         const b = bundlesRef.current[c.id];
         return !b || (b.freshness?.status ?? "live") !== "live";
       });
       if (targetCities.length > 0) {
-        void fetchCityList(favorites, true);
+        void fetchCityList(targetCities, true);
       }
     }, 20_000);
     return () => window.clearTimeout(timer);
-  }, [isOffline, hasImpairedStation, loadingMap, favorites, fetchCityList]);
+  }, [isOffline, hasImpairedStation, loadingMap, fetchCityList]);
 
-  const loadedList = useMemo(
+  // Her istasyon için deterministik `resolveActiveTemporalView(b, 0)` önbelleği
+  const temporalByCityId = useMemo<Record<string, ActiveTemporalView>>(() => {
+    const map: Record<string, ActiveTemporalView> = {};
+    for (const [id, b] of Object.entries(cityBundles)) {
+      map[id] = resolveActiveTemporalView(b, 0);
+    }
+    return map;
+  }, [cityBundles]);
+
+  const loadedStations = useMemo(
     () =>
       favorites
-        .map((f) => cityBundles[f.id])
-        .filter((b): b is WeatherBundle => Boolean(b)),
-    [favorites, cityBundles]
+        .map((city) => {
+          const bundle = cityBundles[city.id];
+          const tv = temporalByCityId[city.id];
+          return bundle && tv ? { city, bundle, tv } : null;
+        })
+        .filter(
+          (
+            entry
+          ): entry is {
+            city: GeoLocation;
+            bundle: WeatherBundle;
+            tv: ActiveTemporalView;
+          } => Boolean(entry)
+        ),
+    [favorites, cityBundles, temporalByCityId]
   );
 
   const extremes = useMemo(() => {
-    if (loadedList.length === 0) return null;
-    const hottest = [...loadedList].sort(
-      (a, b) => b.current.temperature - a.current.temperature
+    if (loadedStations.length === 0) return null;
+    const hottest = [...loadedStations].sort(
+      (a, b) => b.tv.telemetry.temperature - a.tv.telemetry.temperature
     )[0];
-    const coldest = [...loadedList].sort(
-      (a, b) => a.current.temperature - b.current.temperature
+    const coldest = [...loadedStations].sort(
+      (a, b) => a.tv.telemetry.temperature - b.tv.telemetry.temperature
     )[0];
-    const windiest = [...loadedList].sort(
-      (a, b) => b.current.windSpeed - a.current.windSpeed
+    const windiest = [...loadedStations].sort(
+      (a, b) => b.tv.telemetry.windSpeed - a.tv.telemetry.windSpeed
     )[0];
-    const wettest = [...loadedList].sort(
-      (a, b) => b.current.precipProbability - a.current.precipProbability
+    const wettest = [...loadedStations].sort(
+      (a, b) => b.tv.telemetry.precipProbability - a.tv.telemetry.precipProbability
     )[0];
     return { hottest, coldest, windiest, wettest };
-  }, [loadedList]);
+  }, [loadedStations]);
 
   const evaluatedAlerts = useMemo(
     () =>
-      alerts.map((rule) => ({
-        rule,
-        ...evaluateRule(rule, cityBundles[rule.cityId], unit)
-      })),
-    [alerts, cityBundles, unit]
+      alerts.map((rule) => {
+        const matchedBundle = resolveBundleForAlertRule(
+          rule,
+          favorites,
+          cityBundles,
+          activeContextBundle
+        );
+        const precomputedTv = matchedBundle
+          ? temporalByCityId[matchedBundle.location.id]
+          : undefined;
+        return {
+          rule,
+          ...evaluateRule(rule, matchedBundle, unit, precomputedTv)
+        };
+      }),
+    [alerts, favorites, cityBundles, activeContextBundle, temporalByCityId, unit]
   );
 
   const activeTriggered = evaluatedAlerts.filter((e) => e.triggered);
@@ -456,19 +963,52 @@ export default function DashboardView() {
     e.preventDefault();
     const city = favorites.find((f) => f.id === effectiveAlertCityId);
     if (!city) return;
+
+    const normalizedRaw = thresholdInput.trim().replace(",", ".");
+    const rawNumericInput = Number(normalizedRaw);
+    if (normalizedRaw === "" || !Number.isFinite(rawNumericInput)) {
+      setThresholdError("Geçerli bir sayısal eşik girin (ör. -5 veya 32).");
+      return;
+    }
+    if (alertMetric !== "temperature" && rawNumericInput < 0) {
+      setThresholdError("Bu parametre için eşik değeri 0 veya üzerinde olmalıdır.");
+      return;
+    }
+    if (alertMetric === "precipProbability" && rawNumericInput > 100) {
+      setThresholdError("Yağış olasılığı eşiği en fazla %100 olabilir.");
+      return;
+    }
+
+    const canonicalCity = canonicalizeStationIdentity(city);
+    const cityBundle = bundlesRef.current[city.id] ?? cityBundles[city.id];
+    const resolvedElevation =
+      city.elevation ?? canonicalCity.elevation ?? cityBundle?.location.elevation;
+
     addAlert({
       cityId: city.id,
       cityName: city.name,
+      lat: city.lat,
+      lon: city.lon,
+      ...(resolvedElevation !== undefined && Number.isFinite(resolvedElevation)
+        ? { elevation: Math.round(resolvedElevation) }
+        : {}),
       metric: alertMetric,
       operator: alertOperator,
-      threshold: toMetricThreshold(alertMetric, Number(alertThreshold), unit),
+      threshold: toMetricThreshold(alertMetric, rawNumericInput, unit),
+      sourceUnit: unit,
+      sourceValue: rawNumericInput,
       enabled: true
     });
+
+    setThresholdError(null);
+    setIsCustomThreshold(false);
+    setShowAlertForm(false);
   };
 
-  const openCityOnRoute = (loc: GeoLocation, route: "/" | "/lab") => {
-    setActiveLocation(loc);
-    router.push(route);
+  const openCityOnRoute = (city: GeoLocation, route: "/" | "/lab") => {
+    const cityBundle = bundlesRef.current[city.id] ?? cityBundles[city.id] ?? null;
+    setActiveLocation(city, cityBundle);
+    router.push(buildLocationHref(route, city));
   };
 
   return (
@@ -535,9 +1075,9 @@ export default function DashboardView() {
               En Sıcak
             </p>
             <p className="mt-1.5 font-display text-base font-semibold text-ink-primary tabular">
-              {extremes.hottest.location.name} ·{" "}
+              {extremes.hottest.city.name} ·{" "}
               <span className="font-mono text-signal-amber">
-                {formatTemperature(extremes.hottest.current.temperature, unit)}
+                {formatTemperature(extremes.hottest.tv.telemetry.temperature, unit)}
               </span>
             </p>
           </div>
@@ -546,9 +1086,9 @@ export default function DashboardView() {
               En Serin
             </p>
             <p className="mt-1.5 font-display text-base font-semibold text-ink-primary tabular">
-              {extremes.coldest.location.name} ·{" "}
+              {extremes.coldest.city.name} ·{" "}
               <span className="font-mono text-signal-sky">
-                {formatTemperature(extremes.coldest.current.temperature, unit)}
+                {formatTemperature(extremes.coldest.tv.telemetry.temperature, unit)}
               </span>
             </p>
           </div>
@@ -557,9 +1097,9 @@ export default function DashboardView() {
               En Rüzgarlı
             </p>
             <p className="mt-1.5 font-display text-base font-semibold text-ink-primary tabular">
-              {extremes.windiest.location.name} ·{" "}
+              {extremes.windiest.city.name} ·{" "}
               <span className="font-mono text-ink-primary">
-                {formatWindSpeed(extremes.windiest.current.windSpeed, unit)}
+                {formatWindSpeed(extremes.windiest.tv.telemetry.windSpeed, unit)}
               </span>
             </p>
           </div>
@@ -568,9 +1108,9 @@ export default function DashboardView() {
               Yağış Olasılığı
             </p>
             <p className="mt-1.5 font-display text-base font-semibold text-ink-primary tabular">
-              {extremes.wettest.location.name} ·{" "}
+              {extremes.wettest.city.name} ·{" "}
               <span className="font-mono text-signal-emerald">
-                %{extremes.wettest.current.precipProbability}
+                %{Math.round(extremes.wettest.tv.telemetry.precipProbability)}
               </span>
             </p>
           </div>
@@ -582,19 +1122,25 @@ export default function DashboardView() {
         {favorites.map((city) => {
           const b = cityBundles[city.id];
           const err = failedCities[city.id];
+          const isCityLoading = loadingIds.has(city.id);
 
           if (!b && err) {
             return (
               <div
                 key={city.id}
-                className="surface-panel p-5 flex flex-col justify-between space-y-4 border-signal-rose/30"
+                className="surface-panel min-h-[312px] p-5 flex flex-col justify-between space-y-4 border-signal-rose/30"
               >
                 <div className="flex items-start justify-between">
                   <div>
                     <h2 className="font-display text-lg font-semibold text-ink-primary">
                       {city.name}
                     </h2>
-                    <p className="text-xs text-ink-muted">{city.country}</p>
+                    <p className="text-xs text-ink-muted">
+                      {city.country}
+                      {city.elevation !== undefined
+                        ? ` · ${formatElevation(city.elevation, unit)}`
+                        : ""}
+                    </p>
                   </div>
                   {favorites.length > 1 && (
                     <button
@@ -612,10 +1158,12 @@ export default function DashboardView() {
                 </p>
                 <button
                   type="button"
-                  onClick={() => void fetchCityList(favorites, true)}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.08]"
+                  disabled={isCityLoading}
+                  onClick={() => void fetchCityList([city], true)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] py-2 text-xs font-medium text-ink-primary hover:bg-white/[0.08] disabled:opacity-50"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" /> Tekrar Dene
+                  <RefreshCw className={`h-3.5 w-3.5 ${isCityLoading ? "animate-spin" : ""}`} />
+                  <span>Tekrar Dene</span>
                 </button>
               </div>
             );
@@ -625,26 +1173,40 @@ export default function DashboardView() {
             return (
               <div
                 key={city.id}
-                className="surface-panel h-60 p-5 flex flex-col justify-between"
+                className="surface-panel min-h-[312px] p-5 flex flex-col justify-between"
               >
-                <div className="h-5 w-32 rounded bg-white/[0.06]" />
-                <div className="h-12 w-24 rounded bg-white/[0.06]" />
-                <div className="h-10 w-full rounded bg-white/[0.04]" />
+                <div className="space-y-2">
+                  <div className="h-5 w-32 rounded bg-white/[0.06]" />
+                  <div className="h-3.5 w-48 rounded bg-white/[0.04]" />
+                </div>
+                <div className="space-y-2">
+                  <div className="h-12 w-24 rounded bg-white/[0.06]" />
+                  <div className="h-4 w-36 rounded bg-white/[0.04]" />
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  <div className="h-12 rounded bg-white/[0.04]" />
+                  <div className="h-12 rounded bg-white/[0.04]" />
+                  <div className="h-12 rounded bg-white/[0.04]" />
+                  <div className="h-12 rounded bg-white/[0.04]" />
+                </div>
+                <div className="h-9 w-full rounded bg-white/[0.04]" />
               </div>
             );
           }
 
+          const tv = temporalByCityId[city.id] ?? resolveActiveTemporalView(b, 0);
           const isStaleCard =
             isOffline || (b.freshness?.status ?? "live") === "stale";
+          const stationElev = city.elevation ?? b.location.elevation;
 
           return (
             <article
               key={city.id}
-              style={{ backgroundImage: stationAmbientGlow(b) }}
-              className={`surface-panel border-t-2 p-5 flex flex-col justify-between space-y-4 transition-all duration-300 hover:-translate-y-1 hover:border-white/25 ${stationAccentBorder(b, isStaleCard)}`}
+              style={{ backgroundImage: stationAmbientGlow(tv) }}
+              className={`surface-panel min-h-[312px] border-t-2 p-5 flex flex-col justify-between space-y-4 transition-all duration-300 hover:-translate-y-1 hover:border-white/25 ${stationAccentBorder(tv, isStaleCard)}`}
             >
               <div className="flex items-start justify-between gap-2">
-                <div>
+                <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="font-display text-lg font-semibold text-ink-primary">
                       {city.name}
@@ -656,12 +1218,17 @@ export default function DashboardView() {
                       </span>
                     )}
                   </div>
-                  <p className="font-mono text-[11px] text-ink-muted tabular">
-                    {city.country} · Yerel {formatLocalClock(b.timezone)} ·{" "}
-                    {b.current.pressure} hPa{" "}
-                    {b.current.pressureTrend.includes("yükseliyor") ? (
+                  <p className="mt-0.5 font-mono text-[11px] text-ink-muted tabular">
+                    {city.country}
+                    {stationElev !== undefined && Number.isFinite(stationElev)
+                      ? ` · ${formatElevation(stationElev, unit)}`
+                      : ""}
+                    {" · "}Yerel{" "}
+                    {formatStationLocalClock(b.timezone, b.utcOffsetSeconds, clockNowMs)} ·{" "}
+                    {formatPressure(tv.telemetry.pressure, unit)}{" "}
+                    {tv.telemetry.pressureTrend.includes("yükseliyor") ? (
                       <ArrowUpRight className="inline h-3 w-3 text-signal-emerald" />
-                    ) : b.current.pressureTrend.includes("düşüyor") ? (
+                    ) : tv.telemetry.pressureTrend.includes("düşüyor") ? (
                       <ArrowDownRight className="inline h-3 w-3 text-signal-amber" />
                     ) : (
                       <ArrowRight className="inline h-3 w-3 text-ink-muted" />
@@ -669,50 +1236,71 @@ export default function DashboardView() {
                   </p>
                 </div>
 
-                {favorites.length > 1 && (
+                <div className="flex shrink-0 items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => {
-                      atmosUiSfx.playChime(false);
-                      removeFavorite(city.id);
-                    }}
-                    aria-label={`${city.name} istasyonunu kaldır`}
-                    className="atmos-btn rounded-lg border border-white/[0.08] p-1.5 text-ink-muted hover:border-signal-rose/40 hover:text-signal-rose"
+                    disabled={isCityLoading}
+                    onClick={() => void fetchCityList([city], true)}
+                    aria-label={`${city.name} istasyonunu yenile`}
+                    title="İstasyonu yenile"
+                    className="atmos-btn rounded-lg border border-white/[0.08] p-1.5 text-ink-muted hover:border-white/25 hover:text-ink-primary disabled:opacity-50"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <RefreshCw className={`h-3.5 w-3.5 ${isCityLoading ? "animate-spin" : ""}`} />
                   </button>
-                )}
+                  {favorites.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        atmosUiSfx.playChime(false);
+                        removeFavorite(city.id);
+                      }}
+                      aria-label={`${city.name} istasyonunu kaldır`}
+                      className="atmos-btn rounded-lg border border-white/[0.08] p-1.5 text-ink-muted hover:border-signal-rose/40 hover:text-signal-rose"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
-                  <span className="font-display text-4xl sm:text-5xl font-semibold tracking-tight text-ink-primary tabular">
-                    <AnimatedNumber value={formatTemperature(b.current.temperature, unit)} />
-                  </span>
+                  <div className="flex items-baseline gap-2.5">
+                    <span className="font-display text-4xl sm:text-5xl font-semibold tracking-tight text-ink-primary tabular">
+                      <AnimatedNumber value={formatTemperature(tv.telemetry.temperature, unit)} />
+                    </span>
+                    <span className="font-mono text-[11px] text-ink-muted tabular">
+                      Min {formatTemperature(tv.dayContext.tempMin, unit)} / Maks{" "}
+                      {formatTemperature(tv.dayContext.tempMax, unit)}
+                    </span>
+                  </div>
                   <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium text-ink-secondary">
                     <AnimatedWeatherIcon
-                      code={b.current.weatherCode}
-                      isNight={b.current.solarElevationDeg < -3}
-                      precipPhase={b.current.precipPhase}
-                      intensityMm={b.current.precipitation}
+                      code={tv.telemetry.weatherCode}
+                      isNight={tv.dayContext.isNight}
+                      precipPhase={tv.telemetry.precipPhase}
+                      intensityMm={tv.telemetry.precipitation}
                       className="h-4 w-4"
                     />
-                    <span>{b.current.condition}</span>
+                    <span>{tv.telemetry.condition}</span>
+                    <span className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+                      {tv.dayContext.isNight ? "Gece" : "Gündüz"}
+                    </span>
                     {b.hybrid?.engineMeta && (
                       <span className="rounded border border-signal-emerald/30 bg-signal-emerald/10 px-1.5 py-0.5 font-mono text-[10px] text-signal-emerald">
                         %{b.hybrid.engineMeta.stabilityPct} Kilitli
                       </span>
                     )}
-                    {b.storm && b.storm.score >= 35 && (
+                    {tv.stormChip.score >= 35 && (
                       <span
                         className="rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
                         style={{
-                          color: b.storm.color,
-                          borderColor: `${b.storm.color}55`,
-                          backgroundColor: `${b.storm.color}18`
+                          color: tv.stormChip.color,
+                          borderColor: `${tv.stormChip.color}55`,
+                          backgroundColor: `${tv.stormChip.color}18`
                         }}
                       >
-                        {b.storm.label} {b.storm.score}
+                        {tv.stormChip.label} {tv.stormChip.score}
                       </span>
                     )}
                   </p>
@@ -729,7 +1317,7 @@ export default function DashboardView() {
                     <Wind className="h-3 w-3 text-signal-sky" /> Rüzgar
                   </span>
                   <p className="mt-0.5 font-mono font-semibold text-ink-primary tabular">
-                    {formatWindSpeed(b.current.windSpeed, unit)}
+                    {formatWindSpeed(tv.telemetry.windSpeed, unit)}
                   </p>
                 </div>
                 <div className="surface-tile px-2 py-2">
@@ -737,15 +1325,18 @@ export default function DashboardView() {
                     <Droplets className="h-3 w-3 text-signal-sky" /> Nem
                   </span>
                   <p className="mt-0.5 font-mono font-semibold text-ink-primary tabular">
-                    %{b.current.humidity}
+                    %{tv.telemetry.humidity}
                   </p>
                 </div>
                 <div className="surface-tile px-2 py-2">
                   <span className="text-ink-muted">850 hPa</span>
                   <p className="mt-0.5 font-mono font-semibold text-signal-sky tabular">
-                    {b.current.temp850hPa !== null
-                      ? `${b.current.temp850hPa > 0 ? "+" : ""}${b.current.temp850hPa}°`
-                      : "--"}
+                    {tv.telemetry.temp850hPa !== null
+                      ? formatTemperature(tv.telemetry.temp850hPa, unit, {
+                          decimals: 1,
+                          showUnit: true
+                        })
+                      : "—"}
                   </p>
                 </div>
                 <div className="surface-tile px-2 py-2">
@@ -779,7 +1370,7 @@ export default function DashboardView() {
         })}
       </div>
 
-      {/* İzleme Eşikleri (Katlanabilir Form ile Sadeleştirilmiş) */}
+      {/* İzleme Eşikleri (Katlanabilir Form & Sıfır-Sapmalı IEEE-754 Motoru) */}
       <section className="surface-panel p-5 sm:p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 font-display text-base font-semibold text-ink-primary">
@@ -788,7 +1379,10 @@ export default function DashboardView() {
           </h2>
           <button
             type="button"
-            onClick={() => setShowAlertForm((v) => !v)}
+            onClick={() => {
+              setThresholdError(null);
+              setShowAlertForm((v) => !v);
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -797,68 +1391,97 @@ export default function DashboardView() {
         </div>
 
         {showAlertForm && (
-          <form
-            onSubmit={(e) => {
-              handleAddAlert(e);
-              setShowAlertForm(false);
-            }}
-            className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-[1.2fr_1.2fr_0.75fr_0.85fr_auto]"
-          >
-            <select
-              value={effectiveAlertCityId}
-              onChange={(e) => setAlertCityId(e.target.value)}
-              aria-label="Eşik istasyonu"
-              className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
+          <div className="space-y-2">
+            <form
+              onSubmit={handleAddAlert}
+              className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-[1.2fr_1.2fr_0.75fr_0.85fr_auto]"
             >
-              {favorites.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
+              <select
+                value={effectiveAlertCityId}
+                onChange={(e) => setAlertCityId(e.target.value)}
+                aria-label="Eşik istasyonu"
+                className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
+              >
+                {favorites.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={alertMetric}
+                onChange={(e) => {
+                  const nextMetric = e.target.value as AlertMetric;
+                  setAlertMetric(nextMetric);
+                  setThresholdInput(
+                    String(getSmartDefaultThreshold(nextMetric, alertOperator, unit))
+                  );
+                  setIsCustomThreshold(false);
+                  setThresholdError(null);
+                }}
+                aria-label="Eşik parametresi"
+                className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
+              >
+                <option value="windSpeed">
+                  Rüzgar Hızı ({unit === "imperial" ? "mph" : "km/s"})
                 </option>
-              ))}
-            </select>
+                <option value="temperature">
+                  Sıcaklık ({unit === "imperial" ? "°F" : "°C"})
+                </option>
+                <option value="precipProbability">Yağış Olasılığı (%)</option>
+                <option value="aqi">Hava Kalitesi (EAQI)</option>
+              </select>
 
-            <select
-              value={alertMetric}
-              onChange={(e) => setAlertMetric(e.target.value as AlertMetric)}
-              aria-label="Eşik parametresi"
-              className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
-            >
-              <option value="windSpeed">
-                Rüzgar Hızı ({unit === "imperial" ? "mph" : "km/s"})
-              </option>
-              <option value="temperature">
-                Sıcaklık ({unit === "imperial" ? "°F" : "°C"})
-              </option>
-              <option value="precipProbability">Yağış Olasılığı (%)</option>
-              <option value="aqi">Hava Kalitesi (EAQI)</option>
-            </select>
+              <select
+                value={alertOperator}
+                onChange={(e) => {
+                  const nextOp = e.target.value as ">" | "<";
+                  setAlertOperator(nextOp);
+                  setThresholdInput(
+                    String(getSmartDefaultThreshold(alertMetric, nextOp, unit))
+                  );
+                  setIsCustomThreshold(false);
+                  setThresholdError(null);
+                }}
+                aria-label="Eşik koşulu"
+                className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 font-mono text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
+              >
+                <option value=">">&gt; Üstünde</option>
+                <option value="<">&lt; Altında</option>
+              </select>
 
-            <select
-              value={alertOperator}
-              onChange={(e) => setAlertOperator(e.target.value as ">" | "<")}
-              aria-label="Eşik koşulu"
-              className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 font-mono text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
-            >
-              <option value=">">&gt; Üstünde</option>
-              <option value="<">&lt; Altında</option>
-            </select>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={thresholdInput}
+                onChange={(e) => {
+                  setThresholdInput(e.target.value);
+                  setIsCustomThreshold(true);
+                  if (thresholdError) setThresholdError(null);
+                }}
+                placeholder={String(
+                  getSmartDefaultThreshold(alertMetric, alertOperator, unit)
+                )}
+                aria-label="Eşik değeri"
+                className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 font-mono text-sm text-ink-primary tabular focus:border-signal-sky/60 focus:outline-none"
+              />
 
-            <input
-              type="number"
-              value={alertThreshold}
-              onChange={(e) => setAlertThreshold(Number(e.target.value))}
-              aria-label="Eşik değeri"
-              className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 font-mono text-sm text-ink-primary tabular focus:border-signal-sky/60 focus:outline-none"
-            />
+              <button
+                type="submit"
+                className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-ink-primary px-4 text-sm font-medium text-obsidian-950 hover:bg-white transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Ekle</span>
+              </button>
+            </form>
 
-            <button
-              type="submit"
-              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-ink-primary px-4 text-sm font-medium text-obsidian-950 hover:bg-white transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Ekle</span>
-            </button>
-          </form>
+            {thresholdError && (
+              <p role="alert" className="text-xs text-signal-rose">
+                {thresholdError}
+              </p>
+            )}
+          </div>
         )}
 
         <div className="divide-y divide-white/[0.07]">

@@ -20,6 +20,7 @@ import {
   maxDekStatus,
   maxIcingRisk
 } from "./snow-and-lightning-engine";
+import { decayConfidenceForStaleOrDegraded } from "./accuracy-index";
 import { wetBulbStullC } from "./thermo-cape";
 import {
   classifyUvIndex,
@@ -70,11 +71,29 @@ export function makeLocationCacheKey(
 }
 
 export function areLocationsEquivalent(
-  a: Pick<GeoLocation, "lat" | "lon"> | null | undefined,
-  b: Pick<GeoLocation, "lat" | "lon"> | null | undefined,
-  toleranceDeg = 0.05
+  a: (Pick<GeoLocation, "lat" | "lon"> & { id?: string; elevation?: number }) | null | undefined,
+  b: (Pick<GeoLocation, "lat" | "lon"> & { id?: string; elevation?: number }) | null | undefined,
+  toleranceDeg = 0.018
 ): boolean {
   if (!a || !b) return false;
+  if (
+    a.id &&
+    b.id &&
+    a.id.startsWith("bursa-") &&
+    b.id.startsWith("bursa-") &&
+    a.id !== b.id
+  ) {
+    return false;
+  }
+  if (
+    typeof a.elevation === "number" &&
+    typeof b.elevation === "number" &&
+    Number.isFinite(a.elevation) &&
+    Number.isFinite(b.elevation) &&
+    Math.abs(a.elevation - b.elevation) >= 65
+  ) {
+    return false;
+  }
   return (
     Math.abs(a.lat - b.lat) <= toleranceDeg &&
     Math.abs(a.lon - b.lon) <= toleranceDeg
@@ -837,15 +856,60 @@ export function reanchorWeatherBundleToNow(
     }
   }
 
+  const ageHours = Math.max(0, ageMs / 3600_000);
+  const shouldDecayConfidence =
+    freshness.status !== "live" ||
+    (freshness.degradedStreams?.length ?? 0) > 0 ||
+    ageHours >= 0.75;
+  const decayedHybridConfidence = shouldDecayConfidence
+    ? decayConfidenceForStaleOrDegraded(bundle.hybrid.confidencePct, {
+        status: freshness.status,
+        ageHours,
+        degradedStreamCount: freshness.degradedStreams?.length ?? 0
+      })
+    : bundle.hybrid.confidencePct;
+  const decayedDaily = shouldDecayConfidence
+    ? nextDaily.map((d) =>
+        d.confidencePct !== undefined
+          ? {
+              ...d,
+              confidencePct: decayConfidenceForStaleOrDegraded(d.confidencePct, {
+                status: freshness.status,
+                ageHours,
+                degradedStreamCount: freshness.degradedStreams?.length ?? 0
+              })
+            }
+          : d
+      )
+    : nextDaily;
+  const nextHybrid = shouldDecayConfidence
+    ? {
+        ...bundle.hybrid,
+        confidencePct: decayedHybridConfidence,
+        engineMeta: bundle.hybrid.engineMeta
+          ? {
+              ...bundle.hybrid.engineMeta,
+              accuracyBreakdown: bundle.hybrid.engineMeta.accuracyBreakdown
+                ? {
+                    ...bundle.hybrid.engineMeta.accuracyBreakdown,
+                    totalPct: decayedHybridConfidence
+                  }
+                : undefined
+            }
+          : undefined
+      }
+    : bundle.hybrid;
+
   return {
     ...bundle,
     fetchedAt: authenticFetchedAt,
     utcOffsetSeconds: localNowParts.offsetSeconds,
     freshness,
+    hybrid: nextHybrid,
     current: nextCurrent,
     hourly: nextHourly,
     minutely15: nextMinutely15,
-    daily: nextDaily,
+    daily: decayedDaily,
     subseasonal: nextSubseasonal,
     sounding: nextSounding,
     hourlySoundings: nextHourlySoundings,

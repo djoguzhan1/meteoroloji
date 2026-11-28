@@ -11,7 +11,34 @@
  *  6. 0–100 km 8-Octant Polar Convective Cell Scanner (`convectiveCells`) for 3-Ring Lightning Proximity Radar
  */
 
+import {
+  buildRainViewerTileUrl,
+  dbzToRainRateMmHr,
+  projectRgbToScheme2Dbz,
+  RAINVIEWER_COLOR_SCHEME,
+  RAINVIEWER_DBZ_ANCHORS,
+  RAINVIEWER_LEGEND_GRADIENT,
+  RAINVIEWER_SMOOTH_OPTIONS,
+  RGB555_DBZ_LUT,
+  rgbaPixelToScheme2Dbz,
+  rgbaPixelToScheme2DbzFast,
+  type RainViewerDbzAnchor,
+} from './radar-palette';
 import type { RadarConvectiveCellSample } from './snow-and-lightning-engine';
+
+export {
+  buildRainViewerTileUrl,
+  dbzToRainRateMmHr,
+  projectRgbToScheme2Dbz,
+  RAINVIEWER_COLOR_SCHEME,
+  RAINVIEWER_DBZ_ANCHORS,
+  RAINVIEWER_LEGEND_GRADIENT,
+  RAINVIEWER_SMOOTH_OPTIONS,
+  RGB555_DBZ_LUT,
+  rgbaPixelToScheme2Dbz,
+  rgbaPixelToScheme2DbzFast,
+  type RainViewerDbzAnchor,
+};
 
 type NodeZlibSubset = typeof import('node:zlib');
 function getNodeZlib(): NodeZlibSubset | null {
@@ -213,55 +240,26 @@ export function decodePngBufferToRgba(pngBytes: Uint8Array): DecodedPngTile | nu
   return { width, height, rgba };
 }
 
+export const decodePngRgbaBuffer = decodePngBufferToRgba;
+
 function lengthOf(arr: Uint8Array): number {
   return arr.length;
 }
 
 export function rgbaPixelToDbz(r: number, g: number, b: number, a: number): number {
-  if (a < 20) return 0;
-
-  // Reject achromatic / grayscale pixels (e.g. RainViewer "Zoom Level Not Supported" text banners)
-  // Real RainViewer meteorological palettes (schemes 2 & 6) always maintain chroma >= 40.
-  const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-  if (chroma <= 8) return 0;
-
-  if (r >= 180 && b >= 160 && g <= 90) {
-    return 56 + ((r - 180) / 75) * 8;
-  }
-  if (r >= 195 && g <= 110 && b <= 75) {
-    return 45 + ((110 - g) / 110) * 9;
-  }
-  if (r >= 190 && g >= 140 && b <= 90) {
-    return 35 + ((255 - g) / 120) * 8;
-  }
-  if (g >= 140 && r <= 140 && b <= 150) {
-    return 25 + ((255 - b) / 255) * 8;
-  }
-  if (b >= 130) {
-    const intensity = (255 - Math.min(255, (r + g) / 2)) / 255;
-    return 10 + intensity * 14;
-  }
-  return a >= 60 ? 14 : 0;
-}
-
-export function dbzToRainRateMmHr(dbz: number): number {
-  if (dbz < 13.0) return 0;
-  const zLinear = 10 ** (dbz / 10);
-  if (dbz >= 38.0) {
-    return Math.min(85, (zLinear / 300) ** (1 / 1.4));
-  }
-  return (zLinear / 200) ** (1 / 1.6);
+  return rgbaPixelToScheme2Dbz(r, g, b, a);
 }
 
 export function tileToDbzGrid(tile: DecodedPngTile): Float32Array {
   const grid = new Float32Array(tile.width * tile.height);
+  const rgba = tile.rgba;
   for (let i = 0; i < grid.length; i++) {
     const idx = i * 4;
-    grid[i] = rgbaPixelToDbz(
-      tile.rgba[idx],
-      tile.rgba[idx + 1],
-      tile.rgba[idx + 2],
-      tile.rgba[idx + 3],
+    grid[i] = rgbaPixelToScheme2DbzFast(
+      rgba[idx],
+      rgba[idx + 1],
+      rgba[idx + 2],
+      rgba[idx + 3],
     );
   }
   return grid;
@@ -280,7 +278,7 @@ export function isGrayscaleErrorTile(tile: DecodedPngTile): boolean {
     const r = tile.rgba[i];
     const g = tile.rgba[i + 1];
     const b = tile.rgba[i + 2];
-    if (Math.max(r, g, b) - Math.min(r, g, b) > 8) {
+    if (Math.max(r, g, b) - Math.min(r, g, b) > 10) {
       return false;
     }
   }
@@ -719,7 +717,7 @@ async function fetchDecodedFrameGrid(
   host: string,
   framePath: string,
   zoom: number,
-  tileSize: number,
+  tileSize: 256 | 512,
   tileX: number,
   tileY: number,
   neighborDx: number,
@@ -731,7 +729,7 @@ async function fetchDecodedFrameGrid(
     if (ty < 0 || ty >= numTiles) return null;
     const wrappedTx = ((tx % numTiles) + numTiles) % numTiles;
     try {
-      const url = `${host}${framePath}/${tileSize}/${zoom}/${wrappedTx}/${ty}/2/1_1.png`;
+      const url = buildRainViewerTileUrl(host, framePath, tileSize, zoom, wrappedTx, ty);
       const res = await fetch(url, { headers: { 'User-Agent': RADAR_UA }, signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) return null;
       const decoded = decodePngBufferToRgba(new Uint8Array(await res.arrayBuffer()));
@@ -899,6 +897,8 @@ export async function fetchBursaRadarNowcast(
     };
   }
 }
+
+export const fetchRadarNowcast = fetchBursaRadarNowcast;
 
 export function blendNowcastWithHourlyNwp(
   nowcast: RadarNowcastResult,

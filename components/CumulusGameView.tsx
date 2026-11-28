@@ -252,6 +252,16 @@ export default function CumulusGameView() {
   }, [sfxEnabled]);
 
   useEffect(() => {
+    return () => {
+      try {
+        cumulusAudio.stopIntroAmbience(0.15);
+      } catch {
+        // ignore audio teardown errors
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     let active = true;
     queueMicrotask(() => {
       if (!active) return;

@@ -18,6 +18,10 @@
  *     - Produces P10/P25/P50/P75/P90 corridors, climate anomalies (`ΔNorm`), and Week 3 & Week 4 summaries.
  */
 
+import {
+  computeCalibratedWeightedSpread,
+  computeIntrinsicAccuracyIndex
+} from "./accuracy-index";
 import { ATMOS_HTTP_USER_AGENT, isWithinBursaDomain } from "./bursa-mesh";
 import {
   type BimodalEnsembleClusterResult,
@@ -431,14 +435,6 @@ export function calibrateExtendedSynopticHour(
     }
   }
 
-  const spreadC =
-    tempP10C !== undefined && tempP90C !== undefined
-      ? Math.max(0, tempP90C - tempP10C)
-      : 4.5;
-  const leadPenalty = ((leadHour - 168) / 192) * 22;
-  const spreadPenalty = Math.max(0, spreadC - 3.0) * 2.4;
-  const confidencePct = Math.round(clamp(82 - leadPenalty - spreadPenalty, 38, 82));
-
   const p10Mm = cleanEnsP.length >= 10 ? Number(quantileSorted(cleanEnsP, 0.1).toFixed(1)) : 0;
   const p50Mm = cleanEnsP.length >= 10 ? Number(quantileSorted(cleanEnsP, 0.5).toFixed(1)) : Number(detMedMm.toFixed(1));
   const p90Mm =
@@ -447,6 +443,50 @@ export function calibrateExtendedSynopticHour(
       : detPrecipVals.length > 0
         ? Number(detPrecipVals[detPrecipVals.length - 1].toFixed(1))
         : 0;
+
+  const epsIqrC =
+    tempP10C !== undefined && tempP90C !== undefined
+      ? Math.max(0, (tempP90C - tempP10C) * 0.52)
+      : null;
+  const calibratedTempSpreadC = computeCalibratedWeightedSpread({
+    snapshot: input.tempSnapshot,
+    weights: EXTENDED_SYNOPTIC_PRIOR_WEIGHTS.temperature,
+    biases: Object.fromEntries(
+      CORE_MODEL_KEYS.map((k) => [
+        k,
+        input.mos.biases[k].tempPersistentBiasC * persistDecay +
+          0.6 * input.mos.biases[k].tempDiurnalBiasC[bin] * diurnalDecay
+      ])
+    ),
+    ensembleIqr: epsIqrC
+  });
+  const calibratedPressSpreadHpa = computeCalibratedWeightedSpread({
+    snapshot: input.pressSnapshot,
+    weights: EXTENDED_SYNOPTIC_PRIOR_WEIGHTS.pressure
+  });
+  const bestUbRmse = CORE_MODEL_KEYS.reduce<number | null>((best, k) => {
+    const r = input.mos.biases[k].tempUbRmseC;
+    if (r === null || !Number.isFinite(r)) return best;
+    return best === null ? r : Math.min(best, r);
+  }, null);
+
+  const confidencePct = computeIntrinsicAccuracyIndex({
+    leadHours: leadHour,
+    activeModelCount: Math.max(1, detTemp.count),
+    ensembleMemberCount: ensMemberCount,
+    verificationMode: input.mos.report.mode,
+    verifiedStationCount: input.mos.summary.stationCount,
+    matchedVerificationHours: input.mos.report.matchedHours,
+    nowcastKalmanGain: input.mos.summary.nowcastKalmanGain,
+    bestTempUbRmseC: bestUbRmse,
+    isBursaEmosActive: input.bursaEmosCandidateC !== null,
+    calibratedTempSpreadC,
+    calibratedPressureSpreadHpa: calibratedPressSpreadHpa,
+    wetModelFraction: detTotal > 0 ? detAgreeing / detTotal : null,
+    precipProbPct: synopticPop,
+    precipSpreadMmHr: Math.max(0, p90Mm - p10Mm),
+    bimodalSeparationC: bimodalResult?.isBimodal ? bimodalResult.separationC : 0
+  }).totalPct;
 
   return {
     temperatureC: finalTempC,
@@ -845,9 +885,16 @@ export function buildCalibratedSubseasonalOutlook(params: {
             : "Mevsim Normalleri Civarı";
 
     const iqrMax = Math.max(0, tempMaxP75 - tempMaxP25);
-    const confidencePct = Math.round(
-      clamp(54 - subDayOffset * 1.3 - Math.max(0, iqrMax - 3.2) * 2.0, 26, 56)
-    );
+    const subLeadHours = (15 + subDayOffset) * 24;
+    const confidencePct = computeIntrinsicAccuracyIndex({
+      leadHours: subLeadHours,
+      activeModelCount: 2,
+      ensembleMemberCount: maxRow.length,
+      verificationMode: "wmo-prior",
+      calibratedTempSpreadC: iqrMax * 1.35,
+      precipProbPct: wetProbPct,
+      precipSpreadMmHr: Math.max(0, precipP90Mm - precipP50Mm) / 6
+    }).totalPct;
 
     // Subseasonal probabilistic snow diagnostics (52-member thermal cold-tail x precipitation corridor)
     const memberColdCount = minRow.filter((m, mIdx) => {

@@ -136,6 +136,10 @@ export function mercatorYToLat(mercY: number): number {
   return (2 * Math.atan(Math.exp(mercY)) - Math.PI / 2) * RAD_TO_DEG;
 }
 
+function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
+}
+
 /**
  * Perceptually damped wind streamline velocity in CSS pixels/second.
  * Calibrated so 25 km/h moves at ~26.5 px/s at zoom 6 regardless of 60Hz/120Hz/144Hz monitor refresh rate.
@@ -147,22 +151,29 @@ export function computeWindParticleSpeedPxPerSec(speedKmh: number, zoom = 6): nu
   return Math.min(72, 2.15 * Math.pow(speedKmh, 0.78) * zoomFactor);
 }
 
-function sampleWindFast(
+export function sampleWindFast(
   grid: WindGridBundle,
   lat: number,
   lon: number
 ): { u: number; v: number; speed: number } {
-  const { rows, cols, south, north, west, east, u, v } = grid;
-  const latSpan = Math.max(0.0001, north - south);
-  const lonSpan = Math.max(0.0001, east - west);
+  const { rows, cols } = grid;
+  const latSpan = Math.max(1e-6, grid.north - grid.south);
+  const spanLon =
+    grid.east > grid.west ? grid.east - grid.west : grid.east + 360 - grid.west;
 
-  let normLon = lon;
-  if (normLon > 180 && west >= -180 && east <= 180) {
-    normLon -= 360;
+  let dLon = (((lon - grid.west) % 360) + 360) % 360;
+  if (dLon > 180 + spanLon * 0.5) {
+    dLon -= 360;
   }
 
-  const fy = Math.max(0, Math.min(rows - 1.0001, ((lat - south) / latSpan) * (rows - 1)));
-  const fx = Math.max(0, Math.min(cols - 1.0001, ((normLon - west) / lonSpan) * (cols - 1)));
+  const maxRow = rows > 1 ? rows - 1.0001 : 0;
+  const maxCol = cols > 1 ? cols - 1.0001 : 0;
+  const fy = clamp(((lat - grid.south) / latSpan) * Math.max(0, rows - 1), 0, maxRow);
+  const fx = clamp(
+    (dLon / Math.max(1e-6, spanLon)) * Math.max(0, cols - 1),
+    0,
+    maxCol
+  );
 
   const r0 = fy | 0;
   const c0 = fx | 0;
@@ -176,12 +187,12 @@ function sampleWindFast(
   const idx10 = r1 * cols + c0;
   const idx11 = r1 * cols + c1;
 
-  const uTop = u[idx00] * (1 - tx) + u[idx01] * tx;
-  const uBot = u[idx10] * (1 - tx) + u[idx11] * tx;
+  const uTop = grid.u[idx00] * (1 - tx) + grid.u[idx01] * tx;
+  const uBot = grid.u[idx10] * (1 - tx) + grid.u[idx11] * tx;
   const uVal = uTop * (1 - ty) + uBot * ty;
 
-  const vTop = v[idx00] * (1 - tx) + v[idx01] * tx;
-  const vBot = v[idx10] * (1 - tx) + v[idx11] * tx;
+  const vTop = grid.v[idx00] * (1 - tx) + grid.v[idx01] * tx;
+  const vBot = grid.v[idx10] * (1 - tx) + grid.v[idx11] * tx;
   const vVal = vTop * (1 - ty) + vBot * ty;
 
   return { u: uVal, v: vVal, speed: Math.hypot(uVal, vVal) };
@@ -191,6 +202,7 @@ function sampleWindFast(
  * Steps all wind particles in O(N) with:
  *  - Exact `dtSec` frame-rate independence (identical speed & lifetime on 60Hz, 120Hz, 144Hz, 240Hz)
  *  - True Web Mercator Y-axis latitude projection (zero continental latitude skew at zoom 3-5)
+ *  - Seamless modular longitude interpolation across ±180° antimeridian (`east > 180` or `east <= west`)
  *  - 5-bucket Canvas2D path batching (at most 5 `ctx.stroke()` calls per frame)
  */
 export function stepAndBatchWindParticles(params: {
@@ -223,7 +235,10 @@ export function stepAndBatchWindParticles(params: {
   const northMercY = latToMercatorY(bounds.northLat);
   const southMercY = latToMercatorY(bounds.southLat);
   const mercSpan = southMercY - northMercY;
-  const lonSpan = bounds.eastLon - bounds.westLon;
+  const lonSpan =
+    bounds.eastLon >= bounds.westLon
+      ? bounds.eastLon - bounds.westLon
+      : bounds.eastLon + 360 - bounds.westLon;
 
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];

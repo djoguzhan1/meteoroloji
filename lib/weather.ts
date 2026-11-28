@@ -1,4 +1,8 @@
 import {
+  computeCalibratedWeightedSpread,
+  computeIntrinsicAccuracyIndex
+} from "./accuracy-index";
+import {
   ATMOS_HTTP_USER_AGENT,
   fetchBursaObservationMesh,
   fetchMgmBursaForecasts,
@@ -45,7 +49,8 @@ import {
 } from "./precip-engine";
 import {
   blendNowcastWithHourlyNwp,
-  fetchBursaRadarNowcast
+  fetchBursaRadarNowcast,
+  type RadarMinuteStep
 } from "./radar-nowcast";
 import {
   evaluateHourlyRunConsistency,
@@ -113,9 +118,10 @@ import {
 import {
   blendHybridParameter,
   blendWindDirectionDeg,
+  BURSA_WMO_17116_LAT,
+  BURSA_WMO_17116_LON,
   classifyPressureTrend,
   classifyUvIndex,
-  computeHybridConfidence,
   computePrecipConsensus,
   computeSolarElevationDeg,
   createFastZonedTimeResolver,
@@ -123,6 +129,7 @@ import {
   describePressureTrendDetail,
   detectDominantPollutant,
   formatRelativeDayLabelTr,
+  isSnowLinePhysicallyRelevant,
   isWetActiveSample,
   mapEuropeanAqi,
   mapWmoCodeToLabel,
@@ -778,8 +785,11 @@ type EnsembleIndex = {
   tempCols: Array<Array<number | null>>;
   tempColWeights: number[];
   precipCols: Array<Array<number | null>>;
+  precipColWeights: number[];
   gustCols: Array<Array<number | null>>;
+  gustColWeights: number[];
   capeCols: Array<Array<number | null>>;
+  capeColWeights: number[];
   memberCount: number;
 };
 
@@ -798,8 +808,11 @@ function buildEnsembleIndex(eJson: Record<string, unknown> | null): EnsembleInde
   const tempCols: Array<Array<number | null>> = [];
   const tempColWeights: number[] = [];
   const precipCols: Array<Array<number | null>> = [];
+  const precipColWeights: number[] = [];
   const gustCols: Array<Array<number | null>> = [];
+  const gustColWeights: number[] = [];
   const capeCols: Array<Array<number | null>> = [];
+  const capeColWeights: number[] = [];
 
   const hourly = eJson?.hourly as Record<string, unknown> | undefined;
   const times = Array.isArray(hourly?.time) ? (hourly.time as string[]) : [];
@@ -809,8 +822,11 @@ function buildEnsembleIndex(eJson: Record<string, unknown> | null): EnsembleInde
       tempCols,
       tempColWeights,
       precipCols,
+      precipColWeights,
       gustCols,
+      gustColWeights,
       capeCols,
+      capeColWeights,
       memberCount: 0
     };
   }
@@ -823,10 +839,13 @@ function buildEnsembleIndex(eJson: Record<string, unknown> | null): EnsembleInde
       tempColWeights.push(ensembleWeightForColumnKey(key));
     } else if (key.startsWith("precipitation_")) {
       precipCols.push(val as Array<number | null>);
+      precipColWeights.push(ensembleWeightForColumnKey(key));
     } else if (key.startsWith("wind_gusts_10m_")) {
       gustCols.push(val as Array<number | null>);
+      gustColWeights.push(ensembleWeightForColumnKey(key));
     } else if (key.startsWith("cape_")) {
       capeCols.push(val as Array<number | null>);
+      capeColWeights.push(ensembleWeightForColumnKey(key));
     }
   }
 
@@ -835,8 +854,11 @@ function buildEnsembleIndex(eJson: Record<string, unknown> | null): EnsembleInde
     tempCols,
     tempColWeights,
     precipCols,
+    precipColWeights,
     gustCols,
+    gustColWeights,
     capeCols,
+    capeColWeights,
     memberCount: Math.max(tempCols.length, precipCols.length)
   };
 }
@@ -867,6 +889,81 @@ function readEnsembleRowWithWeights(
     }
   }
   return values.length > 0 ? { values, weights } : null;
+}
+
+function resolveDstSafeStartHourIndex(params: {
+  times: string[];
+  timesUtcMs: number[];
+  curTimeRaw: string;
+  utcOffsetSeconds: number;
+  tzResolver: ReturnType<typeof createFastZonedTimeResolver>;
+  nowEpochMs: number;
+}): number {
+  const {
+    times,
+    timesUtcMs,
+    curTimeRaw,
+    utcOffsetSeconds,
+    tzResolver,
+    nowEpochMs
+  } = params;
+  if (times.length === 0 || timesUtcMs.length === 0) return 0;
+
+  let targetUtcMs: number;
+  if (curTimeRaw.length > 0) {
+    const curPrefix = curTimeRaw.slice(0, 13);
+    const foldMatches: number[] = [];
+    for (let idx = 0; idx < times.length; idx++) {
+      if (times[idx].slice(0, 13) === curPrefix) {
+        foldMatches.push(idx);
+      }
+    }
+    if (foldMatches.length === 1) {
+      return foldMatches[0];
+    }
+    if (foldMatches.length >= 2) {
+      const firstMs = timesUtcMs[foldMatches[0]];
+      const lastMs = timesUtcMs[foldMatches[foldMatches.length - 1]];
+      if (
+        nowEpochMs >= firstMs - 3600_000 &&
+        nowEpochMs <= lastMs + 2 * 3600_000
+      ) {
+        let picked = foldMatches[0];
+        for (const mIdx of foldMatches) {
+          if (nowEpochMs >= timesUtcMs[mIdx]) picked = mIdx;
+        }
+        return picked;
+      }
+      const wallHourUtcMs = Date.parse(`${curPrefix}:00:00Z`);
+      const approxHourUtcMs = Number.isFinite(wallHourUtcMs)
+        ? wallHourUtcMs - utcOffsetSeconds * 1000
+        : firstMs;
+      let picked = foldMatches[0];
+      let bestDiff = Math.abs(timesUtcMs[picked] - approxHourUtcMs);
+      for (const mIdx of foldMatches) {
+        const diff = Math.abs(timesUtcMs[mIdx] - approxHourUtcMs);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          picked = mIdx;
+        }
+      }
+      return picked;
+    }
+    targetUtcMs = tzResolver
+      .localIsoToUtcDate(curTimeRaw, nowEpochMs - 3600_000)
+      .getTime();
+  } else {
+    targetUtcMs = nowEpochMs;
+  }
+
+  let idx = timesUtcMs.findIndex(
+    (tMs) => tMs <= targetUtcMs && targetUtcMs < tMs + 3600_000
+  );
+  if (idx < 0) {
+    const floorHourMs = Math.floor(targetUtcMs / 3600_000) * 3600_000;
+    idx = timesUtcMs.findIndex((tMs) => tMs >= floorHourMs);
+  }
+  return idx >= 0 ? idx : 0;
 }
 
 export async function fetchWeatherBundle(
@@ -1144,13 +1241,19 @@ export async function fetchWeatherBundle(
   const ensIndex = buildEnsembleIndex(eJson);
 
   const curTimeRaw = typeof cur.time === "string" ? cur.time.trim() : "";
+  const nowRefForStartMs = Date.now();
   const curTimeStr =
     curTimeRaw.length > 0
       ? curTimeRaw
-      : tzResolver.epochMsToLocalParts(Date.now()).isoMinute;
-  const currentIsoPrefix = curTimeStr.slice(0, 13);
-  let startIdx = times.findIndex((t) => t.startsWith(currentIsoPrefix));
-  if (startIdx < 0) startIdx = 0;
+      : tzResolver.epochMsToLocalParts(nowRefForStartMs).isoMinute;
+  const startIdx = resolveDstSafeStartHourIndex({
+    times,
+    timesUtcMs: timesUtcDates.map((d) => d.getTime()),
+    curTimeRaw,
+    utcOffsetSeconds,
+    tzResolver,
+    nowEpochMs: nowRefForStartMs
+  });
 
   const originTodayYmd = String(times[startIdx] ?? curTimeStr).slice(0, 10);
 
@@ -1660,6 +1763,32 @@ export async function fetchWeatherBundle(
   let firstHourTempShiftC = 0;
   let firstHourTempBand: EnsembleBand | undefined;
 
+  const hybridStreamFailed =
+    !hJson || !Array.isArray(hJson?.hourly?.time) || hJson.hourly.time.length === 0;
+  const ensembleStreamFailed = ensIndex.memberCount === 0;
+  const liveDegradedCount = (hybridStreamFailed ? 1 : 0) + (ensembleStreamFailed ? 1 : 0);
+
+  const bestVerifiedTempUbRmseC = CORE_MODEL_KEYS.reduce<number | null>((best, k) => {
+    const r = mos.biases[k].tempUbRmseC;
+    if (r === null || !Number.isFinite(r)) return best;
+    return best === null ? r : Math.min(best, r);
+  }, null);
+
+  // Defect 7 Fix: Account for boundary-layer / sea-breeze microclimate variance when projecting 100m WMO-17116 snapshot onto slopes/coasts
+  const bursaElevOffsetM = Math.abs(cityElevationM - 100);
+  const bursaCoastDistKm = Math.min(
+    Math.hypot((location.lat - 40.375) * 111.3, (location.lon - 28.885) * 85.0),
+    Math.hypot((location.lat - 40.431) * 111.3, (location.lon - 29.154) * 85.0)
+  );
+  const bursaMicroclimateUncC = isBursaEmosActive
+    ? Number(
+        (
+          Math.min(1.25, (bursaElevOffsetM / 380) * 0.9) +
+          (bursaCoastDistKm <= 9 ? 0.35 : 0)
+        ).toFixed(2)
+      )
+    : 0;
+
   // FULL 168-HOUR (7-DAY) UNIFIED CALIBRATION & PHYSICS PIPELINE!
   const maxHourlyIdx = Math.min(startIdx + 168, times.length);
   for (let i = startIdx; i < maxHourlyIdx; i++) {
@@ -1710,12 +1839,30 @@ export async function fetchWeatherBundle(
       eIdx
     );
     const ensTempArr = ensTempWeighted?.values ?? null;
-    const ensPrecipArr = readEnsembleRow(ensIndex.precipCols, eIdx);
-    const ensGustArr = readEnsembleRow(ensIndex.gustCols, eIdx);
-    const ensCapeArr = readEnsembleRow(ensIndex.capeCols, eIdx);
+    const ensPrecipWeighted = readEnsembleRowWithWeights(
+      ensIndex.precipCols,
+      ensIndex.precipColWeights,
+      eIdx
+    );
+    const ensGustWeighted = readEnsembleRowWithWeights(
+      ensIndex.gustCols,
+      ensIndex.gustColWeights,
+      eIdx
+    );
+    const ensCapeWeighted = readEnsembleRowWithWeights(
+      ensIndex.capeCols,
+      ensIndex.capeColWeights,
+      eIdx
+    );
+    const ensPrecipArr = ensPrecipWeighted?.values ?? null;
+    const ensGustArr = ensGustWeighted?.values ?? null;
 
-    const ensTempStats = ensTempArr ? computeEnsembleDistStats(ensTempArr) : null;
-    const ensGustStats = ensGustArr ? computeEnsembleDistStats(ensGustArr) : null;
+    const ensTempStats = ensTempWeighted
+      ? computeEnsembleDistStats(ensTempWeighted.values, ensTempWeighted.weights)
+      : null;
+    const ensGustStats = ensGustWeighted
+      ? computeEnsembleDistStats(ensGustWeighted.values, ensGustWeighted.weights)
+      : null;
 
     // 1. BURSA 17,472h WMO-17116 SCALE-EQUIVARIANT RESIDUAL EMOS + GBDT + DISTRICT MICROCLIMATE + 212-MEMBER BIMODAL SOLVER
     const kalmanFallbackTemp = blendKalmanCorrectedScalar({
@@ -1936,6 +2083,7 @@ export async function fetchWeatherBundle(
       detSnapshot: precipSnap,
       detWeights: leadPrecipW,
       ensembleMembersMm: ensPrecipArr,
+      ensembleMemberWeights: ensPrecipWeighted?.weights ?? null,
       rawPrecipFallbackMm: rawPrecip,
       rawPopFallbackPct: rawPop,
       leadHour,
@@ -2106,7 +2254,7 @@ export async function fetchWeatherBundle(
 
     // 4. VERTICAL SOUNDING & CONVECTIVE PROFILE
     const soundingLevels = buildSoundingAtIndex(i);
-    if (leadHour < 72) {
+    if (leadHour < 168) {
       hourlySoundings.push(soundingLevels);
     }
     const soundingAnalysis =
@@ -2181,8 +2329,17 @@ export async function fetchWeatherBundle(
     }
 
     const ensCapeProb500 =
-      ensCapeArr && ensCapeArr.length > 0
-        ? (ensCapeArr.filter((v) => v >= 500).length / ensCapeArr.length) * 100
+      ensCapeWeighted && ensCapeWeighted.values.length > 0
+        ? (() => {
+            let wNum = 0;
+            let wDen = 0;
+            for (let kIdx = 0; kIdx < ensCapeWeighted.values.length; kIdx++) {
+              const w = ensCapeWeighted.weights[kIdx] ?? 1;
+              wDen += w;
+              if (ensCapeWeighted.values[kIdx] >= 500) wNum += w;
+            }
+            return wDen > 0 ? (wNum / wDen) * 100 : 0;
+          })()
         : 0;
     const ensGustProb55 =
       ensGustArr && ensGustArr.length > 0
@@ -2326,15 +2483,77 @@ export async function fetchWeatherBundle(
     const stepDetCount = CORE_MODEL_KEYS.filter(
       (k) => tempSnap[k] !== null && tempSnap[k] !== undefined && Number.isFinite(tempSnap[k])
     ).length;
-    const stepSpreadC = spreadOf(tempSnap);
-    const stepPressSpread = spreadOf(pressSnap);
+    const stepDiurnalBin = Math.min(3, Math.max(0, Math.floor((((localHour % 24) + 24) % 24) / 6)));
+    const stepPersistDecay = Math.exp(-Math.max(0, leadHour) / 60);
+    const stepTransientDecay = Math.exp(-Math.max(0, leadHour) / 10);
+    const stepDiurnalDecay = Math.exp(-Math.max(0, leadHour) / 72);
+    const stepCalibratedSpreadC = computeCalibratedWeightedSpread({
+      snapshot: tempSnap,
+      weights: leadTempW,
+      biases: Object.fromEntries(
+        CORE_MODEL_KEYS.map((k) => [
+          k,
+          mos.biases[k].tempPersistentBiasC * stepPersistDecay +
+            mos.biases[k].tempTransientBiasC * stepTransientDecay +
+            0.72 * mos.biases[k].tempDiurnalBiasC[stepDiurnalBin] * stepDiurnalDecay
+        ])
+      ),
+      ensembleIqr: ensTempStats ? ensTempStats.p75 - ensTempStats.p25 : null
+    });
+    const stepCalibratedPressSpread = computeCalibratedWeightedSpread({
+      snapshot: pressSnap,
+      weights: getLeadTimeWeights(
+        mos.shortRangeWeights.pressure,
+        mos.mediumRangeWeights.pressure,
+        leadHour
+      ),
+      biases: Object.fromEntries(
+        CORE_MODEL_KEYS.map((k) => [
+          k,
+          mos.biases[k].pressKalmanBiasHpa * Math.exp(-Math.max(0, leadHour) / 15)
+        ])
+      )
+    });
+    const stepBimodal = hourBimodalByTime.get(timeStr) ?? null;
+    const stepPrecipTotalModels = fusedPrecip.consensus.totalModels;
+    const stepWetFrac =
+      stepPrecipTotalModels > 0
+        ? fusedPrecip.consensus.agreeingModels / stepPrecipTotalModels
+        : null;
+    const stepPrecipSpreadMm =
+      fusedPrecip.consensus.p90Mm !== undefined && fusedPrecip.consensus.p10Mm !== undefined
+        ? Math.max(0, fusedPrecip.consensus.p90Mm - fusedPrecip.consensus.p10Mm)
+        : Math.max(0, fusedPrecip.consensus.maxMm - fusedPrecip.consensus.minMm);
+
+    const stepAccuracy = computeIntrinsicAccuracyIndex({
+      leadHours: leadHour,
+      activeModelCount: hybridStreamFailed ? 1 : Math.max(1, stepDetCount),
+      ensembleMemberCount: ensTempArr?.length ?? 0,
+      verificationMode: mos.report.mode,
+      verifiedStationCount: mos.summary.stationCount,
+      matchedVerificationHours: mos.report.matchedHours,
+      nowcastKalmanGain: mos.anchor.tempKalmanGain,
+      bestTempUbRmseC: bestVerifiedTempUbRmseC,
+      isBursaEmosActive,
+      radarAvailable: radarNowcast.radarAvailable,
+      calibratedTempSpreadC: stepCalibratedSpreadC,
+      calibratedPressureSpreadHpa: stepCalibratedPressSpread,
+      wetModelFraction: stepWetFrac,
+      precipProbPct: fusedPrecip.precipProbabilityPct,
+      precipSpreadMmHr: stepPrecipSpreadMm,
+      bimodalSeparationC: stepBimodal?.isBimodal ? stepBimodal.separationC : 0,
+      microclimateUncertaintyC: bursaMicroclimateUncC,
+      runLockCount: stepConsistency.consecutiveRunLockCount,
+      stabilityGrade: stepConsistency.stabilityGrade,
+      hysteresisDamped: stepConsistency.hysteresisDamped,
+      freshnessStatus: liveDegradedCount > 0 ? "degraded" : "live",
+      degradedStreamCount: liveDegradedCount
+    });
+
     hourMetaByTime.set(timeStr, {
       activeModels: Math.max(1, stepDetCount),
       ensMembers: ensTempArr?.length ?? 0,
-      confidencePct: Math.max(
-        52,
-        Math.round(computeHybridConfidence(stepSpreadC, stepPressSpread) - leadHour * 0.08)
-      )
+      confidencePct: stepAccuracy.totalPct
     });
   }
 
@@ -2344,12 +2563,20 @@ export async function fetchWeatherBundle(
     const ensWetProbByIndex = new Map<number, number>();
     if (ensIndex.precipCols.length >= 8) {
       for (const idxVal of ensIndex.utcIndex.values()) {
-        const pRow = readEnsembleRow(ensIndex.precipCols, idxVal);
-        if (pRow && pRow.length > 0) {
-          ensWetProbByIndex.set(
-            idxVal,
-            (pRow.filter((v) => v >= 0.15).length / pRow.length) * 100
-          );
+        const pRowW = readEnsembleRowWithWeights(
+          ensIndex.precipCols,
+          ensIndex.precipColWeights,
+          idxVal
+        );
+        if (pRowW && pRowW.values.length > 0) {
+          let wWet = 0;
+          let wTot = 0;
+          for (let cIdx = 0; cIdx < pRowW.values.length; cIdx++) {
+            const w = pRowW.weights[cIdx] ?? 1;
+            wTot += w;
+            if (pRowW.values[cIdx] >= 0.15) wWet += w;
+          }
+          ensWetProbByIndex.set(idxVal, wTot > 0 ? (wWet / wTot) * 100 : 0);
         }
       }
     }
@@ -2399,10 +2626,27 @@ export async function fetchWeatherBundle(
         ensIndex.tempColWeights,
         eIdx
       );
-      const ensPrecipArr = readEnsembleRow(ensIndex.precipCols, eIdx);
-      const ensGustArr = readEnsembleRow(ensIndex.gustCols, eIdx);
-      const ensCapeArr = readEnsembleRow(ensIndex.capeCols, eIdx);
-      const ensGustStats = ensGustArr ? computeEnsembleDistStats(ensGustArr) : null;
+      const ensPrecipWeighted = readEnsembleRowWithWeights(
+        ensIndex.precipCols,
+        ensIndex.precipColWeights,
+        eIdx
+      );
+      const ensGustWeighted = readEnsembleRowWithWeights(
+        ensIndex.gustCols,
+        ensIndex.gustColWeights,
+        eIdx
+      );
+      const ensCapeWeighted = readEnsembleRowWithWeights(
+        ensIndex.capeCols,
+        ensIndex.capeColWeights,
+        eIdx
+      );
+      const ensPrecipArr = ensPrecipWeighted?.values ?? null;
+      const ensGustArr = ensGustWeighted?.values ?? null;
+      const ensCapeArr = ensCapeWeighted?.values ?? null;
+      const ensGustStats = ensGustWeighted
+        ? computeEnsembleDistStats(ensGustWeighted.values, ensGustWeighted.weights)
+        : null;
 
       const windowEnsProbs: number[] = [];
       if (eIdx !== undefined) {
@@ -3071,10 +3315,71 @@ export async function fetchWeatherBundle(
 
   const tempSpreadC = spreadOf(curTempSnap);
   const pressureSpreadHpa = spreadOf(curPressSnap);
-  const confidencePct =
-    activeModels.length >= 2
-      ? computeHybridConfidence(tempSpreadC, pressureSpreadHpa)
-      : 82;
+  const curDiurnalBin = Math.min(
+    3,
+    Math.max(0, Math.floor((((startLocalHour % 24) + 24) % 24) / 6))
+  );
+  const curEnsIdx = ensIndex.utcIndex.get(curUtcKey);
+  const curEnsTempWeighted = readEnsembleRowWithWeights(
+    ensIndex.tempCols,
+    ensIndex.tempColWeights,
+    curEnsIdx
+  );
+  const curEnsTempStats = curEnsTempWeighted
+    ? computeEnsembleDistStats(curEnsTempWeighted.values, curEnsTempWeighted.weights)
+    : null;
+  const curCalibratedSpreadC = computeCalibratedWeightedSpread({
+    snapshot: curTempSnap,
+    weights: mos.shortRangeWeights.temperature,
+    biases: Object.fromEntries(
+      CORE_MODEL_KEYS.map((k) => [
+        k,
+        mos.biases[k].tempPersistentBiasC +
+          mos.biases[k].tempTransientBiasC +
+          0.72 * mos.biases[k].tempDiurnalBiasC[curDiurnalBin]
+      ])
+    ),
+    ensembleIqr: curEnsTempStats ? curEnsTempStats.p75 - curEnsTempStats.p25 : null
+  });
+  const curCalibratedPressSpread = computeCalibratedWeightedSpread({
+    snapshot: curPressSnap,
+    weights: mos.shortRangeWeights.pressure,
+    biases: Object.fromEntries(
+      CORE_MODEL_KEYS.map((k) => [k, mos.biases[k].pressKalmanBiasHpa])
+    )
+  });
+  const curPrecipConsensusPrelim = computePrecipConsensus(curPrecipSnap);
+  const curStepConsistency = consistencyTrack[0];
+  const curAccuracyBreakdown = computeIntrinsicAccuracyIndex({
+    leadHours: 0,
+    activeModelCount: hybridStreamFailed ? 1 : activeModels.length,
+    ensembleMemberCount: curEnsTempWeighted?.values.length ?? ensIndex.memberCount,
+    verificationMode: mos.report.mode,
+    verifiedStationCount: mos.summary.stationCount,
+    matchedVerificationHours: mos.report.matchedHours,
+    nowcastKalmanGain: mos.anchor.tempKalmanGain,
+    bestTempUbRmseC: bestVerifiedTempUbRmseC,
+    isBursaEmosActive,
+    radarAvailable: radarNowcast.radarAvailable,
+    calibratedTempSpreadC: curCalibratedSpreadC,
+    calibratedPressureSpreadHpa: curCalibratedPressSpread,
+    wetModelFraction:
+      curPrecipConsensusPrelim.totalModels > 0
+        ? curPrecipConsensusPrelim.agreeingModels / curPrecipConsensusPrelim.totalModels
+        : null,
+    precipProbPct: hourly[0]?.precipProbability ?? 0,
+    precipSpreadMmHr: Math.max(
+      0,
+      curPrecipConsensusPrelim.maxMm - curPrecipConsensusPrelim.minMm
+    ),
+    microclimateUncertaintyC: bursaMicroclimateUncC,
+    runLockCount: curStepConsistency?.consecutiveRunLockCount,
+    stabilityGrade: curStepConsistency?.stabilityGrade,
+    hysteresisDamped: curStepConsistency?.hysteresisDamped,
+    freshnessStatus: liveDegradedCount > 0 ? "degraded" : "live",
+    degradedStreamCount: liveDegradedCount
+  });
+  const confidencePct = curAccuracyBreakdown.totalPct;
 
   const firstHourRaw = hourly[0];
   const secondHourRaw = hourly[1] ?? firstHourRaw;
@@ -3719,7 +4024,8 @@ export async function fetchWeatherBundle(
     let daySlrWeight = 0;
     let dayPeakHourSnowCm = -1;
     let dayDominantSnowQuality: SnowQualityLabelTr = "Yok";
-    let dayMinSnowLineM: number | null = null;
+    let dayWetMinSnowLineM: number | null = null;
+    let dayAnyMinSnowLineM: number | null = null;
     let dayMinSoilTempC = Infinity;
     let dayMinRoadTempC = Infinity;
     let dayIcingMax: RoadIcingRisk = "none";
@@ -3782,10 +4088,20 @@ export async function fetchWeatherBundle(
           dayDominantSnowQuality = hPt.snowQualityTr;
         }
         if (hPt.snowLineElevationM !== null && hPt.snowLineElevationM !== undefined) {
-          dayMinSnowLineM =
-            dayMinSnowLineM === null
+          dayAnyMinSnowLineM =
+            dayAnyMinSnowLineM === null
               ? hPt.snowLineElevationM
-              : Math.min(dayMinSnowLineM, hPt.snowLineElevationM);
+              : Math.min(dayAnyMinSnowLineM, hPt.snowLineElevationM);
+          const isHourMoistureRelevant =
+            isWetActiveSample(hPt.precipitation, hPt.airSnowCm) ||
+            hPt.precipProbability >= 20 ||
+            (hPt.airSnowProbPct ?? 0) >= 12;
+          if (isHourMoistureRelevant) {
+            dayWetMinSnowLineM =
+              dayWetMinSnowLineM === null
+                ? hPt.snowLineElevationM
+                : Math.min(dayWetMinSnowLineM, hPt.snowLineElevationM);
+          }
         }
         if (hPt.soilTempC !== undefined && hPt.soilTempC < dayMinSoilTempC) {
           dayMinSoilTempC = hPt.soilTempC;
@@ -3949,7 +4265,7 @@ export async function fetchWeatherBundle(
       snowSlrMean:
         daySlrWeight > 0 ? Number((daySlrWeightedSum / daySlrWeight).toFixed(1)) : undefined,
       snowQualityTr: dayDominantSnowQuality,
-      minSnowLineM: dayMinSnowLineM,
+      minSnowLineM: dayWetMinSnowLineM ?? dayAnyMinSnowLineM,
       minSoilTempC: Number.isFinite(dayMinSoilTempC) ? dayMinSoilTempC : undefined,
       minRoadTempC: Number.isFinite(dayMinRoadTempC) ? dayMinRoadTempC : undefined,
       icingRiskMax: dayIcingMax,
@@ -4002,6 +4318,16 @@ export async function fetchWeatherBundle(
   );
   const lowest15dSnowLineM = daily.reduce<number | null>((best, d) => {
     if (d.minSnowLineM === null || d.minSnowLineM === undefined) return best;
+    const isRelevantDay = isSnowLinePhysicallyRelevant({
+      snowLineElevationM: d.minSnowLineM,
+      baseElevationM: cityElevationM,
+      temperatureC: d.tempMin,
+      precipMmHr: d.precipSum / 6,
+      precipProbabilityPct: d.precipProbabilityMax,
+      airSnowProbPct: d.snowProbMaxPct,
+      snowpackDepthCm: d.maxSnowpackDepthCm
+    });
+    if (!isRelevantDay) return best;
     return best === null ? d.minSnowLineM : Math.min(best, d.minSnowLineM);
   }, null);
   const dekStatus15d = daily.reduce<DekSnowStatus>(
@@ -4238,11 +4564,35 @@ export async function fetchWeatherBundle(
       currentRadarRainMmHr: radarNowcast.currentRainRateMmHr,
       radarAdvectionSpeedKmh: radarNowcast.advectionSpeedKmH,
       radarAdvectionFromDeg: radarNowcast.advectionFromDeg,
+      nowcastSteps5Min: Array.isArray(radarNowcast?.steps5Min)
+        ? radarNowcast.steps5Min
+            .map((s) => {
+              const stepAny = s as RadarMinuteStep & {
+                offsetMin?: number;
+                dbz?: number;
+                rainMmHr?: number;
+                virga?: boolean;
+              };
+              const offsetMin = stepAny.offsetMinutes ?? stepAny.offsetMin ?? 0;
+              const dbzVal = stepAny.estimatedDbz ?? stepAny.dbz ?? 0;
+              const rainVal = stepAny.rainRateMmHr ?? stepAny.rainMmHr ?? 0;
+              const virgaVal = stepAny.virgaSuppressed ?? stepAny.virga ?? false;
+              return {
+                offsetMin,
+                dbz: Math.round(dbzVal * 10) / 10,
+                rainMmHr: Math.round(rainVal * 100) / 100,
+                virga: Boolean(virgaVal)
+              };
+            })
+            .filter((s) => s.offsetMin <= 30)
+            .slice(0, 7)
+        : undefined,
       bursaTier1Online: bursaMesh?.tier1OnlineCount ?? 0,
       ltbrIsolated: Boolean(isBursaDomain && (bursaMesh?.tier1OnlineCount ?? 0) > 0),
       marmaraSstC: marmaraSstBundle?.currentSstC ?? null,
       bimodalHoursResolved,
-      mgmDistrictMatched: mgmForecasts?.targetDistrict ?? null
+      mgmDistrictMatched: mgmForecasts?.targetDistrict ?? null,
+      accuracyBreakdown: curAccuracyBreakdown
     }
   };
 
@@ -4422,15 +4772,115 @@ export async function fetchWeatherBundle(
   return bundle;
 }
 
+export interface MultiModelFetchOptions {
+  id?: string;
+  name?: string;
+  admin1?: string;
+  country?: string;
+  elevation?: number;
+  timezone?: string;
+}
+
 export async function fetchMultiModelBundle(
-  lat: number,
-  lon: number
+  latOrLocation: number | GeoLocation,
+  maybeLon?: number,
+  options?: MultiModelFetchOptions
 ): Promise<MultiModelBundle> {
-  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  let rawInputLat: number;
+  let rawInputLon: number;
+  let canonicalLoc: GeoLocation;
+
+  if (typeof latOrLocation === "object" && latOrLocation !== null) {
+    rawInputLat = latOrLocation.lat;
+    rawInputLon = latOrLocation.lon;
+    canonicalLoc = normalizeCanonicalBursaLocation({
+      ...latOrLocation,
+      ...(options?.id !== undefined ? { id: options.id } : {}),
+      ...(options?.name !== undefined ? { name: options.name } : {}),
+      ...(options?.admin1 !== undefined ? { admin1: options.admin1 } : {}),
+      ...(options?.country !== undefined ? { country: options.country } : {}),
+      ...(options?.elevation !== undefined ? { elevation: options.elevation } : {}),
+      ...(options?.timezone !== undefined ? { timezone: options.timezone } : {})
+    });
+  } else {
+    rawInputLat = latOrLocation;
+    rawInputLon =
+      typeof maybeLon === "number" && Number.isFinite(maybeLon)
+        ? maybeLon
+        : DEFAULT_LOCATION.lon;
+
+    const isBareBursaCenter =
+      options !== undefined &&
+      !options.name &&
+      !options.id &&
+      (options.elevation === undefined ||
+        options.elevation === 100 ||
+        options.elevation === 155) &&
+      ((Math.abs(rawInputLat - BURSA_WMO_17116_LAT) <= 0.008 &&
+        Math.abs(rawInputLon - BURSA_WMO_17116_LON) <= 0.008) ||
+        (Math.abs(rawInputLat - 40.1885) <= 0.008 &&
+          Math.abs(rawInputLon - 29.061) <= 0.008) ||
+        (Math.abs(rawInputLat - 40.1956) <= 0.008 &&
+          Math.abs(rawInputLon - 29.0601) <= 0.008));
+
+    const candidateLoc: GeoLocation = {
+      id: options?.id ?? (isBareBursaCenter ? "bursa-tr" : ""),
+      name: options?.name ?? (isBareBursaCenter ? "Bursa" : ""),
+      admin1: options?.admin1,
+      country: options?.country ?? "",
+      lat: rawInputLat,
+      lon: rawInputLon,
+      elevation: options?.elevation,
+      timezone: options?.timezone
+    };
+    canonicalLoc =
+      options !== undefined
+        ? normalizeCanonicalBursaLocation(candidateLoc)
+        : candidateLoc;
+  }
+
+  const lat = canonicalLoc.lat;
+  const lon = canonicalLoc.lon;
+  const hasExplicitElev =
+    typeof canonicalLoc.elevation === "number" &&
+    Number.isFinite(canonicalLoc.elevation);
+  const elevRounded = hasExplicitElev
+    ? Math.round(canonicalLoc.elevation as number)
+    : undefined;
+
+  const key =
+    elevRounded !== undefined
+      ? `${lat.toFixed(3)},${lon.toFixed(3)},${elevRounded}`
+      : `${lat.toFixed(2)},${lon.toFixed(2)}`;
+
+  const attachIdentityMeta = (base: MultiModelBundle): MultiModelBundle => ({
+    ...base,
+    ...(elevRounded !== undefined
+      ? { elevation: elevRounded }
+      : base.elevation !== undefined
+        ? { elevation: base.elevation }
+        : {}),
+    ...(canonicalLoc.name
+      ? { name: canonicalLoc.name }
+      : base.name
+        ? { name: base.name }
+        : {}),
+    ...(canonicalLoc.admin1 !== undefined
+      ? { admin1: canonicalLoc.admin1 }
+      : base.admin1 !== undefined
+        ? { admin1: base.admin1 }
+        : {}),
+    ...(canonicalLoc.country
+      ? { country: canonicalLoc.country }
+      : base.country
+        ? { country: base.country }
+        : {})
+  });
+
   const nowMs = Date.now();
   const cached = modelCache.get(key);
   if (cached && cached.expiresAt > nowMs) {
-    return reanchorMultiModelBundleToNow(cached.value, nowMs, {
+    return reanchorMultiModelBundleToNow(attachIdentityMeta(cached.value), nowMs, {
       status: cached.value.freshness?.status ?? "live",
       sourceTier: cached.value.freshness?.sourceTier ?? "live",
       cachedAtMs: cached.cachedAtMs,
@@ -4441,23 +4891,40 @@ export async function fetchMultiModelBundle(
   const resolveStaleModels = (reason: string): MultiModelBundle | null => {
     const fallbackNow = Date.now();
     if (cached && cached.staleUntil > fallbackNow) {
-      return reanchorMultiModelBundleToNow(cached.value, fallbackNow, {
-        status: "stale",
-        sourceTier: "memory-stale",
-        cachedAtMs: cached.cachedAtMs,
-        staleReason: reason,
-        modelsRespondedCount: cached.value.freshness?.modelsRespondedCount
-      });
+      return reanchorMultiModelBundleToNow(
+        attachIdentityMeta(cached.value),
+        fallbackNow,
+        {
+          status: "stale",
+          sourceTier: "memory-stale",
+          cachedAtMs: cached.cachedAtMs,
+          staleReason: reason,
+          modelsRespondedCount: cached.value.freshness?.modelsRespondedCount
+        }
+      );
     }
-    const diskHit = getModelsSnapshotFromDisk(lat, lon, fallbackNow);
-    if (diskHit) {
-      return reanchorMultiModelBundleToNow(diskHit.models, fallbackNow, {
-        status: "stale",
-        sourceTier: "disk-stale",
-        cachedAtMs: diskHit.savedAtMs,
-        staleReason: reason,
-        modelsRespondedCount: diskHit.models.freshness?.modelsRespondedCount
-      });
+    const diskHit =
+      getModelsSnapshotFromDisk(lat, lon, fallbackNow) ??
+      (rawInputLat !== lat || rawInputLon !== lon
+        ? getModelsSnapshotFromDisk(rawInputLat, rawInputLon, fallbackNow)
+        : null);
+    if (
+      diskHit &&
+      (elevRounded === undefined ||
+        diskHit.models.elevation === undefined ||
+        Math.abs(diskHit.models.elevation - elevRounded) <= 150)
+    ) {
+      return reanchorMultiModelBundleToNow(
+        attachIdentityMeta(diskHit.models),
+        fallbackNow,
+        {
+          status: "stale",
+          sourceTier: "disk-stale",
+          cachedAtMs: diskHit.savedAtMs,
+          staleReason: reason,
+          modelsRespondedCount: diskHit.models.freshness?.modelsRespondedCount
+        }
+      );
     }
     return null;
   };
@@ -4465,15 +4932,19 @@ export async function fetchMultiModelBundle(
   const url = new URL("https://api.open-meteo.com/v1/forecast");
   url.searchParams.set("latitude", lat.toFixed(4));
   url.searchParams.set("longitude", lon.toFixed(4));
+  if (elevRounded !== undefined) {
+    url.searchParams.set("elevation", String(elevRounded));
+  }
+  url.searchParams.set("current", "temperature_2m");
   url.searchParams.set(
     "hourly",
     "temperature_2m,precipitation,wind_speed_10m,temperature_850hPa"
   );
   url.searchParams.set(
     "models",
-    "ecmwf_ifs,ecmwf_aifs025_single,icon_seamless,ukmo_seamless,meteofrance_seamless,gfs_seamless,gem_seamless,jma_seamless,ecmwf_ifs025"
+    "ecmwf_ifs,ecmwf_aifs025_single,icon_seamless,ukmo_seamless,meteofrance_seamless,gfs_seamless,gem_seamless,jma_seamless,ecmwf_ifs025,icon_global"
   );
-  url.searchParams.set("forecast_days", "15");
+  url.searchParams.set("forecast_days", "16");
   url.searchParams.set("timezone", "auto");
 
   const res = await fetchWithRetry(url.toString(), 11000, 1).catch(() => null);
@@ -4488,6 +4959,7 @@ export async function fetchMultiModelBundle(
   }
 
   const json = await res.json().catch(() => null);
+  const cur = json?.current ?? {};
   const h = json?.hourly ?? {};
   const times: string[] = Array.isArray(h.time) ? h.time : [];
   if (times.length === 0) {
@@ -4496,7 +4968,7 @@ export async function fetchMultiModelBundle(
     throw new Error("Open-Meteo multi-model payload empty");
   }
 
-  const resolvedTimezone = String(json.timezone ?? "UTC");
+  const resolvedTimezone = String(json.timezone ?? canonicalLoc.timezone ?? "UTC");
   const utcOffsetSeconds = Number(json.utc_offset_seconds ?? 0);
   const effectiveModelTz =
     resolvedTimezone === "UTC" && utcOffsetSeconds !== 0
@@ -4506,11 +4978,25 @@ export async function fetchMultiModelBundle(
     effectiveModelTz,
     utcOffsetSeconds
   );
-  const nowIso = modelTzResolver
-    .epochMsToLocalParts(Date.now())
-    .isoHour.slice(0, 13);
-  let startIdx = times.findIndex((t) => t >= nowIso);
-  if (startIdx < 0) startIdx = 0;
+
+  // Build sequential `prevUtcMs` chain so every `times[idx]` maps to a unique UTC timestamp across DST fall-back folds
+  const timesUtcMs: number[] = new Array(times.length);
+  for (let idx = 0; idx < times.length; idx++) {
+    const prevUtcMs = idx > 0 ? timesUtcMs[idx - 1] : undefined;
+    timesUtcMs[idx] = modelTzResolver
+      .localIsoToUtcDate(times[idx], prevUtcMs)
+      .getTime();
+  }
+
+  const curTimeRaw = typeof cur.time === "string" ? cur.time.trim() : "";
+  const startIdx = resolveDstSafeStartHourIndex({
+    times,
+    timesUtcMs,
+    curTimeRaw,
+    utcOffsetSeconds,
+    tzResolver: modelTzResolver,
+    nowEpochMs: Date.now()
+  });
 
   const originTodayYmd = times[startIdx].slice(0, 10);
   const endIdx = Math.min(startIdx + 360, times.length);
@@ -4520,16 +5006,23 @@ export async function fetchMultiModelBundle(
     useIfs025ForIfs = false
   ): ModelSeriesPoint[] => {
     const out: ModelSeriesPoint[] = [];
-    const ifsApiId = useIfs025ForIfs ? "ecmwf_ifs025" : "ecmwf_ifs";
     for (let i = startIdx; i < endIdx; i++) {
       const t = times[i];
+      const ifsVal = useIfs025ForIfs
+        ? (toFiniteNum(h[`${prefix}_ecmwf_ifs025`]?.[i]) ??
+          toFiniteNum(h[`${prefix}_ecmwf_ifs`]?.[i]))
+        : (toFiniteNum(h[`${prefix}_ecmwf_ifs`]?.[i]) ??
+          toFiniteNum(h[`${prefix}_ecmwf_ifs025`]?.[i]));
+      const iconVal =
+        toFiniteNum(h[`${prefix}_icon_seamless`]?.[i]) ??
+        toFiniteNum(h[`${prefix}_icon_global`]?.[i]);
       out.push({
         time: t,
         hourLabel: t.slice(11, 16),
         dayLabel: formatRelativeDayLabelTr(t.slice(0, 10), originTodayYmd, "plusDay"),
-        ecmwfIfs: toFiniteNum(h[`${prefix}_${ifsApiId}`]?.[i]),
+        ecmwfIfs: ifsVal,
         ecmwfAifs: toFiniteNum(h[`${prefix}_ecmwf_aifs025_single`]?.[i]),
-        icon: toFiniteNum(h[`${prefix}_icon_seamless`]?.[i]),
+        icon: iconVal,
         ukmo: toFiniteNum(h[`${prefix}_ukmo_seamless`]?.[i]),
         meteofrance: toFiniteNum(h[`${prefix}_meteofrance_seamless`]?.[i]),
         gfs: toFiniteNum(h[`${prefix}_gfs_seamless`]?.[i]),
@@ -4588,11 +5081,21 @@ export async function fetchMultiModelBundle(
 
   const savedMs = Date.now();
   const fetchedIso = new Date(savedMs).toISOString();
+  const resolvedElevation =
+    elevRounded !== undefined
+      ? elevRounded
+      : typeof json?.elevation === "number" && Number.isFinite(json.elevation)
+        ? Math.round(json.elevation)
+        : undefined;
 
   const bundle: MultiModelBundle = {
     fetchedAt: fetchedIso,
     lat,
     lon,
+    ...(resolvedElevation !== undefined ? { elevation: resolvedElevation } : {}),
+    ...(canonicalLoc.name ? { name: canonicalLoc.name } : {}),
+    ...(canonicalLoc.admin1 !== undefined ? { admin1: canonicalLoc.admin1 } : {}),
+    ...(canonicalLoc.country ? { country: canonicalLoc.country } : {}),
     timezone: resolvedTimezone,
     utcOffsetSeconds,
     freshness: buildFreshnessMeta(fetchedIso, savedMs, {
@@ -4717,8 +5220,6 @@ export function snapWindGridBounds(bounds: {
 }): { south: number; west: number; north: number; east: number; cacheKey: string } {
   const rawSouth = Math.max(-80, Math.min(80, bounds.south));
   const rawNorth = Math.max(-80, Math.min(80, bounds.north));
-  const rawWest = Math.max(-180, Math.min(180, bounds.west));
-  const rawEast = Math.max(-180, Math.min(180, bounds.east));
 
   const step = 0.25;
   const south = Math.max(-80, Math.floor(Math.min(rawSouth, rawNorth) / step) * step);
@@ -4727,10 +5228,28 @@ export function snapWindGridBounds(bounds: {
     north = Math.min(80, south + step);
   }
 
-  const west = Math.max(-180, Math.floor(Math.min(rawWest, rawEast) / step) * step);
-  let east = Math.min(180, Math.ceil(Math.max(rawWest, rawEast) / step) * step);
+  if (bounds.east > bounds.west && bounds.east <= 180 && bounds.west >= -180) {
+    const rawWest = Math.max(-180, Math.min(180, bounds.west));
+    const rawEast = Math.max(-180, Math.min(180, bounds.east));
+    const west = Math.max(-180, Math.floor(Math.min(rawWest, rawEast) / step) * step);
+    let east = Math.min(180, Math.ceil(Math.max(rawWest, rawEast) / step) * step);
+    if (east - west < step) {
+      east = Math.min(180, west + step);
+    }
+
+    const cacheKey = `${south.toFixed(2)},${west.toFixed(2)},${north.toFixed(2)},${east.toFixed(2)}`;
+    return { south, west, north, east, cacheKey };
+  }
+
+  const rawWest = Math.max(-180, Math.min(180, bounds.west));
+  const unwrappedEast =
+    bounds.east > 180
+      ? Math.min(540, bounds.east)
+      : Math.max(-180, Math.min(180, bounds.east)) + 360;
+  const west = Math.max(-180, Math.floor(rawWest / step) * step);
+  let east = Math.min(540, Math.ceil(unwrappedEast / step) * step);
   if (east - west < step) {
-    east = Math.min(180, west + step);
+    east = Math.min(540, west + step);
   }
 
   const cacheKey = `${south.toFixed(2)},${west.toFixed(2)},${north.toFixed(2)},${east.toFixed(2)}`;
@@ -4758,8 +5277,12 @@ export async function fetchWindGrid(bounds: {
     const lat = south + ((north - south) * r) / (rows - 1);
     for (let c = 0; c < cols; c++) {
       const lon = west + ((east - west) * c) / (cols - 1);
+      const wrappedLon =
+        lon >= -180 && lon <= 180
+          ? lon
+          : ((((lon + 180) % 360) + 360) % 360) - 180;
       lats.push(lat.toFixed(3));
-      lons.push(lon.toFixed(3));
+      lons.push(wrappedLon.toFixed(3));
     }
   }
 

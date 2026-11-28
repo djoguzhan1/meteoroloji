@@ -37,6 +37,7 @@ import {
   useWeatherStatus
 } from "@/context/WeatherContext";
 import { formatClockTr, formatFreshnessAgeTr } from "@/lib/forecast-resilience";
+import { buildLocationHref } from "@/lib/location-url";
 import { CORE_MODEL_META } from "@/lib/model-registry";
 import {
   resolveActiveTemporalView,
@@ -536,7 +537,7 @@ export default function HeroSceneView() {
       atmosUiSfx.playNavTick();
       el.scrollIntoView({ behavior: "smooth", block: "start" });
       if (typeof window !== "undefined" && window.history?.replaceState) {
-        window.history.replaceState(null, "", `#${targetId}`);
+        window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}#${targetId}`);
         if (typeof HashChangeEvent === "function") {
           window.dispatchEvent(new HashChangeEvent("hashchange"));
         }
@@ -594,7 +595,7 @@ export default function HeroSceneView() {
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-8">
       {/* KATMAN 1: HERO ÜST KOKPİT & 3D GÖKYÜZÜ ZAMAN KAYDIRICISI */}
-      <section className="flex min-h-[calc(100svh-8.5rem)] flex-col justify-between gap-6 py-2">
+      <section className="flex min-h-[calc(100svh-11.25rem-env(safe-area-inset-bottom,0px))] sm:min-h-[calc(100svh-9rem-env(safe-area-inset-bottom,0px))] lg:min-h-[calc(100svh-5.75rem)] flex-col justify-between gap-6 py-2">
         <div className="grid gap-7 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-end">
           {/* Sol: Konum, Odometre Sıcaklık ve Tekil Durum Çipleri */}
           <div className="atmos-enter-1 space-y-4">
@@ -840,7 +841,7 @@ export default function HeroSceneView() {
               </a>
 
               <Link
-                href="/lab"
+                href={buildLocationHref("/lab", activeLocation)}
                 className="atmos-btn rounded-lg border border-white/10 bg-[#080d18]/86 px-3 py-1.5 text-ink-secondary hover:text-ink-primary"
               >
                 {telemetry.temp850hPa !== null
@@ -1050,10 +1051,10 @@ export default function HeroSceneView() {
               <span>Saatlik meteogram, 7–30 günlük tahmin & doğrulama</span>
             </a>
             <div className="hidden sm:flex items-center gap-5">
-              <Link href="/world" className="hover:text-white transition-colors">
+              <Link href={buildLocationHref("/world", activeLocation)} className="hover:text-white transition-colors">
                 Canlı Radar & Küre →
               </Link>
-              <Link href="/lab" className="hover:text-white transition-colors">
+              <Link href={buildLocationHref("/lab", activeLocation)} className="hover:text-white transition-colors">
                 8-Model & Skew-T →
               </Link>
             </div>
@@ -1231,7 +1232,7 @@ export default function HeroSceneView() {
                 })}
               </span>
               <Link
-                href="/lab"
+                href={buildLocationHref("/lab", activeLocation)}
                 className="rounded-lg border border-white/15 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-ink-primary hover:bg-white/[0.1] transition-colors"
               >
                 8-Model 72s / 15g →

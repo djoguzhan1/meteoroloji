@@ -657,11 +657,26 @@ export type AtmosEngineMeta = {
   currentRadarRainMmHr?: number;
   radarAdvectionSpeedKmh?: number;
   radarAdvectionFromDeg?: number;
+  nowcastSteps5Min?: Array<{
+    offsetMin: number;
+    dbz: number;
+    rainMmHr: number;
+    virga: boolean;
+  }>;
   bursaTier1Online: number;
   ltbrIsolated: boolean;
   marmaraSstC?: number | null;
   bimodalHoursResolved?: number;
   mgmDistrictMatched?: string | null;
+  accuracyBreakdown?: {
+    totalPct: number;
+    sensorCalibrationPts: number;
+    modelEnsemblePts: number;
+    consensusSpreadPts: number;
+    runStabilityPts: number;
+    horizonCeilingPct: number;
+    calibratedSpreadC: number;
+  };
 };
 
 export type HybridMeta = {
@@ -723,6 +738,10 @@ export type MultiModelBundle = {
   fetchedAt: string;
   lat: number;
   lon: number;
+  elevation?: number;
+  name?: string;
+  admin1?: string;
+  country?: string;
   timezone?: string;
   utcOffsetSeconds?: number;
   freshness?: DataFreshnessMeta;
@@ -781,9 +800,14 @@ export type WeatherAlertRule = {
   id: string;
   cityId: string;
   cityName: string;
+  lat?: number;
+  lon?: number;
+  elevation?: number;
   metric: AlertMetric;
   operator: ">" | "<";
   threshold: number;
+  sourceUnit?: UnitSystem;
+  sourceValue?: number;
   enabled: boolean;
 };
 
@@ -847,15 +871,20 @@ export function isSnowLinePhysicallyRelevant(params: {
 }): boolean {
   const sl = params.snowLineElevationM;
   if (sl === null || sl === undefined || !Number.isFinite(sl)) return false;
+  // Zeminde aktif kar örtüsü veya anlamlı kar olasılığı varsa kar sınırı her zaman gösterilir
   if ((params.snowpackDepthCm ?? 0) >= 0.2) return true;
-  if ((params.airSnowProbPct ?? 0) >= 15) return true;
+  if ((params.airSnowProbPct ?? 0) >= 12) return true;
+
+  // Kupkuru (%0-15 olasılık, 0.00 mm) açık/güneşli saatlerde sadece hava soğuk diye yapay kar sınırı basılmaz!
+  const baseElev = Number.isFinite(params.baseElevationM) ? Number(params.baseElevationM) : 100;
+  const hasNearPrecip =
+    (params.precipMmHr ?? 0) >= PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM ||
+    (params.precipProbabilityPct ?? 0) >= 18;
+  if (!hasNearPrecip) return false;
+
   if (params.temperatureC <= 9.0) return true;
   if (params.temp850hPa !== null && params.temp850hPa !== undefined && params.temp850hPa <= 2.0) {
     return true;
   }
-  const baseElev = Number.isFinite(params.baseElevationM) ? Number(params.baseElevationM) : 100;
-  const hasNearPrecip =
-    (params.precipMmHr ?? 0) >= PRECIP_WETNESS_CONTRACT.WET_ACTIVE_MIN_MM ||
-    (params.precipProbabilityPct ?? 0) >= 20;
-  return hasNearPrecip && sl <= Math.max(2600, baseElev + 2200);
+  return sl <= Math.max(2600, baseElev + 2200);
 }

@@ -113,18 +113,19 @@ export function resolveAtmosRegime(input: {
  */
 function WeatherThemeSyncBase() {
   const { bundle, audioEnabled } = useWeatherData();
-  const { atmosphere, frameIndex } = useWeatherScrub();
+  const { atmosphere, frameIndex, temporalView } = useWeatherScrub();
 
   useEffect(() => {
     atmosUiSfx.setEnabled(audioEnabled);
   }, [audioEnabled]);
 
   useEffect(() => {
-    const activeHour = bundle && frameIndex > 0 ? bundle.hourly[frameIndex] : null;
-    const tempC = activeHour ? activeHour.temperature : bundle?.current.temperature ?? null;
-    const stormScore = activeHour
-      ? activeHour.stormScore ?? 0
-      : bundle?.storm?.score ?? bundle?.current.stormScore ?? 0;
+    const tempC = temporalView
+      ? temporalView.telemetry.temperature
+      : bundle?.current.temperature ?? null;
+    const stormScore = temporalView
+      ? temporalView.telemetry.stormScore
+      : bundle?.current.stormScore ?? 0;
 
     const regime = resolveAtmosRegime({
       isStorm: atmosphere.isStorm,
@@ -147,7 +148,7 @@ function WeatherThemeSyncBase() {
     root.style.setProperty("--atmos-rim-rgb", pal.rimRgb);
     root.style.setProperty("--atmos-glow", pal.glow);
     root.style.setProperty("--atmos-surface-tint", pal.surfaceTint);
-  }, [atmosphere, bundle, frameIndex]);
+  }, [atmosphere, bundle, frameIndex, temporalView]);
 
   // Zero-Reflow Delegated Pointer Spotlight (caches rects per active element; invalidates passively on scroll/resize)
   useEffect(() => {

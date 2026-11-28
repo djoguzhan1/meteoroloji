@@ -69,38 +69,83 @@ function weightedQuantile(sortedItems: Array<{ v: number; w: number }>, q: numbe
  * 212-üyeli gerçek AI+Fizik ensemble dizisinden (ECMWF ENS + AIFS-ENS + ICON-EPS + GEFS + GEM + UKMO)
  * dağılım istatistikleri ve eşik aşım olasılıklarını çıkarır.
  */
-export function computeEnsembleDistStats(values: number[]): EnsembleDistStats | null {
-  const clean = values.filter((v) => typeof v === "number" && Number.isFinite(v));
-  const n = clean.length;
-  if (n === 0) return null;
-  clean.sort((a, b) => a - b);
-
-  let sum = 0;
-  let ge01 = 0;
-  let ge2 = 0;
-  let ge5 = 0;
-  let ge15 = 0;
-  for (const v of clean) {
-    sum += v;
-    if (v >= 0.1) ge01++;
-    if (v >= 2.0) ge2++;
-    if (v >= 5.0) ge5++;
-    if (v >= 15.0) ge15++;
+export function computeEnsembleDistStats(
+  values: number[],
+  weights?: number[] | null
+): EnsembleDistStats | null {
+  const hasWeights = Boolean(weights && weights.length === values.length);
+  const pairs: Array<{ v: number; w: number }> = [];
+  for (let idx = 0; idx < values.length; idx++) {
+    const v = values[idx];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      const rawW = hasWeights ? weights![idx] : 1;
+      const w = typeof rawW === "number" && Number.isFinite(rawW) && rawW > 0 ? rawW : 1;
+      pairs.push({ v, w });
+    }
   }
+  const n = pairs.length;
+  if (n === 0) return null;
+  pairs.sort((a, b) => a.v - b.v);
+
+  if (!hasWeights) {
+    const clean = pairs.map((p) => p.v);
+    let sum = 0;
+    let ge01 = 0;
+    let ge2 = 0;
+    let ge5 = 0;
+    let ge15 = 0;
+    for (const v of clean) {
+      sum += v;
+      if (v >= 0.1) ge01++;
+      if (v >= 2.0) ge2++;
+      if (v >= 5.0) ge5++;
+      if (v >= 15.0) ge15++;
+    }
+    return {
+      count: n,
+      mean: sum / n,
+      p10: quantileSorted(clean, 0.1),
+      p25: quantileSorted(clean, 0.25),
+      p50: quantileSorted(clean, 0.5),
+      p75: quantileSorted(clean, 0.75),
+      p90: quantileSorted(clean, 0.9),
+      max: clean[n - 1],
+      probGe01: (ge01 / n) * 100,
+      probGe2: (ge2 / n) * 100,
+      probGe5: (ge5 / n) * 100,
+      probGe15: (ge15 / n) * 100
+    };
+  }
+
+  let wSum = 0;
+  let wValSum = 0;
+  let wGe01 = 0;
+  let wGe2 = 0;
+  let wGe5 = 0;
+  let wGe15 = 0;
+  for (const p of pairs) {
+    wSum += p.w;
+    wValSum += p.v * p.w;
+    if (p.v >= 0.1) wGe01 += p.w;
+    if (p.v >= 2.0) wGe2 += p.w;
+    if (p.v >= 5.0) wGe5 += p.w;
+    if (p.v >= 15.0) wGe15 += p.w;
+  }
+  const denom = wSum > 0 ? wSum : n;
 
   return {
     count: n,
-    mean: sum / n,
-    p10: quantileSorted(clean, 0.1),
-    p25: quantileSorted(clean, 0.25),
-    p50: quantileSorted(clean, 0.5),
-    p75: quantileSorted(clean, 0.75),
-    p90: quantileSorted(clean, 0.9),
-    max: clean[n - 1],
-    probGe01: (ge01 / n) * 100,
-    probGe2: (ge2 / n) * 100,
-    probGe5: (ge5 / n) * 100,
-    probGe15: (ge15 / n) * 100
+    mean: wValSum / denom,
+    p10: weightedQuantile(pairs, 0.1),
+    p25: weightedQuantile(pairs, 0.25),
+    p50: weightedQuantile(pairs, 0.5),
+    p75: weightedQuantile(pairs, 0.75),
+    p90: weightedQuantile(pairs, 0.9),
+    max: pairs[n - 1].v,
+    probGe01: (wGe01 / denom) * 100,
+    probGe2: (wGe2 / denom) * 100,
+    probGe5: (wGe5 / denom) * 100,
+    probGe15: (wGe15 / denom) * 100
   };
 }
 
@@ -119,6 +164,7 @@ export function fusePrecipitationHour({
   detSnapshot,
   detWeights,
   ensembleMembersMm,
+  ensembleMemberWeights = null,
   rawPrecipFallbackMm,
   rawPopFallbackPct,
   leadHour,
@@ -128,6 +174,7 @@ export function fusePrecipitationHour({
   detSnapshot: HybridModelSnapshot;
   detWeights: Record<CoreModelKey, number>;
   ensembleMembersMm: number[] | null;
+  ensembleMemberWeights?: number[] | null;
   rawPrecipFallbackMm: number;
   rawPopFallbackPct: number;
   leadHour: number;
@@ -162,7 +209,7 @@ export function fusePrecipitationHour({
 
   const eps =
     ensembleMembersMm && ensembleMembersMm.length >= 10
-      ? computeEnsembleDistStats(ensembleMembersMm)
+      ? computeEnsembleDistStats(ensembleMembersMm, ensembleMemberWeights)
       : null;
 
   let calibratedPop: number;
@@ -193,10 +240,21 @@ export function fusePrecipitationHour({
     pmmMm = 0;
   } else if (eps) {
     const matchedQ = Math.max(0.5, Math.min(0.92, 1 - 0.5 * Math.max(0.15, pFrac)));
-    const epsMatched = quantileSorted(
-      [...ensembleMembersMm!].filter((v) => Number.isFinite(v)).sort((a, b) => a - b),
-      matchedQ
+    const hasMemberWeights = Boolean(
+      ensembleMemberWeights && ensembleMemberWeights.length === ensembleMembersMm!.length
     );
+    const epsMatched = hasMemberWeights
+      ? weightedQuantile(
+          ensembleMembersMm!
+            .map((v, idx) => ({ v, w: ensembleMemberWeights![idx] ?? 1 }))
+            .filter((x) => Number.isFinite(x.v))
+            .sort((a, b) => a.v - b.v),
+          matchedQ
+        )
+      : quantileSorted(
+          [...ensembleMembersMm!].filter((v) => Number.isFinite(v)).sort((a, b) => a - b),
+          matchedQ
+        );
     const wetScale = Math.min(1, calibratedPop / 55);
     const highResAnchor = Math.max(detWeightedMean, quantileSorted(detVals, 0.65));
     pmmMm = wetScale * (highResAnchor * 0.58 + epsMatched * 0.42);

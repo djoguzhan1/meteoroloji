@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
@@ -19,7 +19,8 @@ import {
   X
 } from "lucide-react";
 import { useWeatherData } from "@/context/WeatherContext";
-import { GLOBE_CITIES } from "@/lib/weather-client";
+import { buildLocationHref } from "@/lib/location-url";
+import { formatElevation, GLOBE_CITIES } from "@/lib/weather-client";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import type { GeoLocation } from "@/lib/weather-types";
 
@@ -35,6 +36,9 @@ const ROUTE_ITEMS: PaletteItem[] = [
   { kind: "route", id: "r-lab", label: "Modeller & Sondaj", sub: "8-Model 72/168s karşılaştırma & 72s Skew-T", href: "/lab" },
   { kind: "route", id: "r-play", label: "CUMULUS · Bulut Savaşı", sub: "3D Süper Hücre & taktik fırtına oyunu", href: "/play" }
 ];
+
+const FOCUSABLE_SELECTOR =
+  'input:not([disabled]), button:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function RouteIcon({ href }: { href: string }) {
   if (href === "/world") return <Radar className="h-4 w-4 text-[var(--atmos-accent)]" />;
@@ -53,31 +57,118 @@ export default function CommandPalette({
 }) {
   const router = useRouter();
   const {
+    activeLocation,
     setActiveLocation,
     unit,
     setUnit,
     audioEnabled,
-    setAudioEnabled
+    setAudioEnabled,
+    gpsLoading,
+    gpsError,
+    requestGpsLocation
   } = useWeatherData();
 
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
   const [query, setQuery] = useState("");
   const [remoteCities, setRemoteCities] = useState<GeoLocation[]>([]);
   const [searching, setSearching] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
+  const handleClosePalette = useCallback(() => {
+    setQuery("");
+    onClose();
+  }, [onClose]);
+
+  // Açılışta önceki odaklanan elemanı sakla, kapanışta (veya unmount anında) odağı geri döndür
+  useEffect(() => {
+    if (open) {
+      if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+        previousFocusRef.current = document.activeElement;
+      }
+      atmosUiSfx.playPaletteOpen();
+      const t = window.setTimeout(() => inputRef.current?.focus(), 20);
+      return () => window.clearTimeout(t);
+    }
+
+    const prev = previousFocusRef.current;
+    if (prev && prev.isConnected) {
+      prev.focus();
+    }
+    previousFocusRef.current = null;
+  }, [open]);
+
+  useEffect(() => {
+    return () => {
+      const prev = previousFocusRef.current;
+      if (prev && prev.isConnected) {
+        prev.focus();
+      }
+      previousFocusRef.current = null;
+    };
+  }, []);
+
+  // Modal açıkken Tab / Shift+Tab odak tuzağı (focus trap) ve Escape ile kapatma
   useEffect(() => {
     if (!open) return;
-    atmosUiSfx.playPaletteOpen();
-    const t = window.setTimeout(() => inputRef.current?.focus(), 20);
-    return () => window.clearTimeout(t);
-  }, [open]);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleClosePalette();
+        return;
+      }
+      if (e.key !== "Tab") return;
+
+      const dialogEl = dialogRef.current;
+      if (!dialogEl) return;
+
+      const focusables = Array.from(
+        dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+      ).filter(
+        (el) =>
+          !el.hasAttribute("disabled") &&
+          el.getAttribute("aria-hidden") !== "true" &&
+          el.getClientRects().length > 0
+      );
+
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const activeEl = document.activeElement as HTMLElement | null;
+
+      if (e.shiftKey) {
+        if (!activeEl || !dialogEl.contains(activeEl) || activeEl === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (!activeEl || !dialogEl.contains(activeEl) || activeEl === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, handleClosePalette]);
 
   // Canlı şehir araması
   useEffect(() => {
     if (!open) return;
     const trimmed = query.trim();
-    if (trimmed.length < 2) return;
+    if (trimmed.length < 2) {
+      queueMicrotask(() => setSearching(false));
+      return;
+    }
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
@@ -93,7 +184,9 @@ export default function CommandPalette({
       } catch {
         // aborted
       } finally {
-        setSearching(false);
+        if (!controller.signal.aborted) {
+          setSearching(false);
+        }
       }
     }, 180);
 
@@ -109,8 +202,8 @@ export default function CommandPalette({
       {
         kind: "action",
         id: "a-gps",
-        label: "Mevcut GPS Konumumu Bul",
-        sub: "Tarayıcı konum servisiyle anlık istasyon",
+        label: gpsLoading ? "GPS Konumu Alınıyor..." : "Mevcut GPS Konumumu Bul",
+        sub: "Tarayıcı konum servisiyle yarış-korumalı anlık istasyon",
         action: "gps"
       },
       {
@@ -134,7 +227,12 @@ export default function CommandPalette({
         kind: "city",
         id: `c-${loc.id}`,
         label: loc.name,
-        sub: loc.country || "İstasyon",
+        sub: [
+          loc.elevation !== undefined ? formatElevation(loc.elevation, unit) : null,
+          loc.country || "İstasyon"
+        ]
+          .filter(Boolean)
+          .join(" · "),
         loc
       }));
       return [...ROUTE_ITEMS, ...quickCities, ...actions];
@@ -152,69 +250,51 @@ export default function CommandPalette({
       kind: "city",
       id: `rc-${loc.id}`,
       label: loc.name,
-      sub: [loc.admin1, loc.country].filter(Boolean).join(" · ") || "Konum",
+      sub:
+        [
+          loc.admin1,
+          loc.elevation !== undefined ? formatElevation(loc.elevation, unit) : null,
+          loc.country
+        ]
+          .filter(Boolean)
+          .join(" · ") || "Konum",
       loc
     }));
     return [...cityItems, ...matchedRoutes, ...matchedActions];
-  }, [query, remoteCities, unit, audioEnabled]);
+  }, [query, remoteCities, unit, audioEnabled, gpsLoading]);
 
   const clampedIdx = Math.max(0, Math.min(items.length - 1, activeIdx));
 
-  const executeItem = (item: PaletteItem) => {
+  useEffect(() => {
+    if (!open || items.length === 0) return;
+    itemRefs.current[clampedIdx]?.scrollIntoView?.({ block: "nearest" });
+  }, [open, clampedIdx, items.length]);
+
+  const executeItem = async (item: PaletteItem) => {
     if (item.kind === "route") {
       atmosUiSfx.playNavTick();
-      router.push(item.href);
-      setQuery("");
-      onClose();
+      router.push(buildLocationHref(item.href, activeLocation));
+      handleClosePalette();
       return;
     }
     if (item.kind === "city") {
       atmosUiSfx.playChime(true);
       setActiveLocation(item.loc);
-      setQuery("");
-      onClose();
+      handleClosePalette();
       return;
     }
     if (item.action === "unit") {
       setUnit(unit === "metric" ? "imperial" : "metric");
       atmosUiSfx.playNavTick();
-      onClose();
+      handleClosePalette();
     } else if (item.action === "audio") {
       setAudioEnabled(!audioEnabled);
-      onClose();
+      handleClosePalette();
     } else if (item.action === "gps") {
-      onClose();
-      if (typeof navigator !== "undefined" && navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          async (pos) => {
-            const lat = pos.coords.latitude;
-            const lon = pos.coords.longitude;
-            try {
-              const res = await fetch(
-                `/api/reverse-geocode?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`
-              );
-              const geo = res.ok ? await res.json() : { name: "Mevcut Konum", country: "" };
-              setActiveLocation({
-                id: `gps_${lat.toFixed(2)}_${lon.toFixed(2)}`,
-                name: geo.name || "Mevcut Konum",
-                admin1: geo.admin1,
-                country: geo.country || "",
-                lat,
-                lon
-              });
-            } catch {
-              setActiveLocation({
-                id: `gps_${lat.toFixed(2)}_${lon.toFixed(2)}`,
-                name: `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`,
-                country: "",
-                lat,
-                lon
-              });
-            }
-          },
-          () => {},
-          { timeout: 8000 }
-        );
+      atmosUiSfx.playNavTick();
+      const ok = await requestGpsLocation();
+      if (ok) {
+        handleClosePalette();
       }
     }
   };
@@ -226,12 +306,12 @@ export default function CommandPalette({
       className="fixed inset-0 z-[80] flex items-start justify-center bg-[#03060d]/76 px-4 pt-[10vh] sm:pt-[13vh] backdrop-blur-md"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
-          setQuery("");
-          onClose();
+          handleClosePalette();
         }
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="ATMOS Komut Merkezi"
@@ -239,7 +319,7 @@ export default function CommandPalette({
       >
         {/* Arama Satırı */}
         <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3.5">
-          <Search className="h-4 w-4 shrink-0 text-[var(--atmos-accent)]" />
+          <Search className="h-4 w-4 shrink-0 text-[var(--atmos-accent)]" aria-hidden="true" />
           <input
             ref={inputRef}
             type="text"
@@ -259,14 +339,11 @@ export default function CommandPalette({
                 );
               } else if (e.key === "Enter" && items[clampedIdx]) {
                 e.preventDefault();
-                executeItem(items[clampedIdx]);
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                setQuery("");
-                onClose();
+                void executeItem(items[clampedIdx]);
               }
             }}
             placeholder="Şehir ara, sekme değiştir veya komut çalıştır..."
+            aria-label="Komut ve istasyon ara"
             className="w-full bg-transparent text-sm text-ink-primary placeholder:text-ink-muted focus:outline-none"
           />
           {searching && (
@@ -276,16 +353,22 @@ export default function CommandPalette({
           )}
           <button
             type="button"
-            onClick={() => {
-              setQuery("");
-              onClose();
-            }}
+            onClick={handleClosePalette}
             aria-label="Komut merkezini kapat"
             className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-muted hover:text-ink-primary"
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
+
+        {gpsError && (
+          <p
+            role="alert"
+            className="border-b border-white/[0.08] bg-red-500/10 px-4 py-2 text-xs text-red-300"
+          >
+            {gpsError}
+          </p>
+        )}
 
         {/* Sonuç Listesi */}
         <div className="max-h-[54vh] overflow-y-auto p-2">
@@ -300,10 +383,14 @@ export default function CommandPalette({
                 return (
                   <li key={item.id}>
                     <button
+                      ref={(el) => {
+                        itemRefs.current[idx] = el;
+                      }}
                       type="button"
+                      disabled={item.kind === "action" && item.action === "gps" && gpsLoading}
                       onMouseEnter={() => setActiveIdx(idx)}
-                      onClick={() => executeItem(item)}
-                      className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-all ${
+                      onClick={() => void executeItem(item)}
+                      className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-all disabled:opacity-60 ${
                         active
                           ? "bg-white/[0.09] text-ink-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]"
                           : "text-ink-secondary hover:bg-white/[0.04]"
@@ -322,7 +409,11 @@ export default function CommandPalette({
                           ) : item.kind === "city" ? (
                             <MapPin className="h-4 w-4 text-[var(--atmos-accent)]" />
                           ) : item.action === "gps" ? (
-                            <LocateFixed className="h-4 w-4 text-signal-emerald" />
+                            <LocateFixed
+                              className={`h-4 w-4 text-signal-emerald ${
+                                gpsLoading ? "animate-spin" : ""
+                              }`}
+                            />
                           ) : item.action === "unit" ? (
                             <Thermometer className="h-4 w-4 text-signal-amber" />
                           ) : audioEnabled ? (
@@ -367,7 +458,7 @@ export default function CommandPalette({
             <Command className="h-3 w-3 text-[var(--atmos-accent)]" />
             <span>ATMOS Komut Merkezi</span>
           </span>
-          <span>↑↓ Seç · ↵ Uygula · ESC Kapat</span>
+          <span>↑↓ Seç · ↵ Uygula · Tab Odak · ESC Kapat</span>
         </div>
       </div>
     </div>

@@ -1,11 +1,24 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { ChevronDown, ChevronUp, Clock, Layers, RefreshCw } from "lucide-react";
 import { useWeatherData, useWeatherStatus } from "@/context/WeatherContext";
-import { analyzeConvectiveProfile } from "@/lib/thermo-cape";
-import { windDirectionToCompass } from "@/lib/weather-client";
+import {
+  analyzeConvectiveProfile,
+  classifyCapeRisk,
+  type ParcelMode
+} from "@/lib/thermo-cape";
+import {
+  formatElevation,
+  formatLapseRate,
+  formatPressure,
+  formatTempDelta,
+  formatTemperature,
+  windDirectionToCompass
+} from "@/lib/weather-client";
+import AnimatedNumber from "./AnimatedNumber";
+
 const ModelComparisonChart = dynamic(() => import("./ModelComparisonChart"), {
   loading: () => (
     <div className="surface-panel p-8 text-center font-mono text-xs text-ink-muted">
@@ -13,6 +26,7 @@ const ModelComparisonChart = dynamic(() => import("./ModelComparisonChart"), {
     </div>
   )
 });
+
 const SkewTCanvas = dynamic(() => import("./SkewTCanvas"), {
   ssr: false,
   loading: () => (
@@ -21,63 +35,187 @@ const SkewTCanvas = dynamic(() => import("./SkewTCanvas"), {
     </div>
   )
 });
-import AnimatedNumber from "./AnimatedNumber";
+
+const PARCEL_MODES: ReadonlyArray<{
+  mode: ParcelMode;
+  shortLabel: string;
+  capeTitle: string;
+  cinTitle: string;
+}> = [
+  {
+    mode: "mu",
+    shortLabel: "En Kararsız (MU)",
+    capeTitle: "MUCAPE",
+    cinTitle: "MUCIN"
+  },
+  {
+    mode: "sb",
+    shortLabel: "Yüzey (SB)",
+    capeTitle: "SBCAPE",
+    cinTitle: "SBCIN"
+  },
+  {
+    mode: "ml",
+    shortLabel: "Karışım (ML)",
+    capeTitle: "MLCAPE",
+    cinTitle: "MLCIN"
+  }
+];
 
 export default function CapeLabView() {
   const { bundle, activeLocation, unit } = useWeatherData();
   const { error, isStale, isOffline, loading, refreshWeather } = useWeatherStatus();
-  const [soundingPick, setSoundingPick] = useState<{ locId: string; idx: number }>({
+
+  const [labTimeState, setLabTimeState] = useState<{
+    locId: string;
+    iso: string | null;
+    source: "sounding" | "chart";
+  }>({
     locId: activeLocation.id,
-    idx: 0
+    iso: null,
+    source: "sounding"
   });
+  const [parcelMode, setParcelMode] = useState<ParcelMode>("mu");
   const [showRawTable, setShowRawTable] = useState(false);
 
-  const soundingIndex =
-    soundingPick.locId === activeLocation.id ? soundingPick.idx : 0;
-  const setSoundingIndex = (idx: number) =>
-    setSoundingPick({ locId: activeLocation.id, idx });
+  const activeLabTimeIso =
+    labTimeState.locId === activeLocation.id ? labTimeState.iso : null;
+  const activeTimeSource =
+    labTimeState.locId === activeLocation.id ? labTimeState.source : "sounding";
 
-  const maxSoundingIdx = useMemo(() => {
+  // Gerçek saatlik radyosonda kapsamı (canlıda 168s, localStorage çevrimdışı yedeğinde 24s olabilir)
+  const availableSoundingHours = useMemo(() => {
     if (!bundle) return 0;
-    const count = Math.min(
-      bundle.hourly.length,
-      bundle.hourlySoundings.length || 1
-    );
-    return Math.max(0, count - 1);
+    const hourlySoundingLen = bundle.hourlySoundings?.length ?? 0;
+    if (hourlySoundingLen > 0) {
+      return Math.min(bundle.hourly.length, hourlySoundingLen);
+    }
+    return bundle.sounding.length >= 2 && bundle.hourly.length > 0 ? 1 : 0;
   }, [bundle]);
 
-  const safeIdx = Math.max(0, Math.min(maxSoundingIdx, soundingIndex));
+  const maxSoundingIdx = useMemo(
+    () => Math.max(0, availableSoundingHours - 1),
+    [availableSoundingHours]
+  );
 
-  const selectedHour = bundle?.hourly[safeIdx] ?? null;
+  const requestedHourIdx = useMemo(() => {
+    if (!bundle || !activeLabTimeIso) return 0;
+    const exactIdx = bundle.hourly.findIndex((h) => h.time === activeLabTimeIso);
+    if (exactIdx !== -1) return exactIdx;
+    const prefix = activeLabTimeIso.slice(0, 13);
+    const prefixIdx = bundle.hourly.findIndex(
+      (h) => h.time.slice(0, 13) === prefix
+    );
+    return prefixIdx !== -1 ? prefixIdx : 0;
+  }, [bundle, activeLabTimeIso]);
+
+  const isClampedToSoundingCeiling =
+    availableSoundingHours > 0 && requestedHourIdx > maxSoundingIdx;
+
+  // ASLA sahte T+0 yaması yapılmaz; gerçek availableSoundingHours - 1 sınırına kenetlenir
+  const safeIdx = Math.max(0, Math.min(maxSoundingIdx, requestedHourIdx));
+  const activeHour = bundle?.hourly[safeIdx] ?? null;
+
+  const setSoundingHourByIdx = useCallback(
+    (idx: number) => {
+      if (!bundle) return;
+      const clamped = Math.max(0, Math.min(maxSoundingIdx, idx));
+      const targetIso = bundle.hourly[clamped]?.time ?? null;
+      setLabTimeState({
+        locId: activeLocation.id,
+        iso: targetIso,
+        source: "sounding"
+      });
+    },
+    [bundle, maxSoundingIdx, activeLocation.id]
+  );
+
+  const handleChartTimeSync = useCallback(
+    (iso: string | null) => {
+      if (!iso) return;
+      setLabTimeState({
+        locId: activeLocation.id,
+        iso,
+        source: "chart"
+      });
+    },
+    [activeLocation.id]
+  );
+
   const selectedLevels = useMemo(() => {
-    if (!bundle) return [];
-    const fromHourly = bundle.hourlySoundings[safeIdx];
-    if (fromHourly && fromHourly.length >= 2) return fromHourly;
-    return bundle.sounding;
-  }, [bundle, safeIdx]);
+    if (!bundle || availableSoundingHours === 0) return [];
+    if (bundle.hourlySoundings.length > 0) {
+      const levelsAtHour = bundle.hourlySoundings[safeIdx];
+      return levelsAtHour && levelsAtHour.length >= 2 ? levelsAtHour : [];
+    }
+    return safeIdx === 0 ? bundle.sounding : [];
+  }, [bundle, availableSoundingHours, safeIdx]);
+
+  const surfaceConditions = useMemo(() => {
+    if (!bundle) return null;
+    const isNow = safeIdx === 0;
+    return {
+      tempC: isNow
+        ? bundle.current.temperature
+        : (activeHour?.temperature ?? bundle.current.temperature),
+      humidity: isNow
+        ? bundle.current.humidity
+        : (activeHour?.humidity ?? bundle.current.humidity),
+      pressureHpa: isNow
+        ? bundle.current.pressure
+        : (activeHour?.pressure ?? bundle.current.pressure),
+      windSpeedKmh: isNow
+        ? bundle.current.windSpeed
+        : (activeHour?.windSpeed ?? bundle.current.windSpeed),
+      windDirection: isNow
+        ? bundle.current.windDirection
+        : (activeHour?.windDirection ?? bundle.current.windDirection)
+    };
+  }, [bundle, safeIdx, activeHour]);
 
   const analysis = useMemo(() => {
-    if (!bundle || selectedLevels.length < 2) return null;
-    const isNow = safeIdx === 0;
-    const surfaceTempC = isNow
-      ? bundle.current.temperature
-      : selectedHour?.temperature ?? bundle.current.temperature;
-    const surfaceHumidity = isNow
-      ? bundle.current.humidity
-      : selectedHour?.humidity ?? bundle.current.humidity;
-    const surfacePressureHpa = isNow
-      ? bundle.current.pressure
-      : selectedHour?.pressure ?? bundle.current.pressure;
-
+    if (!bundle || !surfaceConditions || selectedLevels.length < 2) return null;
     return analyzeConvectiveProfile({
-      surfaceTempC,
-      surfaceHumidity,
-      surfacePressureHpa,
+      surfaceTempC: surfaceConditions.tempC,
+      surfaceHumidity: surfaceConditions.humidity,
+      surfacePressureHpa: surfaceConditions.pressureHpa,
+      elevationM: bundle.location.elevation ?? activeLocation.elevation,
+      surfaceWindSpeedKmh: surfaceConditions.windSpeedKmh,
+      surfaceWindDirection: surfaceConditions.windDirection,
       levels: selectedLevels
     });
-  }, [bundle, safeIdx, selectedHour, selectedLevels]);
+  }, [bundle, activeLocation.elevation, surfaceConditions, selectedLevels]);
 
-  const quickJumps = [0, 3, 6, 12, 24, 36, 48, 60, 71].filter((h) => h <= maxSoundingIdx);
+  const quickJumps = useMemo(() => {
+    const base = [0, 6, 12, 24, 48, 72, 120, 167].filter(
+      (h) => h <= maxSoundingIdx
+    );
+    if (maxSoundingIdx > 0 && !base.includes(maxSoundingIdx)) {
+      base.push(maxSoundingIdx);
+    }
+    return base;
+  }, [maxSoundingIdx]);
+
+  const syncedChartIso =
+    activeTimeSource === "chart" && activeLabTimeIso
+      ? activeLabTimeIso
+      : (activeHour?.time ?? null);
+
+  const activeParcel = analysis ? analysis.parcels[parcelMode] : null;
+  const activeParcelMeta =
+    PARCEL_MODES.find((m) => m.mode === parcelMode) ?? PARCEL_MODES[0];
+  const activeParcelRisk = activeParcel
+    ? classifyCapeRisk(activeParcel.cape)
+    : null;
+
+  const bulkShearText = analysis
+    ? unit === "imperial"
+      ? `${Math.round(analysis.bulkShear06Kt * 1.15078)} mph (${analysis.bulkShear06Kt} kt)`
+      : `${Math.round(analysis.bulkShear06Kt * 1.852)} km/s (${analysis.bulkShear06Kt} kt)`
+    : "—";
+
+  const showOfflinePartialSoundingBadge =
+    availableSoundingHours > 0 && availableSoundingHours < 72;
 
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
@@ -87,20 +225,27 @@ export default function CapeLabView() {
           Modeller &amp; Sondaj
         </h1>
         <p className="mt-1 text-xs sm:text-sm text-ink-secondary">
-          {activeLocation.name} · 8 küresel ve mezoskaleli model karşılaştırması ile 72 saatlik Skew-T radyosonda
+          {activeLocation.name} · 8 küresel ve mezoskaleli model karşılaştırması ile{" "}
+          {availableSoundingHours > 0 ? availableSoundingHours : 168} saatlik gerçek basınçlı Skew-T radyosonda
         </p>
       </div>
 
-      {/* 1. Bölüm: Gerçek 72 Saatlik ECMWF / GFS / ICON Çoklu Model Karşılaştırması */}
-      <ModelComparisonChart location={activeLocation} unit={unit} />
+      {/* 1. Bölüm: Gerçek 8-Model Çoklu Ufuk Karşılaştırması (Çift Yönlü Zaman Senkronlu) */}
+      <ModelComparisonChart
+        location={activeLocation}
+        unit={unit}
+        syncedTimeIso={syncedChartIso}
+        onInspectTimeChange={handleChartTimeSync}
+      />
 
-      {/* 2. Bölüm: Gerçek 72 Saatlik Radyosonda (1000 → 300 hPa) */}
-      {!bundle || !analysis ? (
+      {/* 2. Bölüm: Gerçek Basınçlı Radyosonda (Psfc → 300 hPa) */}
+      {!bundle || !analysis || !activeParcel || !activeParcelRisk || !surfaceConditions ? (
         <div className="surface-panel p-8 text-center space-y-3">
           <p className="text-sm text-ink-secondary">
             {loading && !error
               ? `${activeLocation.name} için dikey sondaj profili hazırlanıyor...`
-              : (error ?? "Bu konum için kayıtlı sondaj önbelleği yok; bağlantı sağlandığında otomatik yüklenecek.")}
+              : (error ??
+                "Bu konum için kayıtlı sondaj önbelleği yok; bağlantı sağlandığında otomatik yüklenecek.")}
           </p>
           <button
             type="button"
@@ -112,29 +257,48 @@ export default function CapeLabView() {
         </div>
       ) : (
         <div className="space-y-5">
-          {/* 72 Saatlik Gerçek Sondaj Zaman Çubuğu */}
-          <div className="surface-panel p-4 sm:p-5 space-y-3">
+          {/* Gerçek Sondaj Zaman Çubuğu + Parsel Seçici */}
+          <div className="surface-panel p-4 sm:p-5 space-y-3.5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Clock className="h-4 w-4 text-signal-sky" />
                 <span className="font-display text-sm font-semibold text-ink-primary">
-                  {maxSoundingIdx + 1} Saatlik Gerçek Radyosonda Profili (1000 → 300 hPa)
+                  {availableSoundingHours} Saatlik Gerçek Radyosonda Profili (
+                  {formatPressure(analysis.surfacePressureHpa, unit)} →{" "}
+                  {formatPressure(300, unit)})
                 </span>
-                {(isStale || isOffline) && (
+                {showOfflinePartialSoundingBadge && (
+                  <span className="rounded-md border border-signal-amber/40 bg-signal-amber/15 px-2.5 py-0.5 font-mono text-[11px] text-amber-200 tabular">
+                    Çevrimdışı Önbellek · İlk {availableSoundingHours} Saat Radyosonda Mevcut
+                  </span>
+                )}
+                {(isStale || isOffline) && !showOfflinePartialSoundingBadge && (
                   <span className="rounded-md border border-signal-amber/35 bg-signal-amber/12 px-2 py-0.5 font-mono text-[10px] text-amber-200">
                     Arşiv Profili
                   </span>
                 )}
               </div>
+
               <div className="font-mono text-xs text-ink-secondary tabular">
                 {safeIdx === 0
-                  ? `Anlık (${selectedHour?.hourLabel ?? "--:--"})`
-                  : `+${safeIdx}s · ${selectedHour?.dayLabel ?? ""} ${selectedHour?.hourLabel ?? ""}`}
-                {" · "}Yüzey {Math.round(selectedHour?.temperature ?? bundle.current.temperature)}°C · %
-                {selectedHour?.humidity ?? bundle.current.humidity} ·{" "}
-                {selectedHour?.pressure ?? bundle.current.pressure} hPa
+                  ? `Anlık (${activeHour?.hourLabel ?? "--:--"})`
+                  : `+${safeIdx}s · ${activeHour?.dayLabel ?? ""} ${activeHour?.hourLabel ?? ""}`}
+                {" · "}Yüzey{" "}
+                {formatTemperature(surfaceConditions.tempC, unit, {
+                  decimals: 1,
+                  showUnit: true
+                })}{" "}
+                · %{Math.round(surfaceConditions.humidity)} · İstasyon{" "}
+                {formatPressure(analysis.surfacePressureHpa, unit)} (
+                {formatElevation(analysis.stationElevationM, unit)})
               </div>
             </div>
+
+            {isClampedToSoundingCeiling && (
+              <p className="rounded-lg border border-signal-sky/25 bg-signal-sky/10 px-3 py-1.5 font-mono text-[11px] text-sky-200 tabular">
+                Üst model grafiğinde +{requestedHourIdx}s inceleniyor; radyosonda dikey profili mevcut üst sınır olan +{maxSoundingIdx}s ({activeHour?.dayLabel} {activeHour?.hourLabel}) noktasına kenetlendi.
+              </p>
+            )}
 
             <div className="flex flex-wrap items-center gap-3">
               <input
@@ -142,7 +306,8 @@ export default function CapeLabView() {
                 min={0}
                 max={maxSoundingIdx}
                 value={safeIdx}
-                onChange={(e) => setSoundingIndex(Number(e.target.value))}
+                disabled={maxSoundingIdx === 0}
+                onChange={(e) => setSoundingHourByIdx(Number(e.target.value))}
                 aria-label="Radyosonda tahmin saati"
                 className="meteo-range flex-1 min-w-[200px]"
               />
@@ -151,7 +316,7 @@ export default function CapeLabView() {
                   <button
                     key={h}
                     type="button"
-                    onClick={() => setSoundingIndex(h)}
+                    onClick={() => setSoundingHourByIdx(h)}
                     className={`rounded-md border px-2 py-1 font-mono text-[11px] tabular transition-colors ${
                       safeIdx === h
                         ? "border-white/25 bg-white/15 text-ink-primary"
@@ -162,6 +327,48 @@ export default function CapeLabView() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Segmentli Parsel Seçici: Skew-T ve CAPE kartının üstünde ortak kontrol */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] pt-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-ink-muted">Parsel:</span>
+                <div
+                  role="group"
+                  aria-label="Konvektif parsel modu seçici"
+                  className="inline-flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-obsidian-950/80 p-1"
+                >
+                  {PARCEL_MODES.map((item) => {
+                    const selected = parcelMode === item.mode;
+                    return (
+                      <button
+                        key={item.mode}
+                        type="button"
+                        onClick={() => setParcelMode(item.mode)}
+                        className={`rounded-lg px-2.5 py-1 font-mono text-xs font-medium transition-colors ${
+                          selected
+                            ? "bg-white/15 text-ink-primary"
+                            : "text-ink-secondary hover:text-ink-primary"
+                        }`}
+                      >
+                        {item.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <span className="font-mono text-[11px] text-ink-muted tabular">
+                Kalkış: {formatPressure(activeParcel.startPressureHpa, unit)} ·{" "}
+                {formatTemperature(activeParcel.startTempC, unit, {
+                  decimals: 1,
+                  showUnit: true
+                })}{" "}
+                / Td{" "}
+                {formatTemperature(activeParcel.startDewPointC, unit, {
+                  decimals: 1,
+                  showUnit: true
+                })}
+              </span>
             </div>
           </div>
 
@@ -174,25 +381,26 @@ export default function CapeLabView() {
                     Termodinamik &amp; Fırtına Profili
                   </h2>
                   <span
-                    className={`rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${analysis.capeRisk.badgeClass}`}
+                    className={`rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${activeParcelRisk.badgeClass}`}
                   >
-                    Risk: {analysis.capeRisk.label}
+                    Risk: {activeParcelRisk.label}
                   </span>
                 </div>
 
-                {/* MUCAPE / SBCAPE / MLCAPE Göstergesi */}
+                {/* Seçili Parsel CAPE Göstergesi (MUCAPE / SBCAPE / MLCAPE) */}
                 <div className="surface-tile p-4 space-y-2.5">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                     <span className="font-mono text-xs uppercase tracking-wider text-ink-muted">
-                      MUCAPE
+                      {activeParcelMeta.capeTitle}
                     </span>
                     <span
                       className="font-mono text-3xl font-semibold tabular"
-                      style={{ color: analysis.capeRisk.color }}
+                      style={{ color: activeParcelRisk.color }}
                     >
-                      <AnimatedNumber value={analysis.mucape} />{" "}
+                      <AnimatedNumber value={activeParcel.cape} />{" "}
                       <span className="text-xs font-normal text-ink-muted">
-                        J/kg (SB {analysis.cape} · ML {analysis.mlcape})
+                        J/kg (MU {analysis.mucape} · SB {analysis.cape} · ML{" "}
+                        {analysis.mlcape})
                       </span>
                     </span>
                   </div>
@@ -200,8 +408,8 @@ export default function CapeLabView() {
                     <div
                       className="h-full rounded-full transition-all duration-300"
                       style={{
-                        width: `${Math.min(100, (Math.max(analysis.mucape, analysis.cape) / 3500) * 100)}%`,
-                        backgroundColor: analysis.capeRisk.color
+                        width: `${Math.min(100, (activeParcel.cape / 3500) * 100)}%`,
+                        backgroundColor: activeParcelRisk.color
                       }}
                     />
                   </div>
@@ -214,76 +422,110 @@ export default function CapeLabView() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-2 font-mono text-xs tabular">
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-2 font-mono text-xs tabular">
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">CIN / MUCIN</span>
+                    <span className="text-ink-muted">{activeParcelMeta.cinTitle}</span>
                     <p className="mt-0.5 text-base font-semibold text-signal-sky">
-                      {analysis.cin} <span className="text-[11px] font-normal">J/kg</span>
+                      {activeParcel.cin}{" "}
+                      <span className="text-[11px] font-normal">J/kg</span>
                     </p>
                     <span className="text-[10px] text-ink-muted">
-                      MU @{analysis.muParcelPressureHpa} hPa
+                      SB: {analysis.cin} · MU: {analysis.mucin} J/kg
                     </span>
                   </div>
+
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">0–3 km SRH</span>
-                    <p className="mt-0.5 text-base font-semibold text-signal-amber">
-                      {analysis.srh03} <span className="text-[11px] font-normal">m²/s²</span>
+                    <span className="text-ink-muted">İstasyon Basıncı (Psfc)</span>
+                    <p className="mt-0.5 text-base font-semibold text-emerald-300">
+                      {formatPressure(analysis.surfacePressureHpa, unit)}
                     </p>
-                    <span className="text-[10px] text-ink-muted">Bunkers Right</span>
+                    <span className="text-[10px] text-ink-muted">
+                      Rakım: {formatElevation(analysis.stationElevationM, unit)}
+                    </span>
                   </div>
+
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">Süper Hücre SCP</span>
+                    <span className="text-ink-muted">
+                      Donma Sınırı ({unit === "imperial" ? "32°F" : "0°C"})
+                    </span>
+                    <p className="mt-0.5 text-base font-semibold text-signal-sky">
+                      {formatElevation(analysis.freezingLevelM, unit)}
+                    </p>
+                    <span className="text-[10px] text-ink-muted">
+                      {analysis.freezingPressureHpa !== null
+                        ? formatPressure(analysis.freezingPressureHpa, unit)
+                        : "Kolon donma üstü"}
+                    </span>
+                  </div>
+
+                  <div className="surface-tile p-3">
+                    <span className="text-ink-muted">Süper Hücre SCP &amp; STP</span>
                     <p
                       className={`mt-0.5 text-base font-semibold ${
-                        analysis.scp >= 1 ? "text-signal-rose" : "text-ink-primary"
+                        analysis.scp >= 1 || analysis.stp >= 1
+                          ? "text-signal-rose"
+                          : "text-ink-primary"
                       }`}
                     >
-                      {analysis.scp.toFixed(2)}
+                      SCP {analysis.scp.toFixed(2)} · STP {analysis.stp.toFixed(1)}
                     </p>
                     <span className="text-[10px] text-ink-muted">
-                      {analysis.scp >= 1 ? "Mezosiklon eşiği" : "Düşük dönme"}
+                      0–1 km SRH: {analysis.srh01} · 0–3 km: {analysis.srh03} m²/s²
                     </span>
                   </div>
+
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">0–6 km Shear</span>
+                    <span className="text-ink-muted">0–6 km Kesme</span>
                     <p className="mt-0.5 text-base font-semibold text-signal-amber">
-                      {analysis.bulkShear06Kt} kt
-                    </p>
-                    <span className="text-[10px] text-ink-muted">1000→500 hPa</span>
-                  </div>
-                  <div className="surface-tile p-3">
-                    <span className="text-ink-muted">DCAPE / Islak Tw</span>
-                    <p className="mt-0.5 text-base font-semibold text-signal-sky">
-                      {analysis.dcape} <span className="text-[11px] font-normal">J/kg</span>
+                      {bulkShearText}
                     </p>
                     <span className="text-[10px] text-ink-muted">
-                      Tw {analysis.wetBulbC}°C
+                      {formatPressure(analysis.surfacePressureHpa, unit)} →{" "}
+                      {formatPressure(500, unit)}
                     </span>
                   </div>
+
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">Lifted Index</span>
+                    <span className="text-ink-muted">DCAPE / Islak Hazne Tw</span>
+                    <p className="mt-0.5 text-base font-semibold text-signal-sky">
+                      {analysis.dcape}{" "}
+                      <span className="text-[11px] font-normal">J/kg</span>
+                    </p>
+                    <span className="text-[10px] text-ink-muted">
+                      Tw{" "}
+                      {formatTemperature(analysis.wetBulbC, unit, {
+                        decimals: 1,
+                        showUnit: true
+                      })}
+                    </span>
+                  </div>
+
+                  <div className="surface-tile p-3">
+                    <span className="text-ink-muted">Lifted / Showalter</span>
                     <p
                       className="mt-0.5 text-base font-semibold"
                       style={{ color: analysis.liRisk.color }}
                     >
-                      {analysis.liftedIndex > 0
-                        ? `+${analysis.liftedIndex}`
-                        : analysis.liftedIndex}
+                      LI{" "}
+                      {formatTempDelta(analysis.liftedIndex, unit, {
+                        decimals: 1,
+                        signed: true,
+                        showUnit: true
+                      })}
                     </p>
-                    <span className="text-[10px] text-ink-muted">{analysis.liRisk.label}</span>
+                    <span className="text-[10px] text-ink-muted">
+                      SI{" "}
+                      {formatTempDelta(analysis.showalterIndex, unit, {
+                        decimals: 1,
+                        signed: true,
+                        showUnit: true
+                      })}{" "}
+                      · {analysis.liRisk.label}
+                    </span>
                   </div>
+
                   <div className="surface-tile p-3">
-                    <span className="text-ink-muted">K-Index</span>
-                    <p
-                      className="mt-0.5 text-base font-semibold"
-                      style={{ color: analysis.kRisk.color }}
-                    >
-                      {analysis.kIndex}
-                    </p>
-                    <span className="text-[10px] text-ink-muted">{analysis.kRisk.label}</span>
-                  </div>
-                  <div className="surface-tile p-3">
-                    <span className="text-ink-muted">500–1000 Kalınlık</span>
+                    <span className="text-ink-muted">700–500 Lapse &amp; Kalınlık</span>
                     <p
                       className={`mt-0.5 text-base font-semibold ${
                         analysis.thickness5001000Dam <= 540
@@ -291,43 +533,68 @@ export default function CapeLabView() {
                           : "text-ink-primary"
                       }`}
                     >
-                      {analysis.thickness5001000Dam} dam
+                      {formatLapseRate(analysis.lapseRate700500, unit)}
                     </p>
                     <span className="text-[10px] text-ink-muted">
-                      {analysis.thickness5001000Dam <= 540
-                        ? "≤540 Kar eşiği"
-                        : `Lapse ${analysis.lapseRate700500}°/km`}
+                      500–1000: {analysis.thickness5001000Dam} dam · K-Idx{" "}
+                      {analysis.kIndex}
                     </span>
                   </div>
                 </div>
               </div>
 
-              <p className="rounded-lg border border-white/[0.07] bg-obsidian-950/60 px-3 py-2 font-mono text-[11px] text-ink-secondary tabular">
-                LCL {analysis.lclHeightM} m · SI {analysis.showalterIndex > 0 ? `+${analysis.showalterIndex}` : analysis.showalterIndex} · TT {analysis.totalTotals} · SWEAT {analysis.sweatIndex} · Td {analysis.surfaceDewPointC}°C
-              </p>
+              <div className="rounded-lg border border-white/[0.07] bg-obsidian-950/60 px-3 py-2 font-mono text-[11px] text-ink-secondary tabular space-y-1">
+                <div>
+                  LCL {formatElevation(activeParcel.lclHeightM, unit)} (
+                  {formatPressure(activeParcel.lclPressureHpa, unit)}) · LFC{" "}
+                  {activeParcel.lfcPressureHpa !== null
+                    ? formatPressure(activeParcel.lfcPressureHpa, unit)
+                    : "Yok"}{" "}
+                  · EL{" "}
+                  {activeParcel.elPressureHpa !== null
+                    ? formatPressure(activeParcel.elPressureHpa, unit)
+                    : "Yok"}
+                </div>
+                <div>
+                  TT {analysis.totalTotals} · SWEAT {analysis.sweatIndex} · Yüzey Td{" "}
+                  {formatTemperature(analysis.surfaceDewPointC, unit, {
+                    decimals: 1,
+                    showUnit: true
+                  })}
+                </div>
+              </div>
             </div>
 
             {/* Sağ: Gerçek Skew-T Log-P Diyagramı */}
             <div className="surface-panel p-5 space-y-3">
-              <div className="flex items-start justify-between gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <h2 className="font-display text-base font-semibold text-ink-primary">
                     Skew-T Log-P Diyagramı
                   </h2>
                   <p className="text-xs text-ink-muted">
-                    Eğik izotermler · 1000 → 300 hPa dikey sondaj
+                    Eğik izotermler · {formatPressure(analysis.surfacePressureHpa, unit)} →{" "}
+                    {formatPressure(300, unit)} dikey sondaj &amp; WMO rüzgar barbları
                   </p>
                 </div>
                 <span className="font-mono text-xs text-signal-sky tabular">
-                  Yüzey Td: {analysis.surfaceDewPointC}°C
+                  Yüzey Td:{" "}
+                  {formatTemperature(analysis.surfaceDewPointC, unit, {
+                    decimals: 1,
+                    showUnit: true
+                  })}
                 </span>
               </div>
 
-              <SkewTCanvas analysis={analysis} />
+              <SkewTCanvas
+                analysis={analysis}
+                parcelMode={parcelMode}
+                unit={unit}
+              />
             </div>
           </div>
 
-          {/* 7 Basınç Seviyesi Ham Tablo (İsteğe Bağlı Katlanabilir) */}
+          {/* Gerçek Basınç Seviyeleri Dikey Ölçüm Tablosu (Katlanabilir) */}
           <div className="surface-panel p-4 sm:p-5 space-y-4">
             <button
               type="button"
@@ -336,7 +603,9 @@ export default function CapeLabView() {
             >
               <span className="flex items-center gap-2 font-display text-sm font-semibold text-ink-primary">
                 <Layers className="h-4 w-4 text-signal-sky" />
-                7 Basınç Seviyesi Dikey Ölçüm Tablosu (1000 → 300 hPa)
+                {analysis.levels.length} Seviyeli Dikey Radyosonda Tablosu (
+                {formatPressure(analysis.surfacePressureHpa, unit)} →{" "}
+                {formatPressure(300, unit)})
               </span>
               <span className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-ink-secondary">
                 <span>{showRawTable ? "Gizle" : "Göster"}</span>
@@ -350,13 +619,21 @@ export default function CapeLabView() {
 
             {showRawTable && (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[700px] text-left font-mono text-xs tabular">
+                <table className="w-full min-w-[740px] text-left font-mono text-xs tabular">
                   <thead>
                     <tr className="border-b border-white/10 text-ink-muted">
-                      <th className="py-2 pr-3 font-medium">Basınç</th>
-                      <th className="py-2 pr-3 font-medium">Rakım</th>
-                      <th className="py-2 pr-3 font-medium">T (°C)</th>
-                      <th className="py-2 pr-3 font-medium">Td (°C)</th>
+                      <th className="py-2 pr-3 font-medium">
+                        Basınç ({unit === "imperial" ? "inHg" : "hPa"})
+                      </th>
+                      <th className="py-2 pr-3 font-medium">
+                        İrtifa ({unit === "imperial" ? "ft" : "m"})
+                      </th>
+                      <th className="py-2 pr-3 font-medium">
+                        T ({unit === "imperial" ? "°F" : "°C"})
+                      </th>
+                      <th className="py-2 pr-3 font-medium">
+                        Td ({unit === "imperial" ? "°F" : "°C"})
+                      </th>
                       <th className="py-2 pr-3 font-medium">Nem</th>
                       <th className="py-2 pr-3 font-medium">Rüzgar</th>
                       <th className="py-2 pr-3 font-medium">w (g/kg)</th>
@@ -366,36 +643,62 @@ export default function CapeLabView() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.07]">
-                    {analysis.levels.map((lvl) => (
-                      <tr key={lvl.pressure} className="hover:bg-white/[0.025]">
-                        <td className="py-2.5 pr-3 font-semibold text-signal-sky">
-                          {lvl.pressure} hPa
-                        </td>
-                        <td className="py-2.5 pr-3 text-ink-muted">{lvl.altitudeM} m</td>
-                        <td className="py-2.5 pr-3 font-medium text-ink-primary">
-                          {lvl.temperature > 0 ? `+${lvl.temperature}` : lvl.temperature}°
-                        </td>
-                        <td className="py-2.5 pr-3 text-signal-emerald">
-                          {lvl.dewPoint > 0 ? `+${lvl.dewPoint}` : lvl.dewPoint}°
-                        </td>
-                        <td className="py-2.5 pr-3 text-ink-secondary">%{lvl.humidity}</td>
-                        <td className="py-2.5 pr-3 text-ink-secondary">
-                          {lvl.windSpeedKt} kt · {windDirectionToCompass(lvl.windDirection)}
-                        </td>
-                        <td className="py-2.5 pr-3 text-ink-secondary">
-                          {lvl.mixingRatioGKg}
-                        </td>
-                        <td className="py-2.5 pr-3 text-ink-secondary">
-                          {lvl.virtualTempK}
-                        </td>
-                        <td className="py-2.5 pr-3 text-ink-primary">
-                          {lvl.potentialTempK}
-                        </td>
-                        <td className="py-2.5 text-signal-amber">
-                          {lvl.equivPotentialTempK}
-                        </td>
-                      </tr>
-                    ))}
+                    {analysis.levels.map((lvl) => {
+                      const windCell =
+                        unit === "imperial"
+                          ? `${Math.round(lvl.windSpeedKt * 1.15078)} mph (${lvl.windSpeedKt} kt)`
+                          : `${Math.round(lvl.windSpeedKt * 1.852)} km/s (${lvl.windSpeedKt} kt)`;
+                      return (
+                        <tr
+                          key={lvl.isSurface ? `sfc-${lvl.pressure}` : `lvl-${lvl.pressure}`}
+                          className="hover:bg-white/[0.025]"
+                        >
+                          <td className="py-2.5 pr-3 font-semibold text-signal-sky">
+                            <span>{formatPressure(lvl.pressure, unit)}</span>
+                            {lvl.isSurface && (
+                              <span className="ml-1.5 inline-flex items-center rounded border border-emerald-400/35 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200">
+                                Yüzey
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 pr-3 text-ink-muted">
+                            {formatElevation(lvl.altitudeM, unit)}
+                          </td>
+                          <td className="py-2.5 pr-3 font-medium text-ink-primary">
+                            {formatTemperature(lvl.temperature, unit, {
+                              decimals: 1,
+                              signed: unit === "metric",
+                              showUnit: true
+                            })}
+                          </td>
+                          <td className="py-2.5 pr-3 text-signal-emerald">
+                            {formatTemperature(lvl.dewPoint, unit, {
+                              decimals: 1,
+                              signed: unit === "metric",
+                              showUnit: true
+                            })}
+                          </td>
+                          <td className="py-2.5 pr-3 text-ink-secondary">
+                            %{lvl.humidity}
+                          </td>
+                          <td className="py-2.5 pr-3 text-ink-secondary">
+                            {windCell} · {windDirectionToCompass(lvl.windDirection)}
+                          </td>
+                          <td className="py-2.5 pr-3 text-ink-secondary">
+                            {lvl.mixingRatioGKg}
+                          </td>
+                          <td className="py-2.5 pr-3 text-ink-secondary">
+                            {lvl.virtualTempK}
+                          </td>
+                          <td className="py-2.5 pr-3 text-ink-primary">
+                            {lvl.potentialTempK}
+                          </td>
+                          <td className="py-2.5 text-signal-amber">
+                            {lvl.equivPotentialTempK}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

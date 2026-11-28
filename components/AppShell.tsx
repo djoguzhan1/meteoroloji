@@ -22,6 +22,7 @@ import {
   VolumeX
 } from "lucide-react";
 import { useWeatherData, useWeatherScrub } from "@/context/WeatherContext";
+import { buildLocationHref } from "@/lib/location-url";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import CitySearch from "./CitySearch";
 import AtmosphereAudio from "./AtmosphereAudio";
@@ -97,11 +98,13 @@ const AtmosBrandMark = memo(function AtmosBrandMark() {
 const AtmosSkyAndAudioStage = memo(function AtmosSkyAndAudioStage({
   skipSkyBackdrop,
   audioEnabled,
-  muffled
+  muffled,
+  suspendAmbientAudio
 }: {
   skipSkyBackdrop: boolean;
   audioEnabled: boolean;
   muffled: boolean;
+  suspendAmbientAudio: boolean;
 }) {
   const { atmosphere } = useWeatherScrub();
   return (
@@ -116,6 +119,7 @@ const AtmosSkyAndAudioStage = memo(function AtmosSkyAndAudioStage({
         enabled={audioEnabled}
         volume={0.45}
         muffled={muffled}
+        suspended={suspendAmbientAudio}
       />
     </>
   );
@@ -148,6 +152,67 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteMounted, setPaletteMounted] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [searchOpenSources, setSearchOpenSources] = useState<{
+    desktop: boolean;
+    mobile: boolean;
+  }>({
+    desktop: false,
+    mobile: false
+  });
+
+  const handleDesktopSearchOpenChange = useCallback((open: boolean) => {
+    setSearchOpenSources((prev) =>
+      prev.desktop === open ? prev : { ...prev, desktop: open }
+    );
+  }, []);
+
+  const handleMobileSearchOpenChange = useCallback((open: boolean) => {
+    setSearchOpenSources((prev) =>
+      prev.mobile === open ? prev : { ...prev, mobile: open }
+    );
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      setSearchOpen(searchOpenSources.desktop || searchOpenSources.mobile);
+      return;
+    }
+
+    const mql = window.matchMedia("(min-width: 640px)");
+    const nextDesktop = mql.matches ? searchOpenSources.desktop : false;
+    const nextMobile = mql.matches ? false : searchOpenSources.mobile;
+    setSearchOpen(nextDesktop || nextMobile);
+  }, [searchOpenSources, setSearchOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const mql = window.matchMedia("(min-width: 640px)");
+    const handleViewportCrossing = (matchesDesktop: boolean) => {
+      setSearchOpenSources((prev) => {
+        const nextDesktop = matchesDesktop ? prev.desktop : false;
+        const nextMobile = matchesDesktop ? false : prev.mobile;
+        if (prev.desktop === nextDesktop && prev.mobile === nextMobile) {
+          return prev;
+        }
+        return { desktop: nextDesktop, mobile: nextMobile };
+      });
+    };
+
+    handleViewportCrossing(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => {
+      handleViewportCrossing(e.matches);
+    };
+
+    if (typeof mql.addEventListener === "function") {
+      mql.addEventListener("change", onChange);
+      return () => mql.removeEventListener("change", onChange);
+    }
+    mql.addListener(onChange);
+    return () => mql.removeListener(onChange);
+  }, []);
 
   const openPalette = useCallback(() => {
     setPaletteMounted(true);
@@ -218,6 +283,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   const skipSkyBackdrop = pathname === "/world" || pathname === "/play";
+  const suspendAmbientAudio = pathname === "/play";
   const activeMobileIdx = Math.max(
     0,
     NAV_TABS.findIndex((t) => t.href === pathname)
@@ -233,6 +299,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         skipSkyBackdrop={skipSkyBackdrop}
         audioEnabled={audioEnabled}
         muffled={searchOpen || paletteOpen}
+        suspendAmbientAudio={suspendAmbientAudio}
       />
 
       {/* İzole GPU Şimşek Yansıma Katmanı (0 DOM Recalculate Style!) */}
@@ -274,7 +341,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-4">
             <Link
-              href="/"
+              href={buildLocationHref("/", activeLocation)}
               className="group flex shrink-0 items-center gap-2 font-display text-base font-bold tracking-[0.14em] text-ink-primary"
             >
               <AtmosBrandMark />
@@ -312,7 +379,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 return (
                   <Link
                     key={href}
-                    href={href}
+                    href={buildLocationHref(href, activeLocation)}
                     ref={(el) => {
                       tabRefs.current[href] = el;
                     }}
@@ -338,7 +405,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <div className="w-52 xl:w-64">
               <CitySearch
                 onSelect={setActiveLocation}
-                onOpenChange={setSearchOpen}
+                onOpenChange={handleDesktopSearchOpenChange}
                 placeholder={`${activeLocation.name} · Şehir ara...`}
               />
             </div>
@@ -379,11 +446,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 atmosUiSfx.playNavTick();
                 setUnit(unit === "metric" ? "imperial" : "metric");
               }}
-              aria-label="Sıcaklık birimini değiştir"
+              aria-label={
+                unit === "metric"
+                  ? "Sıcaklık birimi Santigrat, Fahrenheit yapmak için tıklayın"
+                  : "Sıcaklık birimi Fahrenheit, Santigrat yapmak için tıklayın"
+              }
               title="Birim değiştir (°C / °F)"
               className="atmos-btn relative flex h-9 w-10 items-center justify-center rounded-xl border border-white/12 bg-[#070d19]/75 font-mono text-xs font-semibold text-ink-primary"
             >
-              <span className="block h-[18px] overflow-hidden">
+              <span aria-hidden="true" className="block h-[18px] overflow-hidden">
                 <span
                   className="flex flex-col items-center transition-transform duration-300"
                   style={{
@@ -403,14 +474,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <div className="px-4 pb-2.5 sm:hidden">
           <CitySearch
             onSelect={setActiveLocation}
-            onOpenChange={setSearchOpen}
+            onOpenChange={handleMobileSearchOpenChange}
             placeholder={`${activeLocation.name} · Şehir ara...`}
           />
         </div>
       </header>
 
       {/* İrtifa-Kayması Sayfa Geçiş Sahnesi (Mobil çift satırlı üst bar ve alt bar için çakışmasız boşluk) */}
-      <main className="relative z-10 pb-28 pt-[110px] sm:pt-[74px] lg:pb-16">
+      <main className="relative z-10 pb-[calc(6.25rem+env(safe-area-inset-bottom,0px))] pt-[110px] sm:pt-[74px] lg:pb-16">
         <ForecastFreshnessBanner />
         <RouteTransitionStage>{children}</RouteTransitionStage>
       </main>
@@ -442,7 +513,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             return (
               <Link
                 key={href}
-                href={href}
+                href={buildLocationHref(href, activeLocation)}
                 className={`flex min-h-[46px] flex-col items-center justify-center gap-1 rounded-xl px-1 text-[10px] sm:text-xs font-medium leading-none transition-all ${
                   active
                     ? "bg-white/[0.09] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]"

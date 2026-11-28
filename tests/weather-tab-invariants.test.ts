@@ -13,6 +13,7 @@ import { buildHourlyDayGroups, detectSynopticEvents } from "../lib/hourly-meteog
 import {
   diagnoseFallingSnowAtPoint,
   reconcileNowLightningWithRadar,
+  simulateCoupledSnowTimeline,
   solveBourgouinSnowLine
 } from "../lib/snow-and-lightning-engine";
 import {
@@ -1198,6 +1199,334 @@ describe("ATMOS v5.0 — Hava Sekmesi 10/10 Değişmezlik & Hibrit Ekran Kalkan�
       expect(dailySrc).toContain("minmax(44px,1fr)");
       expect(dailySrc).toContain("sm:grid-cols-[88px_28px_44px_minmax(68px,1fr)_auto]");
       expect(dailySrc).toContain("min-w-[44px] sm:min-w-[68px]");
+    });
+  });
+
+  describe("I-7: Kar Sınırı ↔ Hava Gerçeği, Kar ↔ Derece/Tw ve Merkez (100m) ↔ Zirve (1850m) Çelişkisizlik Kalkanı", () => {
+    it("1) Kar sınırı ↔ hava gerçeği: kupkuru soğuk/güneşli saatte kar sınırı gizlenir; yağmur fazında kar sınırı asla istasyon rakımının altına inmez", () => {
+      // Kupkuru -2°C veya +6.5°C açık gökyüzü (0 mm, %5 PoP, zemin örtüsü 0 cm) -> hayalet kar sınırı basılmaz!
+      expect(
+        isSnowLinePhysicallyRelevant({
+          snowLineElevationM: 0,
+          baseElevationM: 100,
+          temperatureC: -2.0,
+          temp850hPa: -8.0,
+          precipMmHr: 0,
+          precipProbabilityPct: 5,
+          airSnowProbPct: 0,
+          snowpackDepthCm: 0
+        })
+      ).toBe(false);
+
+      expect(
+        isSnowLinePhysicallyRelevant({
+          snowLineElevationM: 1350,
+          baseElevationM: 100,
+          temperatureC: 6.5,
+          temp850hPa: -1.0,
+          precipMmHr: 0,
+          precipProbabilityPct: 8,
+          airSnowProbPct: 0,
+          snowpackDepthCm: 0
+        })
+      ).toBe(false);
+
+      // Zeminde kar örtüsü varsa (3.5 cm) kuru soğukta da kar sınırı anlamlı kalır
+      expect(
+        isSnowLinePhysicallyRelevant({
+          snowLineElevationM: 0,
+          baseElevationM: 100,
+          temperatureC: -2.0,
+          temp850hPa: -8.0,
+          precipMmHr: 0,
+          precipProbabilityPct: 5,
+          airSnowProbPct: 0,
+          snowpackDepthCm: 3.5
+        })
+      ).toBe(true);
+
+      // Sığ ılık sınır tabakası: Bursa Merkez (100 m), T = +3.2°C, RH = %85 (Tw ~ +2.1°C), 0°C sınırı 340 m
+      // İstasyon rakımında saf yağmur (rain) yağarken kar sınırı ASLA 100 m'nin altına düşemez!
+      const shallowWarmRain = solveBourgouinSnowLine({
+        elevationM: 100,
+        surfaceTempC: 3.2,
+        surfaceRhPct: 85,
+        precipMmHr: 2.0,
+        freezingLevelM: 340,
+        temp850hPa: -4.5
+      });
+      expect(shallowWarmRain.columnPhase).toBe("rain");
+      expect(shallowWarmRain.snowLineElevationM).toBeGreaterThan(100);
+    });
+
+    it("2) Kar ↔ Derece (T vs Tw & kuru soğuk): +2.6°C kuru havada (Tw < 0°C) kar yağar, +3.2°C nemli havada yağmur yağar; -3°C kuru soğuk asla 'Sıcak Profil' olarak etiketlenmez", () => {
+      // +2.6°C kuru hava (RH %42 -> Tw ~ -0.4°C): termometre +2.6°C olsa bile ıslak hazne <= 0°C olduğundan saf kar iner
+      const dryColdAirBourgouin = solveBourgouinSnowLine({
+        elevationM: 100,
+        surfaceTempC: 2.6,
+        surfaceRhPct: 42,
+        precipMmHr: 1.8,
+        freezingLevelM: 480,
+        temp850hPa: -6.0
+      });
+      expect(dryColdAirBourgouin.columnPhase).toBe("snow");
+      expect(dryColdAirBourgouin.snowLineElevationM).toBeLessThanOrEqual(100);
+
+      const dryColdSnowDiag = diagnoseFallingSnowAtPoint({
+        tempC: 2.6,
+        rhPct: 42,
+        wetBulbC: -0.4,
+        precipMmHr: 1.8,
+        precipProbPct: 85,
+        rawModelSnowfallCm: 1.5,
+        bourgouin: dryColdAirBourgouin,
+        basePhase: "snow",
+        slr: 11
+      });
+      expect(dryColdSnowDiag.refinedPhase).toBe("snow");
+      expect(dryColdSnowDiag.airSnowCm).toBeGreaterThan(1.0);
+
+      // +3.2°C nemli hava (RH %92 -> Tw ~ +2.7°C): 0.0 cm kar, %100 yağmur
+      const humidWarmDiag = diagnoseFallingSnowAtPoint({
+        tempC: 3.2,
+        rhPct: 92,
+        wetBulbC: 2.7,
+        precipMmHr: 2.5,
+        precipProbPct: 90,
+        rawModelSnowfallCm: 0,
+        bourgouin: solveBourgouinSnowLine({
+          elevationM: 100,
+          surfaceTempC: 3.2,
+          surfaceRhPct: 92,
+          precipMmHr: 2.5,
+          freezingLevelM: 620,
+          temp850hPa: -2.0
+        }),
+        basePhase: "rain",
+        slr: 10
+      });
+      expect(humidWarmDiag.refinedPhase).toBe("rain");
+      expect(humidWarmDiag.airSnowCm).toBe(0);
+
+      // -3°C kupkuru kış gününde SnowAndLightningObservatory asla "Sıcak Profil" demez!
+      const dryFreezeBundle = makeTestWeatherBundle();
+      dryFreezeBundle.daily = dryFreezeBundle.daily.map((d) => ({
+        ...d,
+        tempMin: -3.5,
+        tempMax: 2.0,
+        precipSum: 0,
+        precipProbabilityMax: 5,
+        snowProbMaxPct: 0,
+        airSnowSumCm: 0,
+        groundSnowSumCm: 0,
+        roadSnowSumCm: 0,
+        maxSnowpackDepthCm: 0,
+        minSnowLineM: 0
+      }));
+      dryFreezeBundle.hourly[0] = {
+        ...dryFreezeBundle.hourly[0],
+        temperature: -3.0,
+        wetBulbC: -4.2,
+        precipitation: 0,
+        precipProbability: 5,
+        airSnowCm: 0,
+        airSnowProbPct: 0,
+        snowpackDepthCm: 0,
+        snowLineElevationM: 0
+      };
+
+      const dryColdHtml = renderToStaticMarkup(
+        React.createElement(SnowAndLightningObservatory, {
+          cityName: "Bursa",
+          daily: dryFreezeBundle.daily,
+          hourly: dryFreezeBundle.hourly.slice(0, 48),
+          summary: {
+            ...dryFreezeBundle.snowAndLightning!,
+            referenceElevationM: 100,
+            total15dAirSnowCm: 0,
+            total15dGroundSnowCm: 0,
+            total15dRoadSnowCm: 0,
+            lowest15dSnowLineM: null
+          },
+          selectedHourIndex: 0,
+          unit: "metric",
+          defaultExpanded: true
+        })
+      );
+      expect(dryColdHtml).toContain("Yağışsız Kuru Soğuk Profil");
+      expect(dryColdHtml).not.toContain("Sıcak Profil");
+    });
+
+    it("3) Merkez (100 m) ↔ Zirve (1850 m): Bursa Merkez'de zirve-only kar şeridi ve Uludağ seçildiğinde 'Seçili Zirve (1850 m)' + ovada yağmur ayrımı kusursuz çalışır", () => {
+      const centerBundle = makeTestWeatherBundle();
+      // Bursa Merkez (100 m): merkezde 0 cm kar, Uludağ Zirve (1850 m) bandında 14.5 cm kar
+      centerBundle.daily[0] = {
+        ...centerBundle.daily[0],
+        airSnowSumCm: 0,
+        groundSnowSumCm: 0,
+        snowProbMaxPct: 5,
+        elevationSnowBands: [
+          {
+            id: "coast",
+            labelTr: "Mudanya / Kıyı",
+            elevationM: 15,
+            tempMeanC: 7.4,
+            wetBulbMeanC: 5.9,
+            precipPhase: "rain",
+            snowProbPct: 0,
+            airSnowCm: 0,
+            groundSnowCm: 0,
+            roadSnowCm: 0,
+            maxSnowpackCm: 0,
+            slr: 0,
+            snowQualityTr: "Yok"
+          },
+          {
+            id: "center",
+            labelTr: "Bursa Merkez (17116 · Ova)",
+            elevationM: 100,
+            tempMeanC: 6.8,
+            wetBulbMeanC: 5.3,
+            precipPhase: "rain",
+            snowProbPct: 2,
+            airSnowCm: 0,
+            groundSnowCm: 0,
+            roadSnowCm: 0,
+            maxSnowpackCm: 0,
+            slr: 0,
+            snowQualityTr: "Yok"
+          },
+          {
+            id: "foothill",
+            labelTr: "Çekirge – İnkaya Yamaç",
+            elevationM: 550,
+            tempMeanC: 3.9,
+            wetBulbMeanC: 2.8,
+            precipPhase: "rain",
+            snowProbPct: 12,
+            airSnowCm: 0,
+            groundSnowCm: 0,
+            roadSnowCm: 0,
+            maxSnowpackCm: 0,
+            slr: 0,
+            snowQualityTr: "Yok"
+          },
+          {
+            id: "summit",
+            labelTr: "Uludağ Oteller / Zirve",
+            elevationM: 1850,
+            tempMeanC: -3.8,
+            wetBulbMeanC: -4.2,
+            precipPhase: "snow",
+            snowProbPct: 94,
+            airSnowCm: 14.5,
+            groundSnowCm: 12.2,
+            roadSnowCm: 9.8,
+            maxSnowpackCm: 12.2,
+            slr: 14.2,
+            snowQualityTr: "Kristal Toz Kar"
+          }
+        ]
+      };
+
+      const centerHtml = renderToStaticMarkup(
+        React.createElement(SnowAndLightningObservatory, {
+          cityName: "Bursa",
+          daily: centerBundle.daily,
+          hourly: centerBundle.hourly.slice(0, 48),
+          summary: {
+            ...centerBundle.snowAndLightning!,
+            referenceElevationM: 100,
+            hasAnySnow15d: true,
+            total15dAirSnowCm: 0,
+            total15dGroundSnowCm: 0,
+            total15dRoadSnowCm: 0
+          },
+          focusedDate: centerBundle.daily[0].date,
+          selectedHourIndex: 0,
+          unit: "metric",
+          defaultExpanded: true
+        })
+      );
+      expect(centerHtml).toContain("15 Gün Seçili Merkez (100 m) Havada:");
+      expect(centerHtml).toContain("Zirve (1850 m):");
+      expect(centerHtml).toContain("Seçili Merkez (100 m) için kar beklenmiyor");
+      expect(centerHtml).toContain("Uludağ Oteller / Zirve · 1850 m");
+
+      // Uludağ (1850 m) seçildiğinde: asla "Merkez Havada" yazmaz; "Seçili Zirve (1850 m)" yazar
+      // ve simülasyonda aşağıya projekte edilen 100 m Bursa Merkez bandı (+6.8°C) 0 cm kar (rain) alır!
+      const uludagSim = simulateCoupledSnowTimeline({
+        hours: [
+          {
+            timeIso: "2026-12-22T12:00",
+            dateYmd: "2026-12-22",
+            leadHour: 0,
+            elevationM: 1850,
+            lat: 40.107,
+            lon: 29.129,
+            temp2mC: -3.8,
+            rh2mPct: 94,
+            wetBulbC: -4.1,
+            windSpeedKmh: 34,
+            windGustsKmh: 52,
+            windDirDeg: 25,
+            cloudCoverPct: 98,
+            solarElevationDeg: 22,
+            shortwaveWm2: 85,
+            precipMmHr: 3.6,
+            precipP90MmHr: 4.9,
+            precipProbPct: 95,
+            rawModelSnowfallCm: 4.5,
+            precipPhase: "snow",
+            freezingLevelM: 0, // Model arazisi altında 0 m dönse bile ovada (+7°C) kar üretmemeli!
+            temp850hPa: -1.2,
+            lapseRateCPerKm: 6.2,
+            capeJkg: 30,
+            seaSurfaceTempC: 11.2
+          }
+        ]
+      });
+
+      const uludagHour = uludagSim[0];
+      expect(uludagHour.airSnowCm).toBeGreaterThan(3.5);
+      const summitBand = uludagHour.elevationBands.find((b) => b.id === "summit");
+      const valleyCenterBand = uludagHour.elevationBands.find((b) => b.id === "center");
+      expect(summitBand?.elevationM).toBe(1850);
+      expect(summitBand?.airSnowCm).toBe(uludagHour.airSnowCm);
+      expect(valleyCenterBand?.elevationM).toBe(100);
+      expect(valleyCenterBand?.tempMeanC).toBeGreaterThan(5.0);
+      expect(valleyCenterBand?.precipPhase).toBe("rain");
+      expect(valleyCenterBand?.airSnowCm).toBe(0);
+
+      const summitHtml = renderToStaticMarkup(
+        React.createElement(SnowAndLightningObservatory, {
+          cityName: "Uludağ",
+          daily: [
+            {
+              ...centerBundle.daily[0],
+              airSnowSumCm: 14.5,
+              groundSnowSumCm: 12.2,
+              roadSnowSumCm: 9.8,
+              snowProbMaxPct: 94
+            }
+          ],
+          hourly: centerBundle.hourly.slice(0, 24),
+          summary: {
+            ...centerBundle.snowAndLightning!,
+            referenceElevationM: 1850,
+            hasAnySnow15d: true,
+            total15dAirSnowCm: 14.5,
+            total15dGroundSnowCm: 12.2,
+            total15dRoadSnowCm: 9.8
+          },
+          focusedDate: centerBundle.daily[0].date,
+          selectedHourIndex: 0,
+          unit: "metric",
+          defaultExpanded: true
+        })
+      );
+      expect(summitHtml).toContain("15 Gün Seçili Zirve (1850 m) Havada:");
+      expect(summitHtml).not.toContain("15 Gün Merkez Havada:");
     });
   });
 });

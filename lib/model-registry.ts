@@ -292,13 +292,35 @@ export function computeInverseRmseWeights(
   const raw = {} as Record<CoreModelKey, number>;
   let sum = 0;
 
+  const s0Sq = sigma0 * sigma0;
+  const verifiedDenoms: number[] = [];
+  for (const key of CORE_MODEL_KEYS) {
+    const rmse = rmses[key];
+    if (typeof rmse === "number" && Number.isFinite(rmse) && rmse >= 0) {
+      verifiedDenoms.push(rmse * rmse + s0Sq);
+    }
+  }
+  verifiedDenoms.sort((a, b) => a - b);
+  const medianVerifiedDenom =
+    verifiedDenoms.length > 0
+      ? verifiedDenoms[Math.floor(verifiedDenoms.length / 2)]
+      : s0Sq * 4;
+  const maxVerifiedDenom =
+    verifiedDenoms.length > 0 ? verifiedDenoms[verifiedDenoms.length - 1] : s0Sq * 4;
+  // Unverified models carry strictly higher posterior variance than verified peers (never rewarded over verified models!)
+  const unverifiedDenom = Math.max(
+    s0Sq * 8,
+    medianVerifiedDenom * 1.65,
+    maxVerifiedDenom * 1.15
+  );
+
   for (const key of CORE_MODEL_KEYS) {
     const rmse = rmses[key];
     const prior = priors[key] ?? 0.05;
     const score =
       typeof rmse === "number" && Number.isFinite(rmse) && rmse >= 0
-        ? prior / (rmse * rmse + sigma0 * sigma0)
-        : prior / (sigma0 * sigma0 * 4);
+        ? prior / (rmse * rmse + s0Sq)
+        : prior / unverifiedDenom;
     raw[key] = score;
     sum += score;
   }

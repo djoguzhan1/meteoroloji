@@ -10,6 +10,7 @@ import {
   useRef,
   useState
 } from "react";
+import { usePathname } from "next/navigation";
 import {
   readCachedWeatherBundleAsync,
   readCachedWeatherBundleSync,
@@ -21,9 +22,15 @@ import {
   reanchorWeatherBundleToNow
 } from "@/lib/forecast-resilience";
 import {
+  parseLocationFromSearchParams,
+  syncLocationToBrowserUrlAndCookie
+} from "@/lib/location-url";
+import {
   ATMOS_STORAGE_KEYS,
+  buildWeatherApiUrl,
+  canonicalizeStationIdentity,
   DEFAULT_LOCATION,
-  normalizeCanonicalBursaLocation,
+  dispatchAtmosRefreshAll,
   PRESET_CITIES,
   readMigratedStorageItem
 } from "@/lib/weather-client";
@@ -44,10 +51,22 @@ import type {
 const STORAGE_KEYS = ATMOS_STORAGE_KEYS;
 const RECOVERY_BACKOFF_SEC = [10, 20, 35, 60] as const;
 
+export function resolveEffectiveFrameIndex(
+  pathname: string | null | undefined,
+  savedHomeFrameIndex: number
+): number {
+  return (pathname ?? "/") === "/" ? savedHomeFrameIndex : 0;
+}
+
 export type WeatherDataContextValue = {
   bundle: WeatherBundle | null;
   activeLocation: GeoLocation;
-  setActiveLocation: (loc: GeoLocation) => void;
+  setActiveLocation: (loc: GeoLocation, preloadedBundle?: WeatherBundle | null) => void;
+  promoteLocationWithBundle: (
+    loc: GeoLocation,
+    preloadedBundle: WeatherBundle | null
+  ) => void;
+  syncExternalBundle: (incomingBundle: WeatherBundle) => void;
   favorites: GeoLocation[];
   addFavorite: (loc: GeoLocation) => void;
   removeFavorite: (id: string) => void;
@@ -62,10 +81,14 @@ export type WeatherDataContextValue = {
   setAudioEnabled: (v: boolean) => void;
   searchOpen: boolean;
   setSearchOpen: (v: boolean) => void;
+  gpsLoading: boolean;
+  gpsError: string | null;
+  requestGpsLocation: () => Promise<boolean>;
 };
 
 export type WeatherScrubContextValue = {
   frameIndex: number;
+  savedHomeFrameIndex: number;
   setFrameIndex: (idx: number) => void;
   hourlyHorizon: HourlyHorizonHours;
   setHourlyHorizon: (h: HourlyHorizonHours) => void;
@@ -99,23 +122,33 @@ const WeatherScrubContext = createContext<WeatherScrubContextValue | null>(null)
 const WeatherStatusContext = createContext<WeatherStatusContextValue | null>(null);
 const WeatherRetryCountdownContext = createContext<number | null>(null);
 
-const DEFAULT_ALERTS: WeatherAlertRule[] = [
+export const DEFAULT_ALERTS: WeatherAlertRule[] = [
   {
     id: "watch-wind-bursa",
     cityId: "bursa-tr",
     cityName: "Bursa",
+    lat: 40.2308,
+    lon: 29.0133,
+    elevation: 100,
     metric: "windSpeed",
     operator: ">",
     threshold: 45,
+    sourceUnit: "metric",
+    sourceValue: 45,
     enabled: true
   },
   {
     id: "watch-rain-istanbul",
     cityId: "istanbul-tr",
     cityName: "İstanbul",
+    lat: 41.0082,
+    lon: 28.9784,
+    elevation: 40,
     metric: "precipProbability",
     operator: ">",
     threshold: 70,
+    sourceUnit: "metric",
+    sourceValue: 70,
     enabled: true
   }
 ];
@@ -157,6 +190,22 @@ function resolveTodayDateFromBundle(b: WeatherBundle | null): string | null {
   return resolveActiveTemporalView(b, 0).dayContext.date || null;
 }
 
+function mergeLocationIntoBundle(data: WeatherBundle, loc: GeoLocation): WeatherBundle {
+  return {
+    ...data,
+    location: {
+      ...data.location,
+      id: loc.id || data.location.id,
+      name: loc.name || data.location.name,
+      admin1: loc.admin1 ?? data.location.admin1,
+      country: loc.country || data.location.country,
+      countryCode: loc.countryCode ?? data.location.countryCode,
+      elevation: loc.elevation ?? data.location.elevation,
+      timezone: data.location.timezone ?? loc.timezone
+    }
+  };
+}
+
 const FALLBACK_SCENE: SceneAtmosphereInput = {
   windSpeed: 8,
   windDirection: 180,
@@ -173,18 +222,33 @@ const FALLBACK_SCENE: SceneAtmosphereInput = {
   cape: 0
 };
 
-export function WeatherProvider({
-  initialBundle,
-  initialError = null,
-  children
-}: {
+export type WeatherProviderProps = {
   initialBundle: WeatherBundle | null;
+  initialLocation?: GeoLocation;
   initialError?: string | null;
   children: ReactNode;
-}) {
+};
+
+export function WeatherProvider({
+  initialBundle,
+  initialLocation,
+  initialError = null,
+  children
+}: WeatherProviderProps) {
+  const rawPathname = usePathname();
+  const activePathname = rawPathname ?? "/";
+
+  const resolvedInitialLocation = useMemo(
+    () =>
+      canonicalizeStationIdentity(
+        initialBundle?.location ?? initialLocation ?? DEFAULT_LOCATION
+      ),
+    [initialBundle, initialLocation]
+  );
+
   const [bundle, setBundle] = useState<WeatherBundle | null>(initialBundle);
   const [activeLocation, setActiveLocationState] = useState<GeoLocation>(
-    initialBundle?.location ?? DEFAULT_LOCATION
+    resolvedInitialLocation
   );
   const [loading, setLoading] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
@@ -197,16 +261,20 @@ export function WeatherProvider({
   const [favorites, setFavorites] = useState<GeoLocation[]>(PRESET_CITIES);
   const [alerts, setAlerts] = useState<WeatherAlertRule[]>(DEFAULT_ALERTS);
   const [unit, setUnitState] = useState<UnitSystem>("metric");
-  const [frameIndex, setFrameIndexState] = useState(0);
+  const [frameIndexState, setFrameIndexState] = useState(0);
   const [hourlyHorizon, setHourlyHorizonState] = useState<HourlyHorizonHours>(168);
   const [focusedDate, setFocusedDateState] = useState<string | null>(null);
-  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [audioEnabled, setAudioEnabledState] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [gpsLoading, setGpsLoading] = useState(false);
+  const [gpsError, setGpsError] = useState<string | null>(null);
 
   const loadSeqRef = useRef(0);
+  const locationReqSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const gpsAbortRef = useRef<AbortController | null>(null);
   const bundleRef = useRef<WeatherBundle | null>(initialBundle);
-  const activeLocRef = useRef<GeoLocation>(initialBundle?.location ?? DEFAULT_LOCATION);
+  const activeLocRef = useRef<GeoLocation>(resolvedInitialLocation);
   const frameIndexRef = useRef(0);
   const errorRef = useRef<string | null>(initialError);
   const retryAttemptRef = useRef(0);
@@ -216,6 +284,11 @@ export function WeatherProvider({
       (initialBundle?.freshness !== undefined && initialBundle.freshness.status !== "live")
   );
   const recoveryBadgeTimerRef = useRef<number | null>(null);
+
+  const effectiveFrameIndex = resolveEffectiveFrameIndex(
+    activePathname,
+    frameIndexState
+  );
 
   const setFrameIndex = useCallback((idx: number) => {
     setFrameIndexState((prev) => (prev === idx ? prev : idx));
@@ -247,8 +320,8 @@ export function WeatherProvider({
   }, [activeLocation]);
 
   useEffect(() => {
-    frameIndexRef.current = frameIndex;
-  }, [frameIndex]);
+    frameIndexRef.current = frameIndexState;
+  }, [frameIndexState]);
 
   useEffect(() => {
     errorRef.current = error;
@@ -290,22 +363,12 @@ export function WeatherProvider({
       }
 
       try {
-        const qs = new URLSearchParams({
-          lat: String(loc.lat),
-          lon: String(loc.lon),
-          name: loc.name,
-          country: loc.country ?? ""
-        });
-        if (loc.admin1) qs.set("admin1", loc.admin1);
-        if (loc.elevation !== undefined && Number.isFinite(loc.elevation)) {
-          qs.set("elevation", String(Math.round(loc.elevation)));
-        }
         const bypassHttpCache =
           runInBackground ||
           Boolean(opts?.manual) ||
           bundleRef.current?.freshness?.status !== "live";
 
-        const res = await fetch(`/api/weather?${qs.toString()}`, {
+        const res = await fetch(buildWeatherApiUrl(loc), {
           signal: controller.signal,
           cache: bypassHttpCache ? "no-store" : "default"
         });
@@ -317,16 +380,7 @@ export function WeatherProvider({
         if (seq !== loadSeqRef.current) return;
         if (!areLocationsEquivalent(activeLocRef.current, loc)) return;
 
-        const merged: WeatherBundle = {
-          ...data,
-          location: {
-            ...data.location,
-            id: loc.id || data.location.id,
-            name: loc.name || data.location.name,
-            admin1: loc.admin1 ?? data.location.admin1,
-            country: loc.country || data.location.country
-          }
-        };
+        const merged = mergeLocationIntoBundle(data, loc);
 
         const prevWasImpaired =
           Boolean(errorRef.current) ||
@@ -445,14 +499,35 @@ export function WeatherProvider({
   );
 
   const switchAndHydrateLocation = useCallback(
-    (rawLoc: GeoLocation) => {
-      const loc = normalizeCanonicalBursaLocation(rawLoc);
+    (rawLoc: GeoLocation, preloadedBundle?: WeatherBundle | null) => {
+      const loc = canonicalizeStationIdentity(rawLoc);
       setActiveLocationState(loc);
       activeLocRef.current = loc;
       retryAttemptRef.current = 0;
       setRetryCountdownSec(null);
       frameIndexRef.current = 0;
       setFrameIndexState(0);
+
+      if (
+        preloadedBundle &&
+        areLocationsEquivalent(preloadedBundle.location, loc)
+      ) {
+        loadSeqRef.current += 1;
+        abortRef.current?.abort();
+        const mergedPreloaded = mergeLocationIntoBundle(preloadedBundle, loc);
+        bundleRef.current = mergedPreloaded;
+        setBundle(mergedPreloaded);
+        setError(null);
+        setLoading(false);
+        setIsRevalidating(false);
+        setFocusedDateState(resolveTodayDateFromBundle(mergedPreloaded));
+        if ((mergedPreloaded.freshness?.status ?? "live") === "live") {
+          writeCachedWeatherBundle(mergedPreloaded);
+        } else {
+          void loadForLocation(loc, { background: true });
+        }
+        return;
+      }
 
       const sameAsCurrent = Boolean(
         bundleRef.current && areLocationsEquivalent(bundleRef.current.location, loc)
@@ -484,7 +559,32 @@ export function WeatherProvider({
     [loadForLocation]
   );
 
-  // Initial mount: persist live SSR bundle, restore preferences, and recover from L4 if SSR failed
+  const syncExternalBundle = useCallback((incomingBundle: WeatherBundle) => {
+    if (!incomingBundle) return;
+    if (!areLocationsEquivalent(incomingBundle.location, activeLocRef.current)) {
+      return;
+    }
+    const merged = mergeLocationIntoBundle(incomingBundle, activeLocRef.current);
+    let nextFrameIdx = 0;
+    if (frameIndexRef.current > 0 && bundleRef.current) {
+      const prevIso = bundleRef.current.hourly[frameIndexRef.current]?.time;
+      if (prevIso) {
+        const matched = merged.hourly.findIndex((h) => h.time === prevIso);
+        if (matched >= 0) nextFrameIdx = matched;
+      }
+    }
+    bundleRef.current = merged;
+    setBundle(merged);
+    setFrameIndexState(nextFrameIdx);
+    setError(null);
+    if ((merged.freshness?.status ?? "live") === "live") {
+      writeCachedWeatherBundle(merged);
+      retryAttemptRef.current = 0;
+      setRetryCountdownSec(null);
+    }
+  }, []);
+
+  // Initial mount: persist live SSR bundle, restore preferences, sync URL/cookie, and recover from L4 if SSR failed
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
@@ -507,7 +607,9 @@ export function WeatherProvider({
         if (savedFavs) {
           const parsed = JSON.parse(savedFavs);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setFavorites(parsed.map((item: GeoLocation) => normalizeCanonicalBursaLocation(item)));
+            setFavorites(
+              parsed.map((item: GeoLocation) => canonicalizeStationIdentity(item))
+            );
           }
         }
         const savedAlerts = readMigratedStorageItem("alerts", localStorage);
@@ -518,64 +620,74 @@ export function WeatherProvider({
         const savedUnit = readMigratedStorageItem("unit", localStorage);
         if (savedUnit === "metric" || savedUnit === "imperial") setUnitState(savedUnit);
 
-        // 1. Öncelik: Paylaşılabilir URL query parametreleri (?lat=&lon=&city=&country=)
-        const params = new URLSearchParams(window.location.search);
-        const urlLat = Number(params.get("lat"));
-        const urlLon = Number(params.get("lon"));
-        const urlCity = params.get("city");
-        const urlCountry = params.get("country") ?? "";
-
-        if (
-          params.has("lat") &&
-          params.has("lon") &&
-          Number.isFinite(urlLat) &&
-          Number.isFinite(urlLon) &&
-          urlLat >= -90 &&
-          urlLat <= 90 &&
-          urlLon >= -180 &&
-          urlLon <= 180
-        ) {
-          const rawUrlLoc: GeoLocation = {
-            id: `url_${urlLat.toFixed(2)}_${urlLon.toFixed(2)}`,
-            name: urlCity || `${urlLat.toFixed(2)}°, ${urlLon.toFixed(2)}°`,
-            country: urlCountry,
-            lat: urlLat,
-            lon: urlLon
-          };
-          const urlLoc = normalizeCanonicalBursaLocation(rawUrlLoc);
-          // Eski paylaşılmış linklerde (?lat=40.1885&lon=29.0610) adres çubuğunu da resmi Bursa Merkez (40.2308, 29.0133) ile eşitle!
-          if (
-            Math.abs(urlLat - urlLoc.lat) > 0.002 ||
-            Math.abs(urlLon - urlLoc.lon) > 0.002
-          ) {
-            const cleanQs = new URLSearchParams({
-              city: urlLoc.name,
-              lat: urlLoc.lat.toFixed(4),
-              lon: urlLoc.lon.toFixed(4)
-            });
-            if (urlLoc.country) cleanQs.set("country", urlLoc.country);
-            window.history.replaceState(null, "", `${window.location.pathname}?${cleanQs.toString()}`);
-            localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(urlLoc));
-          }
-          if (!areLocationsEquivalent(initialBundle?.location, urlLoc, 0.02)) {
-            switchAndHydrateLocation(urlLoc);
-            return;
-          }
+        const savedAudio = readMigratedStorageItem("audio", localStorage);
+        if (savedAudio === "1" || savedAudio === "true") {
+          setAudioEnabledState(true);
+        } else if (savedAudio === "0" || savedAudio === "false") {
+          setAudioEnabledState(false);
         }
 
-        // 2. Öncelik: Kayıtlı son konum
-        const savedLoc = readMigratedStorageItem("location", localStorage);
-        if (savedLoc) {
-          const parsedLoc: GeoLocation = JSON.parse(savedLoc);
-          if (parsedLoc && typeof parsedLoc.lat === "number" && typeof parsedLoc.lon === "number") {
-            const loc = normalizeCanonicalBursaLocation(parsedLoc);
-            if (Math.abs(parsedLoc.lat - loc.lat) > 0.002 || Math.abs(parsedLoc.lon - loc.lon) > 0.002) {
-              localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
-            }
-            const initLoc = initialBundle?.location ?? DEFAULT_LOCATION;
-            if (!areLocationsEquivalent(loc, initLoc, 0.02)) {
-              switchAndHydrateLocation(loc);
+        // 1. Öncelik: Paylaşılabilir URL query parametreleri (koordinatlı veya koordinatsız ?city=)
+        const parsedUrl = parseLocationFromSearchParams(window.location.search);
+        if (parsedUrl.kind === "coords") {
+          if (parsedUrl.needsCanonicalRewrite) {
+            syncLocationToBrowserUrlAndCookie(parsedUrl.location);
+          }
+          const alreadyHydrated =
+            bundleRef.current &&
+            areLocationsEquivalent(bundleRef.current.location, parsedUrl.location);
+          if (!alreadyHydrated) {
+            if (!areLocationsEquivalent(resolvedInitialLocation, parsedUrl.location)) {
+              syncLocationToBrowserUrlAndCookie(parsedUrl.location);
+              switchAndHydrateLocation(parsedUrl.location);
               return;
+            }
+          } else {
+            syncLocationToBrowserUrlAndCookie(parsedUrl.location);
+            return;
+          }
+        } else if (parsedUrl.kind === "city-only") {
+          const normCity = parsedUrl.cityQuery.trim().toLowerCase();
+          const initMatchesCity =
+            resolvedInitialLocation.name.toLowerCase().includes(normCity) ||
+            (resolvedInitialLocation.admin1 ?? "").toLowerCase().includes(normCity);
+          if (initMatchesCity) {
+            syncLocationToBrowserUrlAndCookie(resolvedInitialLocation);
+          } else {
+            const seq = ++locationReqSeqRef.current;
+            void fetch(
+              `/api/geocode?q=${encodeURIComponent(parsedUrl.cityQuery)}`
+            )
+              .then((r) => (r.ok ? r.json() : null))
+              .then((data) => {
+                if (!active || seq !== locationReqSeqRef.current) return;
+                const first: GeoLocation | undefined = data?.results?.[0];
+                if (first) {
+                  const canonical = canonicalizeStationIdentity(first);
+                  syncLocationToBrowserUrlAndCookie(canonical);
+                  switchAndHydrateLocation(canonical);
+                }
+              })
+              .catch(() => {});
+            return;
+          }
+        } else {
+          // 2. Öncelik: Kayıtlı son konum (yalnızca URL'de şehir yokken)
+          const savedLoc = readMigratedStorageItem("location", localStorage);
+          if (savedLoc) {
+            const parsedLoc: GeoLocation = JSON.parse(savedLoc);
+            if (
+              parsedLoc &&
+              typeof parsedLoc.lat === "number" &&
+              typeof parsedLoc.lon === "number"
+            ) {
+              const loc = canonicalizeStationIdentity(parsedLoc);
+              if (!areLocationsEquivalent(loc, resolvedInitialLocation)) {
+                syncLocationToBrowserUrlAndCookie(loc);
+                switchAndHydrateLocation(loc);
+                return;
+              }
+              syncLocationToBrowserUrlAndCookie(loc);
             }
           }
         }
@@ -585,7 +697,7 @@ export function WeatherProvider({
 
       // 3. SSR başlangıçta başarısız olduysa (initialBundle === null), L4 tarayıcı kasasından anında kurtar
       if (!initialBundle) {
-        void readCachedWeatherBundleAsync(DEFAULT_LOCATION, Date.now(), {
+        void readCachedWeatherBundleAsync(resolvedInitialLocation, Date.now(), {
           forceStale: true,
           staleReason:
             initialError ??
@@ -594,8 +706,9 @@ export function WeatherProvider({
           if (!active || !cached) return;
           if (
             !bundleRef.current &&
-            areLocationsEquivalent(activeLocRef.current, DEFAULT_LOCATION)
+            areLocationsEquivalent(activeLocRef.current, resolvedInitialLocation)
           ) {
+            bundleRef.current = cached;
             setBundle(cached);
             setError(null);
           }
@@ -603,8 +716,23 @@ export function WeatherProvider({
       }
     });
 
+    const handlePopState = () => {
+      const parsed = parseLocationFromSearchParams(window.location.search);
+      if (parsed.kind === "coords") {
+        if (!areLocationsEquivalent(activeLocRef.current, parsed.location)) {
+          locationReqSeqRef.current += 1;
+          gpsAbortRef.current?.abort();
+          setGpsLoading(false);
+          switchAndHydrateLocation(parsed.location);
+        }
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
     return () => {
       active = false;
+      window.removeEventListener("popstate", handlePopState);
+      gpsAbortRef.current?.abort();
       if (recoveryBadgeTimerRef.current !== null) {
         window.clearTimeout(recoveryBadgeTimerRef.current);
       }
@@ -619,6 +747,11 @@ export function WeatherProvider({
       retryAttemptRef.current = 0;
       setRetryCountdownSec(null);
       setRecoveryCount((c) => c + 1);
+      dispatchAtmosRefreshAll({
+        reason: "online",
+        timestampMs: Date.now(),
+        location: activeLocRef.current
+      });
       void loadForLocation(activeLocRef.current, {
         background: Boolean(bundleRef.current)
       });
@@ -731,29 +864,127 @@ export function WeatherProvider({
   }, [loadForLocation]);
 
   const setActiveLocation = useCallback(
-    (rawLoc: GeoLocation) => {
-      const loc = normalizeCanonicalBursaLocation(rawLoc);
-      try {
-        localStorage.setItem(STORAGE_KEYS.location, JSON.stringify(loc));
-        if (typeof window !== "undefined" && window.location.pathname === "/") {
-          const qs = new URLSearchParams({
-            city: loc.name,
-            lat: loc.lat.toFixed(4),
-            lon: loc.lon.toFixed(4)
-          });
-          if (loc.country) qs.set("country", loc.country);
-          window.history.replaceState(null, "", `/?${qs.toString()}`);
-        }
-      } catch {
-        // ignore
-      }
-      switchAndHydrateLocation(loc);
+    (rawLoc: GeoLocation, preloadedBundle?: WeatherBundle | null) => {
+      locationReqSeqRef.current += 1;
+      gpsAbortRef.current?.abort();
+      setGpsLoading(false);
+      setGpsError(null);
+
+      const loc = canonicalizeStationIdentity(rawLoc);
+      syncLocationToBrowserUrlAndCookie(loc);
+      switchAndHydrateLocation(loc, preloadedBundle);
     },
     [switchAndHydrateLocation]
   );
 
+  const promoteLocationWithBundle = useCallback(
+    (rawLoc: GeoLocation, preloadedBundle: WeatherBundle | null) => {
+      setActiveLocation(rawLoc, preloadedBundle);
+    },
+    [setActiveLocation]
+  );
+
+  const requestGpsLocation = useCallback(async (): Promise<boolean> => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setGpsError("Tarayıcınız konum servisini desteklemiyor.");
+      return false;
+    }
+
+    const seq = ++locationReqSeqRef.current;
+    gpsAbortRef.current?.abort();
+    const gpsController = new AbortController();
+    gpsAbortRef.current = gpsController;
+
+    setGpsLoading(true);
+    setGpsError(null);
+
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 9000,
+          maximumAge: 60_000
+        });
+      });
+
+      if (seq !== locationReqSeqRef.current) {
+        return false;
+      }
+
+      const lat = Number(pos.coords.latitude.toFixed(4));
+      const lon = Number(pos.coords.longitude.toFixed(4));
+
+      let resolvedLoc: GeoLocation = canonicalizeStationIdentity({
+        id: `gps_${lat.toFixed(3)}_${lon.toFixed(3)}`,
+        name: "Mevcut Konum",
+        country: "",
+        lat,
+        lon
+      });
+
+      try {
+        const res = await fetch(
+          `/api/reverse-geocode?lat=${lat}&lon=${lon}`,
+          { signal: gpsController.signal }
+        );
+        if (seq !== locationReqSeqRef.current) {
+          return false;
+        }
+        if (res.ok) {
+          const geo = await res.json();
+          resolvedLoc = canonicalizeStationIdentity({
+            id: `gps_${lat.toFixed(3)}_${lon.toFixed(3)}`,
+            name: String(geo?.name || "Mevcut Konum"),
+            admin1: geo?.admin1 ? String(geo.admin1) : undefined,
+            country: String(geo?.country || ""),
+            countryCode: geo?.countryCode ? String(geo.countryCode) : undefined,
+            lat,
+            lon,
+            elevation:
+              typeof geo?.elevation === "number" && Number.isFinite(geo.elevation)
+                ? Math.round(geo.elevation)
+                : undefined,
+            timezone: geo?.timezone ? String(geo.timezone) : undefined
+          });
+        }
+      } catch {
+        if (seq !== locationReqSeqRef.current) {
+          return false;
+        }
+      }
+
+      if (seq !== locationReqSeqRef.current) {
+        return false;
+      }
+
+      setGpsLoading(false);
+      syncLocationToBrowserUrlAndCookie(resolvedLoc);
+      switchAndHydrateLocation(resolvedLoc);
+      return true;
+    } catch (err) {
+      if (seq !== locationReqSeqRef.current) {
+        return false;
+      }
+      setGpsLoading(false);
+      const code = (err as GeolocationPositionError | undefined)?.code;
+      const msg =
+        code === 1
+          ? "Konum izni reddedildi. Tarayıcı ayarlarından konum izni verebilirsiniz."
+          : code === 3
+            ? "GPS konum yanıtı zaman aşımına uğradı."
+            : "GPS konumu alınamadı.";
+      setGpsError(msg);
+      return false;
+    }
+  }, [switchAndHydrateLocation]);
+
   const refreshWeather = useCallback(async () => {
     retryAttemptRef.current = 0;
+    dispatchAtmosRefreshAll({
+      reason: "manual",
+      timestampMs: Date.now(),
+      location: activeLocRef.current
+    });
     await loadForLocation(activeLocRef.current, {
       background: Boolean(bundleRef.current),
       manual: true
@@ -769,7 +1000,17 @@ export function WeatherProvider({
     }
   }, []);
 
-  const addFavorite = useCallback((loc: GeoLocation) => {
+  const setAudioEnabled = useCallback((v: boolean) => {
+    setAudioEnabledState(v);
+    try {
+      localStorage.setItem(STORAGE_KEYS.audio, v ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const addFavorite = useCallback((rawLoc: GeoLocation) => {
+    const loc = canonicalizeStationIdentity(rawLoc);
     setFavorites((prev) => {
       if (
         prev.some(
@@ -801,10 +1042,12 @@ export function WeatherProvider({
   }, []);
 
   const isFavorite = useCallback(
-    (loc: GeoLocation) =>
-      favorites.some(
+    (rawLoc: GeoLocation) => {
+      const loc = canonicalizeStationIdentity(rawLoc);
+      return favorites.some(
         (f) => f.id === loc.id || areLocationsEquivalent(f, loc)
-      ),
+      );
+    },
     [favorites]
   );
 
@@ -844,15 +1087,15 @@ export function WeatherProvider({
     });
   }, []);
 
-  // %100 deterministik aktif zaman görünümü ve fiziksel 3D sahne girdisi
+  // %100 deterministik rota-yalıtımlı zaman görünümü ve fiziksel 3D sahne girdisi
   const temporalView = useMemo<ActiveTemporalView | null>(() => {
     if (!bundle) return null;
-    return resolveActiveTemporalView(bundle, frameIndex);
-  }, [bundle, frameIndex]);
+    return resolveActiveTemporalView(bundle, effectiveFrameIndex);
+  }, [bundle, effectiveFrameIndex]);
 
   const effectiveFocusedDate = useMemo<string | null>(() => {
     if (!temporalView?.dayContext.date) return focusedDate;
-    if (frameIndex > 0 || focusedDate === null) {
+    if (effectiveFrameIndex > 0 || focusedDate === null) {
       return temporalView.dayContext.date;
     }
     if (
@@ -863,7 +1106,7 @@ export function WeatherProvider({
       return temporalView.dayContext.date;
     }
     return focusedDate;
-  }, [bundle, focusedDate, frameIndex, temporalView]);
+  }, [bundle, focusedDate, effectiveFrameIndex, temporalView]);
 
   const atmosphere: SceneAtmosphereInput = useMemo(() => {
     if (temporalView) return temporalView.atmosphere;
@@ -888,6 +1131,8 @@ export function WeatherProvider({
       bundle,
       activeLocation,
       setActiveLocation,
+      promoteLocationWithBundle,
+      syncExternalBundle,
       favorites,
       addFavorite,
       removeFavorite,
@@ -901,12 +1146,17 @@ export function WeatherProvider({
       audioEnabled,
       setAudioEnabled,
       searchOpen,
-      setSearchOpen
+      setSearchOpen,
+      gpsLoading,
+      gpsError,
+      requestGpsLocation
     }),
     [
       bundle,
       activeLocation,
       setActiveLocation,
+      promoteLocationWithBundle,
+      syncExternalBundle,
       favorites,
       addFavorite,
       removeFavorite,
@@ -918,13 +1168,18 @@ export function WeatherProvider({
       unit,
       setUnit,
       audioEnabled,
-      searchOpen
+      setAudioEnabled,
+      searchOpen,
+      gpsLoading,
+      gpsError,
+      requestGpsLocation
     ]
   );
 
   const scrubValue = useMemo<WeatherScrubContextValue>(
     () => ({
-      frameIndex,
+      frameIndex: effectiveFrameIndex,
+      savedHomeFrameIndex: frameIndexState,
       setFrameIndex,
       hourlyHorizon,
       setHourlyHorizon,
@@ -934,7 +1189,8 @@ export function WeatherProvider({
       atmosphere
     }),
     [
-      frameIndex,
+      effectiveFrameIndex,
+      frameIndexState,
       setFrameIndex,
       hourlyHorizon,
       setHourlyHorizon,

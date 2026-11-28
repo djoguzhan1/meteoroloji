@@ -16,10 +16,28 @@ export async function GET(request: NextRequest) {
     !Number.isFinite(west) ||
     !Number.isFinite(north) ||
     !Number.isFinite(east) ||
+    south < -90 ||
+    south > 90 ||
+    north < -90 ||
+    north > 90 ||
+    west < -180 ||
+    west > 180 ||
+    east < -180 ||
+    east > 180
+  ) {
+    return NextResponse.json(
+      { error: "Geçersiz harita sınır koordinatları." },
+      { status: 400 }
+    );
+  }
+
+  const deltaLon = east > west ? east - west : east + 360 - west;
+
+  if (
     north <= south ||
-    east <= west ||
     north - south > 85 ||
-    east - west > 140
+    deltaLon <= 0 ||
+    deltaLon > 140
   ) {
     return NextResponse.json(
       { error: "Geçersiz harita sınır koordinatları." },

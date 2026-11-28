@@ -168,8 +168,14 @@ export function solveBourgouinSnowLine(
     let zFrz: number;
     if (input.freezingLevelM !== null && Number.isFinite(input.freezingLevelM)) {
       zFrz = input.freezingLevelM;
+      if (input.surfaceTempC > 0.15 && zFrz <= elevM) {
+        zFrz = elevM + input.surfaceTempC / lapsePerM;
+      }
     } else if (input.temp850hPa !== null && Number.isFinite(input.temp850hPa)) {
       zFrz = 1460 + input.temp850hPa / lapsePerM;
+      if (input.surfaceTempC > 0.15 && zFrz <= elevM) {
+        zFrz = elevM + input.surfaceTempC / lapsePerM;
+      }
     } else {
       zFrz = elevM + input.surfaceTempC / lapsePerM;
     }
@@ -188,17 +194,40 @@ export function solveBourgouinSnowLine(
     const lapseTw = clamp(lapsePerM * 0.86, 0.0042, 0.0078);
     const survivalDropM =
       Math.sqrt((7.5 * 273.15 * 2) / (G0 * lapseTw)) + heavyDiabaticDropM * 0.55;
-    const snowLineM = Math.max(0, Math.round(wetBulbZeroRaw - survivalDropM));
+    let snowLineM = Math.max(0, Math.round(wetBulbZeroRaw - survivalDropM));
 
-    const iceFrac =
-      twSfc <= -0.15 ? 1 : clamp(1 - (meJkg - 4.2) / 11.2, 0, 1);
+    let columnPhase: BourgouinSnowLineResult["columnPhase"];
+    let iceFrac: number;
+    if (meJkg <= 5.6 && twSfc <= 1.25) {
+      columnPhase = "snow";
+      iceFrac = twSfc <= -0.15 ? 1 : clamp(1 - meJkg / 18, 0.76, 1);
+    } else if (meJkg <= 13.8 && twSfc <= 1.75) {
+      columnPhase = "sleet";
+      iceFrac = clamp(1 - (meJkg - 4.2) / 10.5, 0.14, 0.75);
+    } else {
+      columnPhase = "rain";
+      iceFrac = 0;
+    }
 
-    const columnPhase: BourgouinSnowLineResult["columnPhase"] =
-      iceFrac >= 0.68 ? "snow" : iceFrac >= 0.14 ? "sleet" : "rain";
+    // Faz <-> Kar Sınırı Rakımı Fiziksel Kilit Sözleşmesi
+    if (columnPhase === "rain") {
+      const rainFloorM = Math.max(
+        elevM + 60,
+        Math.min(
+          Math.max(elevM + 60, Math.round(wetBulbZeroRaw)),
+          elevM + Math.max(60, Math.round(Math.max(0, twSfc - 1.35) * 140))
+        )
+      );
+      snowLineM = Math.max(snowLineM, rainFloorM);
+    } else if (columnPhase === "sleet") {
+      snowLineM = Math.max(snowLineM, Math.round(elevM));
+    } else if (columnPhase === "snow") {
+      snowLineM = Math.min(snowLineM, Math.round(elevM));
+    }
 
     return {
-      snowLineElevationM: snowLineM,
-      wetBulbZeroM: Math.round(wetBulbZeroRaw),
+      snowLineElevationM: Math.max(0, Math.round(snowLineM)),
+      wetBulbZeroM: Math.max(0, Math.round(wetBulbZeroRaw)),
       meltingEnergyJkg: Number(meJkg.toFixed(1)),
       refreezeEnergyJkg: 0,
       iceSurvivalFraction: Number(iceFrac.toFixed(3)),
@@ -297,6 +326,24 @@ export function solveBourgouinSnowLine(
   } else {
     columnPhase = "rain";
     iceSurvival = 0;
+  }
+
+  // Faz <-> Kar Sınırı Rakımı Fiziksel Kilit Sözleşmesi:
+  // İstasyon rakımında (elevM) saf yağmur varken saf kar sınırı istasyonun altında olamaz;
+  // istasyon rakımında saf kar varken kar sınırı istasyonun üstünde olamaz.
+  if (columnPhase === "rain") {
+    const rainFloorM = Math.max(
+      elevM + 60,
+      Math.min(
+        Math.max(elevM + 60, Math.round(wetBulbZeroM)),
+        elevM + Math.max(60, Math.round(Math.max(0, twSfc - 1.35) * 140))
+      )
+    );
+    snowLineM = Math.max(snowLineM, rainFloorM);
+  } else if (columnPhase === "sleet") {
+    snowLineM = Math.max(snowLineM, elevM);
+  } else if (columnPhase === "snow") {
+    snowLineM = Math.min(snowLineM, elevM);
   }
 
   return {
@@ -1587,14 +1634,35 @@ export function simulateCoupledSnowTimeline(
             ? 0
             : Number((h.precipMmHr * spec.orographicBoost).toFixed(3));
 
+        const bandLevels: SoundingLevel[] | undefined =
+          h.elevationM > spec.elevationM + 100 && h.soundingLevels && h.soundingLevels.length > 0
+            ? [
+                {
+                  pressure: Math.round(1013.25 * Math.pow(1 - h.elevationM / 44330, 5.255)),
+                  altitudeM: h.elevationM,
+                  temperature: h.temp2mC,
+                  dewPoint: h.temp2mC - Math.max(0, (100 - h.rh2mPct) * 0.2),
+                  humidity: h.rh2mPct,
+                  windSpeedKt: h.windSpeedKmh / 1.852,
+                  windDirection: h.windDirDeg
+                },
+                ...h.soundingLevels
+              ]
+            : h.soundingLevels;
+
+        const bandFreezingLevelM =
+          bTemp > 0.15 && (h.freezingLevelM === null || h.freezingLevelM <= spec.elevationM)
+            ? Math.round(spec.elevationM + bTemp / lapsePerM)
+            : h.freezingLevelM;
+
         const bBourgouin = solveBourgouinSnowLine({
           elevationM: spec.elevationM,
           surfaceTempC: bTemp,
           surfaceRhPct: bRh,
           precipMmHr: bPrecip,
-          freezingLevelM: h.freezingLevelM,
+          freezingLevelM: bandFreezingLevelM,
           temp850hPa: h.temp850hPa,
-          levels: h.soundingLevels,
+          levels: bandLevels,
           lapseRateCPerKm: h.lapseRateCPerKm
         });
 
