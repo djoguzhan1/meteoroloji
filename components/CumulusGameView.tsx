@@ -8,12 +8,15 @@ import {
   CloudLightning,
   Flame,
   Link2,
+  Lock,
+  MapPin,
   Pause,
   Play,
   RotateCcw,
   Send,
   Snowflake,
   Sparkles,
+  Thermometer,
   Trophy,
   Volume2,
   VolumeX,
@@ -21,7 +24,20 @@ import {
   Zap
 } from "lucide-react";
 import { useWeatherData } from "@/context/WeatherContext";
-import { ATMOS_STORAGE_KEYS, readMigratedStorageItem } from "@/lib/weather-client";
+import { areLocationsEquivalent } from "@/lib/forecast-resilience";
+import { resolveProvinceCode } from "@/lib/provinces/geo-adm1-resolver";
+import type { TrProvinceCode } from "@/lib/provinces/types";
+import {
+  ATMOS_STORAGE_KEYS,
+  formatElevation,
+  formatPressure,
+  formatTemperature,
+  formatWindSpeed,
+  readMigratedStorageItem,
+  type GeoLocation,
+  type UnitSystem,
+  type WeatherBundle
+} from "@/lib/weather-client";
 import {
   ARENA_HEIGHT,
   ARENA_WIDTH,
@@ -61,6 +77,343 @@ const CumulusIntro3D = dynamic(() => import("./CumulusIntro3D"), {
   )
 });
 
+export type AutoCumulusStageId =
+  | "marmara"
+  | "bogaz"
+  | "ege"
+  | "anadolu"
+  | "akdeniz";
+
+const VALID_AUTO_STAGE_IDS = new Set<AutoCumulusStageId>([
+  "marmara",
+  "bogaz",
+  "ege",
+  "anadolu",
+  "akdeniz"
+]);
+
+/**
+ * 81 İl Deterministik Cumulus Cephe Eşleşme Tablosu
+ * Sunucu tarafı `resolveCumulusStageForProvince` (`lib/provinces/registry.ts`) ile %100 birebir uyumludur;
+ * istemci paketini şişirmeden şehir geçişi anında (henüz API yanıtı gelmeden bile) sıfır gecikmeyle doğru sahneyi seçer.
+ */
+export const TR_PROVINCE_CUMULUS_STAGE_MAP: Readonly<
+  Record<TrProvinceCode, AutoCumulusStageId>
+> = Object.freeze({
+  "TR-01": "akdeniz",
+  "TR-02": "anadolu",
+  "TR-03": "ege",
+  "TR-04": "anadolu",
+  "TR-05": "anadolu",
+  "TR-06": "anadolu",
+  "TR-07": "akdeniz",
+  "TR-08": "marmara",
+  "TR-09": "ege",
+  "TR-10": "marmara",
+  "TR-11": "marmara",
+  "TR-12": "anadolu",
+  "TR-13": "anadolu",
+  "TR-14": "anadolu",
+  "TR-15": "akdeniz",
+  "TR-16": "marmara",
+  "TR-17": "bogaz",
+  "TR-18": "anadolu",
+  "TR-19": "anadolu",
+  "TR-20": "ege",
+  "TR-21": "anadolu",
+  "TR-22": "marmara",
+  "TR-23": "anadolu",
+  "TR-24": "anadolu",
+  "TR-25": "anadolu",
+  "TR-26": "anadolu",
+  "TR-27": "anadolu",
+  "TR-28": "marmara",
+  "TR-29": "anadolu",
+  "TR-30": "anadolu",
+  "TR-31": "akdeniz",
+  "TR-32": "akdeniz",
+  "TR-33": "akdeniz",
+  "TR-34": "bogaz",
+  "TR-35": "ege",
+  "TR-36": "anadolu",
+  "TR-37": "marmara",
+  "TR-38": "anadolu",
+  "TR-39": "marmara",
+  "TR-40": "anadolu",
+  "TR-41": "marmara",
+  "TR-42": "anadolu",
+  "TR-43": "ege",
+  "TR-44": "anadolu",
+  "TR-45": "ege",
+  "TR-46": "akdeniz",
+  "TR-47": "anadolu",
+  "TR-48": "ege",
+  "TR-49": "anadolu",
+  "TR-50": "anadolu",
+  "TR-51": "anadolu",
+  "TR-52": "marmara",
+  "TR-53": "marmara",
+  "TR-54": "marmara",
+  "TR-55": "marmara",
+  "TR-56": "anadolu",
+  "TR-57": "marmara",
+  "TR-58": "anadolu",
+  "TR-59": "marmara",
+  "TR-60": "anadolu",
+  "TR-61": "marmara",
+  "TR-62": "anadolu",
+  "TR-63": "anadolu",
+  "TR-64": "ege",
+  "TR-65": "anadolu",
+  "TR-66": "anadolu",
+  "TR-67": "marmara",
+  "TR-68": "anadolu",
+  "TR-69": "anadolu",
+  "TR-70": "anadolu",
+  "TR-71": "anadolu",
+  "TR-72": "anadolu",
+  "TR-73": "anadolu",
+  "TR-74": "marmara",
+  "TR-75": "anadolu",
+  "TR-76": "anadolu",
+  "TR-77": "marmara",
+  "TR-78": "anadolu",
+  "TR-79": "anadolu",
+  "TR-80": "akdeniz",
+  "TR-81": "anadolu"
+});
+
+const COMPASS_TR = ["K", "KD", "D", "GD", "G", "GB", "B", "KB"] as const;
+
+export function degreesToCompassTr(deg: number): string {
+  const norm = ((deg % 360) + 360) % 360;
+  return COMPASS_TR[Math.round(norm / 45) % 8];
+}
+
+/**
+ * Sıkı şehir-bundle doğrulaması:
+ * Şehir değiştirildiğinde önceki şehrin rüzgar, sıcaklık, basınç veya CAPE değerlerinin
+ * yeni şehre sızmasını (%0 cross-city leakage) matematiksel olarak engeller.
+ */
+export function isBundleMatchedToActiveLocation(
+  bundle: WeatherBundle | null | undefined,
+  activeLocation: GeoLocation,
+  resolvedProvinceCode?: string
+): bundle is WeatherBundle {
+  if (!bundle) return false;
+  if (!areLocationsEquivalent(bundle.location, activeLocation, 0.045)) {
+    return false;
+  }
+
+  const targetProv =
+    resolvedProvinceCode ??
+    resolveProvinceCode({
+      lat: activeLocation.lat,
+      lon: activeLocation.lon,
+      admin1: activeLocation.admin1,
+      countryCode: activeLocation.countryCode,
+      explicitProvinceCode: activeLocation.provinceCode
+    }).provinceCode;
+
+  if (targetProv !== "GLOBAL") {
+    if (
+      bundle.provinceSummary?.provinceCode &&
+      bundle.provinceSummary.provinceCode !== targetProv
+    ) {
+      return false;
+    }
+    if (
+      bundle.location.provinceCode &&
+      bundle.location.provinceCode !== targetProv
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    activeLocation.provinceCode &&
+    bundle.location.provinceCode &&
+    activeLocation.provinceCode !== bundle.location.provinceCode
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Seçili şehir için Cumulus sahne kimliğini çözer:
+ * 1. Doğrulanmış `matchedBundle.provinceSummary.cumulusStageId` varsa doğrudan onu kullanır.
+ * 2. Türkiye içi 81 il için topolojik ADM1 çözücü (`TR-01`..`TR-81`) üzerinden sahneyi belirler.
+ * 3. Yurt dışı (`GLOBAL`) şehirler için irtifa ve enlem rejimine göre deterministik sahne döndürür.
+ */
+export function resolveAutoCumulusStageId(
+  activeLocation: GeoLocation,
+  matchedBundle?: WeatherBundle | null,
+  resolvedProvinceCode?: string
+): AutoCumulusStageId {
+  const summaryStage = matchedBundle?.provinceSummary?.cumulusStageId;
+  if (summaryStage && VALID_AUTO_STAGE_IDS.has(summaryStage)) {
+    return summaryStage;
+  }
+
+  const prov =
+    resolvedProvinceCode ??
+    resolveProvinceCode({
+      lat: activeLocation.lat,
+      lon: activeLocation.lon,
+      admin1: activeLocation.admin1,
+      countryCode: activeLocation.countryCode,
+      explicitProvinceCode: activeLocation.provinceCode
+    }).provinceCode;
+
+  if (prov !== "GLOBAL" && prov in TR_PROVINCE_CUMULUS_STAGE_MAP) {
+    return TR_PROVINCE_CUMULUS_STAGE_MAP[prov as TrProvinceCode];
+  }
+
+  if ((activeLocation.elevation ?? 0) >= 650) {
+    return "anadolu";
+  }
+  if (Math.abs(activeLocation.lat) < 37.5) {
+    return "akdeniz";
+  }
+  return "marmara";
+}
+
+export type LiveThermodynamicBriefing = {
+  cityName: string;
+  provinceBadge: string | null;
+  elevationM: number | null;
+  elevationText: string | null;
+  hasLiveTelemetry: boolean;
+  tempText: string | null;
+  pressureText: string | null;
+  capeJkg: number | null;
+  capeText: string | null;
+  cloudBaseMslM: number | null;
+  cloudBaseText: string | null;
+  freezingLevelM: number | null;
+  freezingLevelLabel: string;
+  freezingLevelText: string | null;
+  windSpeedKmh: number | null;
+  windDirDeg: number | null;
+  windCompassTr: string | null;
+  windText: string | null;
+};
+
+export function buildLiveThermodynamicBriefing(params: {
+  activeLocation: GeoLocation;
+  matchedBundle: WeatherBundle | null;
+  unit: UnitSystem;
+  provinceCode: string;
+  provinceName?: string;
+}): LiveThermodynamicBriefing {
+  const { activeLocation, matchedBundle, unit, provinceCode, provinceName } = params;
+
+  const cityName =
+    activeLocation.name?.trim() ||
+    matchedBundle?.location.name?.trim() ||
+    provinceName ||
+    "Seçili Konum";
+
+  const provinceBadge =
+    matchedBundle?.provinceSummary?.provinceCode ??
+    (provinceCode !== "GLOBAL" ? provinceCode : null);
+
+  const rawElev =
+    typeof activeLocation.elevation === "number" && Number.isFinite(activeLocation.elevation)
+      ? activeLocation.elevation
+      : typeof matchedBundle?.location.elevation === "number" &&
+          Number.isFinite(matchedBundle.location.elevation)
+        ? matchedBundle.location.elevation
+        : typeof matchedBundle?.provinceSummary?.canonicalCenter.elevationM === "number" &&
+            Number.isFinite(matchedBundle.provinceSummary.canonicalCenter.elevationM)
+          ? matchedBundle.provinceSummary.canonicalCenter.elevationM
+          : null;
+
+  const elevationText = rawElev !== null ? formatElevation(rawElev, unit) : null;
+  const freezingLevelLabel = unit === "imperial" ? "Donma (32°F)" : "Donma (0°C)";
+
+  if (!matchedBundle) {
+    return {
+      cityName,
+      provinceBadge,
+      elevationM: rawElev,
+      elevationText,
+      hasLiveTelemetry: false,
+      tempText: null,
+      pressureText: null,
+      capeJkg: null,
+      capeText: null,
+      cloudBaseMslM: null,
+      cloudBaseText: null,
+      freezingLevelM: null,
+      freezingLevelLabel,
+      freezingLevelText: null,
+      windSpeedKmh: null,
+      windDirDeg: null,
+      windCompassTr: null,
+      windText: null
+    };
+  }
+
+  const current = matchedBundle.current;
+  const tempText = formatTemperature(current.temperature, unit, {
+    decimals: 0,
+    showUnit: true
+  });
+  const pressureText = formatPressure(current.pressure, unit);
+
+  const rawCape =
+    matchedBundle.nativeConvective?.cape ?? matchedBundle.hourly?.[0]?.cape ?? null;
+  const capeJkg =
+    typeof rawCape === "number" && Number.isFinite(rawCape)
+      ? Math.max(0, Math.round(rawCape))
+      : null;
+  const capeText = `${capeJkg ?? 0} J/kg`;
+
+  // Espy termodinamik yoğunlaşma seviyesi (LCL AGL -> MSL)
+  const dewDepressionC = Math.max(0, current.temperature - current.dewPoint);
+  const lclAglM = Math.max(120, Math.round(125 * dewDepressionC));
+  const cloudBaseMslM = Math.round(Math.max(0, rawElev ?? 0) + lclAglM);
+  const cloudBaseText = formatElevation(cloudBaseMslM, unit);
+
+  const rawFreezingM =
+    matchedBundle.nativeConvective?.freezingLevelM ??
+    matchedBundle.hourly?.[0]?.freezingLevelM ??
+    null;
+  const freezingLevelM =
+    typeof rawFreezingM === "number" && Number.isFinite(rawFreezingM)
+      ? Math.round(rawFreezingM)
+      : null;
+  const freezingLevelText =
+    freezingLevelM !== null ? formatElevation(freezingLevelM, unit) : null;
+
+  const windCompassTr = degreesToCompassTr(current.windDirection);
+  const windText = `${formatWindSpeed(current.windSpeed, unit)} ${windCompassTr}`;
+
+  return {
+    cityName,
+    provinceBadge,
+    elevationM: rawElev,
+    elevationText,
+    hasLiveTelemetry: true,
+    tempText,
+    pressureText,
+    capeJkg,
+    capeText,
+    cloudBaseMslM,
+    cloudBaseText,
+    freezingLevelM,
+    freezingLevelLabel,
+    freezingLevelText,
+    windSpeedKmh: current.windSpeed,
+    windDirDeg: current.windDirection,
+    windCompassTr,
+    windText
+  };
+}
+
 type MedalTier = "gold" | "silver" | "bronze";
 
 type StageRecord = {
@@ -76,13 +429,6 @@ type CareerStorage = {
 };
 
 const CAREER_STORAGE_KEY = ATMOS_STORAGE_KEYS.cumulusCareer;
-
-const COMPASS_TR = ["K", "KD", "D", "GD", "G", "GB", "B", "KB"] as const;
-
-function degreesToCompassTr(deg: number): string {
-  const norm = ((deg % 360) + 360) % 360;
-  return COMPASS_TR[Math.round(norm / 45) % 8];
-}
 
 function formatClock(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
@@ -176,12 +522,75 @@ function findCloudAt(clouds: CloudNode[], x: number, y: number, pad = 12): Cloud
 }
 
 export default function CumulusGameView() {
-  const { bundle, activeLocation } = useWeatherData();
+  const { bundle, activeLocation, unit } = useWeatherData();
 
-  const liveWindKmh = bundle?.current.windSpeed;
-  const liveWindDirDeg = bundle?.current.windDirection;
+  const activeResolution = useMemo(
+    () =>
+      resolveProvinceCode({
+        lat: activeLocation.lat,
+        lon: activeLocation.lon,
+        admin1: activeLocation.admin1,
+        countryCode: activeLocation.countryCode,
+        explicitProvinceCode: activeLocation.provinceCode
+      }),
+    [
+      activeLocation.lat,
+      activeLocation.lon,
+      activeLocation.admin1,
+      activeLocation.countryCode,
+      activeLocation.provinceCode
+    ]
+  );
 
-  const [stageId, setStageId] = useState<string>(CUMULUS_STAGES[0].id);
+  // Yalnızca aktif seçili şehirle birebir eşleşen WeatherBundle kabul edilir (sıfır sızıntı!)
+  const matchedBundle = useMemo(
+    () =>
+      isBundleMatchedToActiveLocation(
+        bundle,
+        activeLocation,
+        activeResolution.provinceCode
+      )
+        ? bundle
+        : null,
+    [bundle, activeLocation, activeResolution.provinceCode]
+  );
+
+  const autoStageId = useMemo(
+    () =>
+      resolveAutoCumulusStageId(
+        activeLocation,
+        matchedBundle,
+        activeResolution.provinceCode
+      ),
+    [activeLocation, matchedBundle, activeResolution.provinceCode]
+  );
+
+  const briefing = useMemo(
+    () =>
+      buildLiveThermodynamicBriefing({
+        activeLocation,
+        matchedBundle,
+        unit,
+        provinceCode: activeResolution.provinceCode,
+        provinceName: activeResolution.provinceName
+      }),
+    [
+      activeLocation,
+      matchedBundle,
+      unit,
+      activeResolution.provinceCode,
+      activeResolution.provinceName
+    ]
+  );
+
+  const liveWindKmh = matchedBundle?.current.windSpeed;
+  const liveWindDirDeg = matchedBundle?.current.windDirection;
+
+  // `lockedStageId === null` iken sahne 81 il otomatik eşleşmesini takip eder; elle seçildiğinde kilitlenir.
+  const [lockedStageId, setLockedStageId] = useState<string | null>(null);
+  const stageId = lockedStageId ?? autoStageId;
+  const isStageManuallyLocked = lockedStageId !== null;
+
   const [difficulty, setDifficulty] = useState<DifficultyKey>("storm");
   const [windMode, setWindMode] = useState<WindMode>("live");
   const [launchRatio, setLaunchRatio] = useState<number>(0.5);
@@ -200,7 +609,7 @@ export default function CumulusGameView() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [initialGame] = useState<CumulusGameState>(() =>
     createCumulusGame({
-      stageId: CUMULUS_STAGES[0].id,
+      stageId: autoStageId,
       difficulty: "storm",
       windMode: "live",
       liveWindKmh,
@@ -228,6 +637,15 @@ export default function CumulusGameView() {
   const pausedRef = useRef(paused);
   const showIntroRef = useRef(showIntro);
   const recordedOutcomeRef = useRef(false);
+  const difficultyRef = useRef(difficulty);
+  const windModeRef = useRef(windMode);
+  const liveWindRef = useRef<{ kmh?: number; dir?: number }>({
+    kmh: liveWindKmh,
+    dir: liveWindDirDeg
+  });
+
+  const activeLocationKey = `${activeLocation.id}|${activeLocation.lat.toFixed(4)},${activeLocation.lon.toFixed(4)}|${activeLocation.elevation ?? ""}|${activeResolution.provinceCode}`;
+  const prevSyncKeyRef = useRef(`${activeLocationKey}::${stageId}`);
 
   const [hud, setHud] = useState<HudSnapshot>(() => extractHud(initialGame));
 
@@ -246,6 +664,18 @@ export default function CumulusGameView() {
   useEffect(() => {
     showIntroRef.current = showIntro;
   }, [showIntro]);
+
+  useEffect(() => {
+    difficultyRef.current = difficulty;
+  }, [difficulty]);
+
+  useEffect(() => {
+    windModeRef.current = windMode;
+  }, [windMode]);
+
+  useEffect(() => {
+    liveWindRef.current = { kmh: liveWindKmh, dir: liveWindDirDeg };
+  }, [liveWindKmh, liveWindDirDeg]);
 
   useEffect(() => {
     cumulusAudio.setEnabled(sfxEnabled);
@@ -343,26 +773,87 @@ export default function CumulusGameView() {
         liveWindDirDeg
       });
       gameRef.current = next;
+      atmosRef.current = createAtmosphericVisualState();
       interactionRef.current.dragging = false;
       interactionRef.current.selectedIds = [];
       interactionRef.current.hoveredCloudId = null;
       recordedOutcomeRef.current = false;
+      prevSyncKeyRef.current = `${activeLocationKey}::${nextStageId}`;
       setPaused(false);
       setHud(extractHud(next));
     },
-    [stageId, difficulty, windMode, liveWindKmh, liveWindDirDeg]
+    [stageId, difficulty, windMode, liveWindKmh, liveWindDirDeg, activeLocationKey]
   );
 
+  // Şehir değiştiğinde veya otomatik sahne güncellendiğinde önceki şehrin rüzgar/bulut durumunu tamamen temizle
+  useEffect(() => {
+    const nextSyncKey = `${activeLocationKey}::${stageId}`;
+    if (prevSyncKeyRef.current === nextSyncKey) return;
+    prevSyncKeyRef.current = nextSyncKey;
+
+    const next = createCumulusGame({
+      stageId,
+      difficulty: difficultyRef.current,
+      windMode: windModeRef.current,
+      liveWindKmh: liveWindRef.current.kmh,
+      liveWindDirDeg: liveWindRef.current.dir
+    });
+    gameRef.current = next;
+    atmosRef.current = createAtmosphericVisualState();
+    interactionRef.current.dragging = false;
+    interactionRef.current.selectedIds = [];
+    interactionRef.current.hoveredCloudId = null;
+    recordedOutcomeRef.current = false;
+
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setPaused(false);
+      setHud(extractHud(next));
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeLocationKey, stageId]);
+
+  // Aktif şehrin canlı rüzgarı geldiğinde/güncellendiğinde hem oyun fiziğini hem Intro/Arena HUD'unu anında eşitle
   useEffect(() => {
     if (
       windMode === "live" &&
       typeof liveWindKmh === "number" &&
       typeof liveWindDirDeg === "number"
     ) {
-      gameRef.current.windKmh = Math.max(4, Math.min(55, liveWindKmh));
+      const clampedKmh = Math.max(4, Math.min(55, liveWindKmh));
+      gameRef.current.windKmh = clampedKmh;
       gameRef.current.windDirDeg = liveWindDirDeg;
+
+      let active = true;
+      queueMicrotask(() => {
+        if (!active) return;
+        setHud((prev) =>
+          prev.windKmh === clampedKmh && prev.windDirDeg === liveWindDirDeg
+            ? prev
+            : extractHud(gameRef.current)
+        );
+      });
+      return () => {
+        active = false;
+      };
     }
   }, [windMode, liveWindKmh, liveWindDirDeg]);
+
+  const handleManualStageSelect = useCallback(
+    (nextId: string) => {
+      setLockedStageId(nextId);
+      resetGame(nextId, difficulty, windMode);
+    },
+    [difficulty, resetGame, windMode]
+  );
+
+  const handleUnlockAutoStage = useCallback(() => {
+    setLockedStageId(null);
+    resetGame(autoStageId, difficulty, windMode);
+  }, [autoStageId, difficulty, resetGame, windMode]);
 
   const fireShockwave = useCallback(() => {
     const state = gameRef.current;
@@ -528,7 +1019,7 @@ export default function CumulusGameView() {
       window.cancelAnimationFrame(rafId);
       ro?.disconnect();
     };
-  }, [arenaLockIn, dispatchGameEvents, persistVictory, showIntro]);
+  }, [arenaLockIn, dispatchGameEvents, persistVictory, showIntro, stageId, activeLocationKey]);
 
   const clientToArena = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -705,18 +1196,27 @@ export default function CumulusGameView() {
     [stageId]
   );
 
+  const autoStageMeta = useMemo(
+    () => CUMULUS_STAGES.find((s) => s.id === autoStageId) ?? CUMULUS_STAGES[0],
+    [autoStageId]
+  );
+
   const nextStage = useMemo(() => {
     const idx = CUMULUS_STAGES.findIndex((s) => s.id === stageId);
     if (idx === -1 || idx >= CUMULUS_STAGES.length - 1) return CUMULUS_STAGES[0];
     return CUMULUS_STAGES[idx + 1];
   }, [stageId]);
 
+  const formattedHudWind = `${formatWindSpeed(hud.windKmh, unit)} ${degreesToCompassTr(hud.windDirDeg)}`;
+
   const windBadgeText =
     windMode === "off"
       ? "Rüzgarsız"
       : windMode === "live"
-        ? `Canlı ${activeLocation.name} · ${Math.round(hud.windKmh)} km/s ${degreesToCompassTr(hud.windDirDeg)}`
-        : `Değişken Cephe · ${Math.round(hud.windKmh)} km/s ${degreesToCompassTr(hud.windDirDeg)}`;
+        ? briefing.hasLiveTelemetry
+          ? `Canlı ${briefing.cityName} · ${formattedHudWind}`
+          : `${briefing.cityName} · Cephe Rüzgarı ${formattedHudWind}`
+        : `Değişken Cephe · ${formattedHudWind}`;
 
   const earnedMedal =
     hud.status === "victory" ? computeMedal(hud.elapsedSec, difficulty) : null;
@@ -725,24 +1225,51 @@ export default function CumulusGameView() {
     <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-2.5 px-3 sm:px-5 lg:px-6">
       {/* Sinematik Panoramik Arena Çerçevesi (Introda temiz sinematik tam ekran, oyunda kompakt HUD) */}
       <section className="overflow-hidden rounded-2xl border border-sky-200/15 bg-[#060c18]/90 shadow-[0_28px_90px_rgba(0,0,0,0.72)] backdrop-blur-xl">
-        {/* İnce Entegre Hakimiyet & Telemetri Üst Şeridi (Sadece oyun aktifken) */}
+        {/* İnce Entegre Hakimiyet & Canlı Şehir Termodinamik Telemetri Üst Şeridi (Sadece oyun aktifken) */}
         {!showIntro && (
           <div className="border-b border-white/[0.08] bg-[#070d1b]/90 px-3.5 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5">
+              <div className="flex flex-wrap items-center gap-2">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-400/35 bg-sky-400/15 text-sky-300">
                   <CloudLightning className="h-4 w-4" />
                 </div>
-                <div className="flex flex-wrap items-baseline gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <h1 className="font-display text-sm font-bold tracking-wider text-ink-primary sm:text-base">
                     CUMULUS · Bulut Savaşı
                   </h1>
-                  <span className="rounded-md border border-sky-400/25 bg-sky-400/10 px-2 py-0.5 font-mono text-[11px] text-sky-200">
-                    {currentStage.name}
+                  <span className="inline-flex items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 font-mono text-[11px] text-emerald-100">
+                    <MapPin className="h-3 w-3 text-emerald-300" />
+                    <span>{briefing.cityName}</span>
+                    {briefing.provinceBadge && (
+                      <span className="rounded bg-emerald-400/20 px-1 text-[10px] font-semibold text-emerald-200">
+                        {briefing.provinceBadge}
+                      </span>
+                    )}
+                    {briefing.elevationText && (
+                      <span className="text-[10px] text-emerald-200/80">
+                        · {briefing.elevationText}
+                      </span>
+                    )}
                   </span>
-                  <span className="hidden xl:inline text-xs text-ink-muted">
-                    {currentStage.subtitle}
+                  <span className="inline-flex items-center gap-1 rounded-md border border-sky-400/25 bg-sky-400/10 px-2 py-0.5 font-mono text-[11px] text-sky-200">
+                    <span>{currentStage.name}</span>
+                    {isStageManuallyLocked ? (
+                      <Lock className="h-2.5 w-2.5 text-amber-300" aria-label="Elle kilitli sahne" />
+                    ) : (
+                      <span className="text-[9px] text-sky-300/80">OTO</span>
+                    )}
                   </span>
+                  {isStageManuallyLocked && (
+                    <button
+                      type="button"
+                      onClick={handleUnlockAutoStage}
+                      title={`${briefing.cityName} için otomatik cepheye (${autoStageMeta.name}) dön`}
+                      className="inline-flex items-center gap-1 rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-200 transition-colors hover:bg-emerald-500/25"
+                    >
+                      <Sparkles className="h-2.5 w-2.5" />
+                      <span>Oto: {autoStageMeta.name}</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -759,6 +1286,41 @@ export default function CumulusGameView() {
                   <span>{career.totalWins} Zafer</span>
                 </div>
               </div>
+            </div>
+
+            {/* Seçili Şehir Canlı Termodinamik Brifing Şeridi (Sıcaklık, CAPE, LCL Bulut Tabanı, Donma Sınırı, Basınç) */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-mono text-[11px] text-ink-secondary">
+              {briefing.hasLiveTelemetry ? (
+                <>
+                  <span className="inline-flex items-center gap-1 text-ink-primary">
+                    <Thermometer className="h-3 w-3 text-sky-300" />
+                    <span>Sıcaklık:</span>
+                    <strong className="text-sky-200">{briefing.tempText}</strong>
+                  </span>
+                  <span>
+                    CAPE: <strong className="text-amber-300">{briefing.capeText}</strong>
+                  </span>
+                  <span>
+                    Bulut Tabanı (LCL):{" "}
+                    <strong className="text-sky-200">{briefing.cloudBaseText}</strong>
+                  </span>
+                  {briefing.freezingLevelText && (
+                    <span>
+                      {briefing.freezingLevelLabel}:{" "}
+                      <strong className="text-cyan-200">{briefing.freezingLevelText}</strong>
+                    </span>
+                  )}
+                  {briefing.pressureText && (
+                    <span className="hidden md:inline">
+                      Basınç: <strong className="text-ink-primary">{briefing.pressureText}</strong>
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-ink-muted">
+                  {briefing.cityName} canlı termodinamik profili senkronize ediliyor...
+                </span>
+              )}
             </div>
 
             {/* İnce Hakimiyet Barı + Plazma Cephe Kıvılcımı */}
@@ -844,14 +1406,22 @@ export default function CumulusGameView() {
             {showIntro && (
               <CumulusIntro3D
                 stageId={stageId}
-                onSelectStage={(nextId) => {
-                  setStageId(nextId);
-                  resetGame(nextId, difficulty, windMode);
-                }}
+                onSelectStage={handleManualStageSelect}
                 windBadgeText={windBadgeText}
                 windKmh={hud.windKmh}
-                pressureHpa={bundle?.current.pressure}
-                capeJkg={bundle?.nativeConvective.cape ?? null}
+                pressureHpa={matchedBundle?.current.pressure}
+                capeJkg={briefing.capeJkg}
+                cityName={briefing.cityName}
+                provinceBadge={briefing.provinceBadge}
+                elevationText={briefing.elevationText}
+                tempText={briefing.tempText}
+                pressureText={briefing.pressureText}
+                cloudBaseText={briefing.cloudBaseText}
+                freezingLevelLabel={briefing.freezingLevelLabel}
+                freezingLevelText={briefing.freezingLevelText}
+                autoStageId={autoStageId}
+                isStageManuallyLocked={isStageManuallyLocked}
+                onResetAutoStage={handleUnlockAutoStage}
                 totalWins={career.totalWins}
                 sfxEnabled={sfxEnabled}
                 onToggleSfx={() => setSfxEnabled((s) => !s)}
@@ -914,7 +1484,7 @@ export default function CumulusGameView() {
                   </h2>
                   <p className="mt-1 text-xs text-ink-secondary">
                     {hud.status === "victory"
-                      ? `${currentStage.name} fethedildi · ${earnedMedal ? MEDAL_LABEL[earnedMedal] : ""}`
+                      ? `${currentStage.name} (${briefing.cityName}) fethedildi · ${earnedMedal ? MEDAL_LABEL[earnedMedal] : ""}`
                       : `${currentStage.name} rakip fırtınalara geçti. Kendi bulutlarını besleyip Kümülonimbus kurmayı dene!`}
                   </p>
 
@@ -957,10 +1527,7 @@ export default function CumulusGameView() {
                     {hud.status === "victory" && (
                       <button
                         type="button"
-                        onClick={() => {
-                          setStageId(nextStage.id);
-                          resetGame(nextStage.id, difficulty, windMode);
-                        }}
+                        onClick={() => handleManualStageSelect(nextStage.id)}
                         className="flex items-center gap-1.5 rounded-xl border border-sky-400/50 bg-sky-500/25 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/35"
                       >
                         <Sparkles className="h-4 w-4" />
@@ -977,183 +1544,183 @@ export default function CumulusGameView() {
         {/* Entegre Kompakt Taktik Kontrol Çubuğu (Sadece oyun aktifken) */}
         {!showIntro && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] bg-[#070d1b]/95 px-3.5 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Fırlatma Oranı */}
-            <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
-              {[
-                { val: 0.5, label: "%50" },
-                { val: 0.75, label: "%75" },
-                { val: 0.95, label: "%100" }
-              ].map((opt) => (
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Fırlatma Oranı */}
+              <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
+                {[
+                  { val: 0.5, label: "%50" },
+                  { val: 0.75, label: "%75" },
+                  { val: 0.95, label: "%100" }
+                ].map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => setLaunchRatio(opt.val)}
+                    className={`rounded-lg px-2.5 py-1 font-mono text-xs font-medium transition-colors ${
+                      launchRatio === opt.val
+                        ? "bg-sky-500/25 text-sky-200"
+                        : "text-ink-secondary hover:text-ink-primary"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Araç Modu */}
+              <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
                 <button
-                  key={opt.label}
                   type="button"
-                  onClick={() => setLaunchRatio(opt.val)}
-                  className={`rounded-lg px-2.5 py-1 font-mono text-xs font-medium transition-colors ${
-                    launchRatio === opt.val
+                  onClick={() => setToolMode("launch")}
+                  className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                    toolMode === "launch"
                       ? "bg-sky-500/25 text-sky-200"
                       : "text-ink-secondary hover:text-ink-primary"
                   }`}
                 >
-                  {opt.label}
+                  <Send className="h-3.5 w-3.5" />
+                  <span>Fırlat</span>
                 </button>
-              ))}
-            </div>
-
-            {/* Araç Modu */}
-            <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
-              <button
-                type="button"
-                onClick={() => setToolMode("launch")}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  toolMode === "launch"
-                    ? "bg-sky-500/25 text-sky-200"
-                    : "text-ink-secondary hover:text-ink-primary"
-                }`}
-              >
-                <Send className="h-3.5 w-3.5" />
-                <span>Fırlat</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setToolMode("supply")}
-                title="Kendi iki bulutun arasında sürekli nem besleme hattı kur (veya Sağ Tık sürükle)"
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  toolMode === "supply"
-                    ? "bg-emerald-500/25 text-emerald-200"
-                    : "text-ink-secondary hover:text-ink-primary"
-                }`}
-              >
-                <Link2 className="h-3.5 w-3.5" />
-                <span>Besle Hattı</span>
-              </button>
-            </div>
-
-            {/* Süper Hücre Şok Dalgası */}
-            <button
-              type="button"
-              onClick={fireShockwave}
-              disabled={hud.readySupercellId === null}
-              title="120+ kütleli Süper Hücre'den Barometrik Şok Dalgası yay (Kısayol: E)"
-              className={`atmos-btn relative flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-semibold transition-all ${
-                hud.readySupercellId !== null
-                  ? "border-sky-400/75 bg-sky-500/25 text-sky-100 shadow-[0_0_24px_rgba(56,189,248,0.52)] hover:bg-sky-500/35"
-                  : "cursor-not-allowed border-white/10 bg-white/[0.03] text-ink-muted"
-              }`}
-            >
-              {hud.readySupercellId !== null && (
-                <span
-                  aria-hidden="true"
-                  className="atmos-beacon-ring pointer-events-none absolute inset-0 rounded-xl border border-sky-300"
-                />
-              )}
-              <Zap className="h-3.5 w-3.5" />
-              <span>
-                {hud.readySupercellId !== null ? "Şok Dalgası Hazır (E)" : "Şok Dalgası (120+ SC)"}
-              </span>
-            </button>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Rüzgar Modu */}
-            <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
-              {(
-                [
-                  { key: "live", label: "Canlı" },
-                  { key: "dynamic", label: "Değişken" },
-                  { key: "off", label: "Kapalı" }
-                ] as const
-              ).map((opt) => (
                 <button
-                  key={opt.key}
                   type="button"
-                  onClick={() => {
-                    setWindMode(opt.key);
-                    resetGame(stageId, difficulty, opt.key);
-                  }}
-                  className={`rounded-lg px-2 py-1 text-xs font-medium transition-colors ${
-                    windMode === opt.key
-                      ? "bg-white/15 text-ink-primary"
+                  onClick={() => setToolMode("supply")}
+                  title="Kendi iki bulutun arasında sürekli nem besleme hattı kur (veya Sağ Tık sürükle)"
+                  className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                    toolMode === "supply"
+                      ? "bg-emerald-500/25 text-emerald-200"
                       : "text-ink-secondary hover:text-ink-primary"
                   }`}
                 >
-                  {opt.label}
+                  <Link2 className="h-3.5 w-3.5" />
+                  <span>Besle Hattı</span>
                 </button>
-              ))}
+              </div>
+
+              {/* Süper Hücre Şok Dalgası */}
+              <button
+                type="button"
+                onClick={fireShockwave}
+                disabled={hud.readySupercellId === null}
+                title="120+ kütleli Süper Hücre'den Barometrik Şok Dalgası yay (Kısayol: E)"
+                className={`atmos-btn relative flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-semibold transition-all ${
+                  hud.readySupercellId !== null
+                    ? "border-sky-400/75 bg-sky-500/25 text-sky-100 shadow-[0_0_24px_rgba(56,189,248,0.52)] hover:bg-sky-500/35"
+                    : "cursor-not-allowed border-white/10 bg-white/[0.03] text-ink-muted"
+                }`}
+              >
+                {hud.readySupercellId !== null && (
+                  <span
+                    aria-hidden="true"
+                    className="atmos-beacon-ring pointer-events-none absolute inset-0 rounded-xl border border-sky-300"
+                  />
+                )}
+                <Zap className="h-3.5 w-3.5" />
+                <span>
+                  {hud.readySupercellId !== null ? "Şok Dalgası Hazır (E)" : "Şok Dalgası (120+ SC)"}
+                </span>
+              </button>
             </div>
 
-            {/* Zorluk */}
-            <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
-              {(
-                [
-                  { key: "calm", label: "Sakin" },
-                  { key: "storm", label: "Fırtına" },
-                  { key: "supercell", label: "Süper" }
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => {
-                    setDifficulty(opt.key);
-                    resetGame(stageId, opt.key, windMode);
-                  }}
-                  className={`rounded-lg px-2 py-1 text-xs font-medium transition-colors ${
-                    difficulty === opt.key
-                      ? "bg-amber-500/25 text-amber-200"
-                      : "text-ink-secondary hover:text-ink-primary"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Rüzgar Modu */}
+              <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
+                {(
+                  [
+                    { key: "live", label: "Canlı" },
+                    { key: "dynamic", label: "Değişken" },
+                    { key: "off", label: "Kapalı" }
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => {
+                      setWindMode(opt.key);
+                      resetGame(stageId, difficulty, opt.key);
+                    }}
+                    className={`rounded-lg px-2 py-1 text-xs font-medium transition-colors ${
+                      windMode === opt.key
+                        ? "bg-white/15 text-ink-primary"
+                        : "text-ink-secondary hover:text-ink-primary"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Zorluk */}
+              <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.03] p-0.5">
+                {(
+                  [
+                    { key: "calm", label: "Sakin" },
+                    { key: "storm", label: "Fırtına" },
+                    { key: "supercell", label: "Süper" }
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => {
+                      setDifficulty(opt.key);
+                      resetGame(stageId, opt.key, windMode);
+                    }}
+                    className={`rounded-lg px-2 py-1 text-xs font-medium transition-colors ${
+                      difficulty === opt.key
+                        ? "bg-amber-500/25 text-amber-200"
+                        : "text-ink-secondary hover:text-ink-primary"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSfxEnabled((s) => !s)}
+                aria-label={sfxEnabled ? "Oyun sesini kapat" : "Oyun sesini aç"}
+                title={sfxEnabled ? "Oyun sesini kapat" : "Oyun sesini aç"}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-secondary hover:bg-white/10 hover:text-ink-primary"
+              >
+                {sfxEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPaused((p) => !p)}
+                aria-label={paused ? "Devam et" : "Duraklat"}
+                title="Duraklat / Devam (Boşluk)"
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-secondary hover:bg-white/10 hover:text-ink-primary"
+              >
+                {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => resetGame()}
+                aria-label="Yeniden başlat"
+                title="Bölümü yeniden başlat (R)"
+                className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-ink-secondary hover:bg-white/10 hover:text-ink-primary"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Yenile</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  resetGame();
+                  setShowIntro(true);
+                }}
+                title="3D Süper Hücre açılış animasyonunu tekrar izle"
+                className="flex h-7 items-center gap-1 rounded-lg border border-sky-400/25 bg-sky-500/10 px-2.5 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">3D Açılış</span>
+              </button>
             </div>
-
-            <button
-              type="button"
-              onClick={() => setSfxEnabled((s) => !s)}
-              aria-label={sfxEnabled ? "Oyun sesini kapat" : "Oyun sesini aç"}
-              title={sfxEnabled ? "Oyun sesini kapat" : "Oyun sesini aç"}
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-secondary hover:bg-white/10 hover:text-ink-primary"
-            >
-              {sfxEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setPaused((p) => !p)}
-              aria-label={paused ? "Devam et" : "Duraklat"}
-              title="Duraklat / Devam (Boşluk)"
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-secondary hover:bg-white/10 hover:text-ink-primary"
-            >
-              {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => resetGame()}
-              aria-label="Yeniden başlat"
-              title="Bölümü yeniden başlat (R)"
-              className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-ink-secondary hover:bg-white/10 hover:text-ink-primary"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Yenile</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                resetGame();
-                setShowIntro(true);
-              }}
-              title="3D Süper Hücre açılış animasyonunu tekrar izle"
-              className="flex h-7 items-center gap-1 rounded-lg border border-sky-400/25 bg-sky-500/10 px-2.5 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">3D Açılış</span>
-            </button>
           </div>
-        </div>
         )}
       </section>
 
@@ -1163,15 +1730,13 @@ export default function CumulusGameView() {
           <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
             {CUMULUS_STAGES.map((stage) => {
               const active = stage.id === stageId;
+              const isCityAutoStage = stage.id === autoStageId;
               const rec = career.stages[stage.id];
               return (
                 <button
                   key={stage.id}
                   type="button"
-                  onClick={() => {
-                    setStageId(stage.id);
-                    resetGame(stage.id, difficulty, windMode);
-                  }}
+                  onClick={() => handleManualStageSelect(stage.id)}
                   className={`flex flex-col items-start rounded-xl border p-3 text-left transition-all ${
                     active
                       ? "border-sky-400/60 bg-sky-500/15 shadow-[0_0_20px_rgba(56,189,248,0.14)]"
@@ -1179,8 +1744,13 @@ export default function CumulusGameView() {
                   }`}
                 >
                   <div className="flex w-full items-center justify-between gap-1">
-                    <span className="font-mono text-[11px] text-ink-muted">
-                      0{stage.index}
+                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-muted">
+                      <span>0{stage.index}</span>
+                      {isCityAutoStage && (
+                        <span className="rounded bg-emerald-400/15 px-1 py-0.2 text-[9px] font-semibold text-emerald-300">
+                          {briefing.provinceBadge ?? "OTO"}
+                        </span>
+                      )}
                     </span>
                     {rec ? (
                       <span
@@ -1200,8 +1770,11 @@ export default function CumulusGameView() {
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 text-xs font-semibold text-ink-primary">
-                    {stage.name}
+                  <div className="mt-1 flex items-center gap-1 text-xs font-semibold text-ink-primary">
+                    <span>{stage.name}</span>
+                    {active && isStageManuallyLocked && (
+                      <Lock className="h-3 w-3 text-amber-300" />
+                    )}
                   </div>
                   <div className="mt-1 flex items-center gap-1">
                     {stage.opponents.map((op) => (

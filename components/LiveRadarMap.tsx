@@ -8,6 +8,7 @@ import {
   Crosshair,
   Layers,
   Lock,
+  Map as MapIcon,
   Minus,
   Pause,
   Play,
@@ -15,9 +16,11 @@ import {
   RefreshCw,
   Satellite,
   Unlock,
+  Waves,
   Wind
 } from "lucide-react";
 import { useWeatherStatus } from "@/context/WeatherContext";
+import { isTrProvinceCode, type TrProvinceCode } from "@/lib/provinces/types";
 import {
   RAINVIEWER_LEGEND_GRADIENT,
   buildRainViewerTileUrl,
@@ -27,11 +30,13 @@ import {
   ATMOS_REFRESH_ALL_EVENT,
   formatPrecip,
   formatRadarClock,
+  formatTemperature,
   formatWindSpeed
 } from "@/lib/weather-client";
 import type {
   GeoLocation,
   LightningCellVector,
+  MetarObservation,
   RadarFrame,
   RadarMetadata,
   UnitSystem,
@@ -71,12 +76,75 @@ export interface LiveRadarFrameState {
   isForecast: boolean;
 }
 
+export interface TrProvinceCenterMeta {
+  code: TrProvinceCode;
+  plateNumber: number;
+  nameTr: string;
+  lat: number;
+  lon: number;
+  elevationM: number;
+}
+
+export interface DecodedTr81Province {
+  code: TrProvinceCode;
+  plateNumber: number;
+  nameTr: string;
+  bbox: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
+  centroid: {
+    lat: number;
+    lon: number;
+  };
+  rings: ReadonlyArray<ReadonlyArray<readonly [number, number]>>;
+}
+
+export interface DecodedTr81Arc {
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+  points: ReadonlyArray<readonly [number, number]>;
+}
+
+export interface DecodedTr81Topology {
+  provinces: readonly DecodedTr81Province[];
+  byCode: Readonly<Record<string, DecodedTr81Province>>;
+  provinceArcs: readonly DecodedTr81Arc[];
+  foreignExclusionRings: ReadonlyArray<{
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+    ring: ReadonlyArray<readonly [number, number]>;
+  }>;
+}
+
 export interface LiveRadarMapProps {
   selectedLat: number;
   selectedLon: number;
+  selectedProvinceCode?: string | null;
+  selectedProvinceName?: string | null;
+  activeWaterBody?: {
+    labelTr: string;
+    tempC: number;
+  } | null;
+  verificationStations?: MetarObservation[];
+  provinceSubLocations?: ReadonlyArray<{
+    id: string;
+    name: string;
+    role: "coast" | "plain" | "foothill" | "summit";
+    lat: number;
+    lon: number;
+    elevationM: number;
+  }>;
   presetCities: GeoLocation[];
   onPickCoords: (lat: number, lon: number) => void;
   onPickCity: (city: GeoLocation) => void;
+  onPickProvince?: (province: TrProvinceCenterMeta) => void;
   unit?: UnitSystem;
   timeZone?: string;
   utcOffsetSeconds?: number;
@@ -84,6 +152,484 @@ export interface LiveRadarMapProps {
   advectionFromDeg?: number;
   advectionSpeedKmh?: number;
   onFrameStateChange?: (state: LiveRadarFrameState) => void;
+}
+
+/**
+ * Compact canonical 81-province MGM/WMO center metadata (`TR-01`..`TR-81`, including `TR-16` Bursa WMO 17116).
+ * Zero static polygon data (`tr-81-adm1-topo.json` is strictly lazy-fetched at runtime).
+ */
+const PACKED_TR81_CENTERS: ReadonlyArray<
+  readonly [plate: number, nameTr: string, lat: number, lon: number, elevationM: number]
+> = [
+  [1, "Adana", 36.9838, 35.298, 20],
+  [2, "Adıyaman", 37.7553, 38.2775, 672],
+  [3, "Afyonkarahisar", 38.738, 30.5604, 1034],
+  [4, "Ağrı", 39.7253, 43.0522, 1646],
+  [5, "Amasya", 40.6668, 35.8353, 409],
+  [6, "Ankara", 39.9727, 32.8637, 891],
+  [7, "Antalya", 36.8851, 30.6828, 47],
+  [8, "Artvin", 41.1752, 41.8187, 613],
+  [9, "Aydın", 37.8402, 27.8379, 56],
+  [10, "Balıkesir", 39.6551, 27.9207, 110],
+  [11, "Bilecik", 40.1414, 29.9772, 539],
+  [12, "Bingöl", 38.8847, 40.5007, 1139],
+  [13, "Bitlis", 38.475, 42.1625, 1789],
+  [14, "Bolu", 40.7329, 31.6022, 743],
+  [15, "Burdur", 37.722, 30.294, 957],
+  [16, "Bursa", 40.2308, 29.0133, 100],
+  [17, "Çanakkale", 40.141, 26.3993, 6],
+  [18, "Çankırı", 40.6082, 33.6102, 755],
+  [19, "Çorum", 40.5461, 34.9362, 776],
+  [20, "Denizli", 37.762, 29.0921, 425],
+  [21, "Diyarbakır", 37.9094, 40.2133, 674],
+  [22, "Edirne", 41.6767, 26.5508, 51],
+  [23, "Elazığ", 38.6058, 39.2973, 881],
+  [24, "Erzincan", 39.7523, 39.4868, 1216],
+  [25, "Erzurum", 39.9058, 41.2544, 1860],
+  [26, "Eskişehir", 39.7656, 30.5502, 801],
+  [27, "Gaziantep", 36.9468, 37.4617, 700],
+  [28, "Giresun", 40.9227, 38.3878, 38],
+  [29, "Gümüşhane", 40.4598, 39.4653, 1216],
+  [30, "Hakkari", 37.5744, 43.7388, 1727],
+  [31, "Hatay", 36.3615, 36.2829, 82],
+  [32, "Isparta", 37.7848, 30.7679, 997],
+  [33, "Mersin", 36.812, 34.6411, 7],
+  [34, "İstanbul", 40.9819, 28.8208, 33],
+  [35, "İzmir", 38.4049, 27.1895, 29],
+  [36, "Kars", 40.6042, 43.1073, 1795],
+  [37, "Kastamonu", 41.371, 33.7756, 800],
+  [38, "Kayseri", 38.687, 35.5, 1094],
+  [39, "Kırklareli", 41.7382, 27.2178, 232],
+  [40, "Kırşehir", 39.1639, 34.1561, 1007],
+  [41, "Kocaeli", 40.7663, 29.9173, 67],
+  [42, "Konya", 37.8687, 32.4713, 1029],
+  [43, "Kütahya", 39.4171, 29.9891, 969],
+  [44, "Malatya", 38.35, 38.25, 950],
+  [45, "Manisa", 38.6153, 27.4049, 71],
+  [46, "Kahramanmaraş", 37.576, 36.915, 581],
+  [47, "Mardin", 37.3103, 40.7284, 1040],
+  [48, "Muğla", 37.2095, 28.3668, 646],
+  [49, "Muş", 38.7509, 41.5023, 1316],
+  [50, "Nevşehir", 38.6163, 34.7025, 1260],
+  [51, "Niğde", 37.9587, 34.6795, 1211],
+  [52, "Ordu", 40.9838, 37.8858, 5],
+  [53, "Rize", 41.04, 40.5013, 3],
+  [54, "Sakarya", 40.7676, 30.3934, 30],
+  [55, "Samsun", 41.3442, 36.2564, 4],
+  [56, "Siirt", 37.9319, 41.9354, 895],
+  [57, "Sinop", 42.0299, 35.1545, 27],
+  [58, "Sivas", 39.7437, 37.002, 1294],
+  [59, "Tekirdağ", 40.9585, 27.4965, 4],
+  [60, "Tokat", 40.3312, 36.5577, 611],
+  [61, "Trabzon", 40.9985, 39.7649, 39],
+  [62, "Tunceli", 39.1058, 39.5408, 981],
+  [63, "Şanlıurfa", 37.1608, 38.7863, 550],
+  [64, "Uşak", 38.6712, 29.404, 919],
+  [65, "Van", 38.4693, 43.346, 1675],
+  [66, "Yozgat", 39.8243, 34.8159, 1301],
+  [67, "Zonguldak", 41.4492, 31.7779, 135],
+  [68, "Aksaray", 38.3705, 33.9987, 970],
+  [69, "Bayburt", 40.2547, 40.2207, 1584],
+  [70, "Karaman", 37.1932, 33.2202, 1018],
+  [71, "Kırıkkale", 39.8433, 33.5181, 751],
+  [72, "Batman", 37.8636, 41.1562, 610],
+  [73, "Şırnak", 37.5209, 42.4523, 1350],
+  [74, "Bartın", 41.6248, 32.3569, 33],
+  [75, "Ardahan", 41.1061, 42.7055, 1827],
+  [76, "Iğdır", 39.9227, 44.0523, 856],
+  [77, "Yalova", 40.6589, 29.2796, 4],
+  [78, "Karabük", 41.2327, 32.6294, 485],
+  [79, "Kilis", 36.7085, 37.1123, 640],
+  [80, "Osmaniye", 37.1021, 36.2539, 94],
+  [81, "Düzce", 40.8437, 31.1488, 146]
+];
+
+export const TR81_PROVINCE_CENTERS: Readonly<Record<TrProvinceCode, TrProvinceCenterMeta>> =
+  (() => {
+    const map = {} as Record<TrProvinceCode, TrProvinceCenterMeta>;
+    for (const [plate, nameTr, lat, lon, elevationM] of PACKED_TR81_CENTERS) {
+      const code = `TR-${String(plate).padStart(2, "0")}` as TrProvinceCode;
+      map[code] = Object.freeze({
+        code,
+        plateNumber: plate,
+        nameTr: nameTr.normalize("NFC"),
+        lat,
+        lon,
+        elevationM
+      });
+    }
+    return Object.freeze(map);
+  })();
+
+/**
+ * Province-locked coordinates for verified Turkish METAR (`LT*`) aerodromes and Bursa Tier-1 stations.
+ * Strictly tagged by `provinceCode` so cross-province station markers can NEVER bleed across borders.
+ */
+const TR_VERIFIED_STATION_COORDS: Readonly<
+  Record<string, { provinceCode: TrProvinceCode; lat: number; lon: number; shortLabel: string }>
+> = Object.freeze({
+  // TR-16 Bursa Tier-1 & Tier-2 Mesh
+  "17116-OSM": { provinceCode: "TR-16", lat: 40.2308, lon: 29.0133, shortLabel: "17116 Merkez" },
+  "OSM-ETEK": { provinceCode: "TR-16", lat: 40.1885, lon: 29.061, shortLabel: "Osmangazi" },
+  NILUFER: { provinceCode: "TR-16", lat: 40.2286, lon: 28.8585, shortLabel: "Nilüfer" },
+  YILDIRIM: { provinceCode: "TR-16", lat: 40.1919, lon: 29.1086, shortLabel: "Yıldırım" },
+  KESTEL: { provinceCode: "TR-16", lat: 40.1861, lon: 29.2106, shortLabel: "Kestel" },
+  GURSU: { provinceCode: "TR-16", lat: 40.2489, lon: 29.2408, shortLabel: "Gürsu" },
+  MUDANYA: { provinceCode: "TR-16", lat: 40.3686, lon: 28.9017, shortLabel: "Mudanya" },
+  GEMLIK: { provinceCode: "TR-16", lat: 40.4401, lon: 29.1504, shortLabel: "Gemlik" },
+  KARACABEY: { provinceCode: "TR-16", lat: 40.1319, lon: 28.332, shortLabel: "Karacabey" },
+  ULUDAG: { provinceCode: "TR-16", lat: 40.1075, lon: 29.1292, shortLabel: "Uludağ" },
+  SARIALAN: { provinceCode: "TR-16", lat: 40.138, lon: 29.108, shortLabel: "Sarıalan" },
+  LTBR: { provinceCode: "TR-16", lat: 40.2553, lon: 29.5625, shortLabel: "LTBR" },
+  // Official 81-Province Physical Runway METAR Whitelist
+  LTAF: { provinceCode: "TR-01", lat: 36.9822, lon: 35.2804, shortLabel: "LTAF" },
+  LTAG: { provinceCode: "TR-01", lat: 37.0021, lon: 35.4259, shortLabel: "LTAG" },
+  LTCP: { provinceCode: "TR-02", lat: 37.7314, lon: 38.4689, shortLabel: "LTCP" },
+  LTAH: { provinceCode: "TR-03", lat: 38.7264, lon: 30.6011, shortLabel: "LTAH" },
+  LTCO: { provinceCode: "TR-04", lat: 39.6545, lon: 43.0271, shortLabel: "LTCO" },
+  LTAP: { provinceCode: "TR-05", lat: 40.824, lon: 35.5086, shortLabel: "LTAP" },
+  LTAC: { provinceCode: "TR-06", lat: 40.1281, lon: 32.9951, shortLabel: "LTAC" },
+  LTAB: { provinceCode: "TR-06", lat: 39.9349, lon: 32.7408, shortLabel: "LTAB" },
+  LTAD: { provinceCode: "TR-06", lat: 39.9498, lon: 32.6886, shortLabel: "LTAD" },
+  LTAI: { provinceCode: "TR-07", lat: 36.8987, lon: 30.8005, shortLabel: "LTAI" },
+  LTFG: { provinceCode: "TR-07", lat: 36.2992, lon: 32.3006, shortLabel: "LTFG" },
+  LTBD: { provinceCode: "TR-09", lat: 37.8161, lon: 27.8892, shortLabel: "LTBD" },
+  LTBF: { provinceCode: "TR-10", lat: 39.6193, lon: 27.926, shortLabel: "LTBF" },
+  LTBG: { provinceCode: "TR-10", lat: 40.318, lon: 27.9777, shortLabel: "LTBG" },
+  LTFD: { provinceCode: "TR-10", lat: 39.5546, lon: 27.0138, shortLabel: "LTFD" },
+  LTCU: { provinceCode: "TR-12", lat: 38.8611, lon: 40.5925, shortLabel: "LTCU" },
+  LTBH: { provinceCode: "TR-17", lat: 40.1377, lon: 26.4268, shortLabel: "LTBH" },
+  LTFK: { provinceCode: "TR-17", lat: 40.2011, lon: 25.8822, shortLabel: "LTFK" },
+  LTAY: { provinceCode: "TR-20", lat: 37.7856, lon: 29.7013, shortLabel: "LTAY" },
+  LTCC: { provinceCode: "TR-21", lat: 37.8939, lon: 40.201, shortLabel: "LTCC" },
+  LTCA: { provinceCode: "TR-23", lat: 38.6058, lon: 39.2973, shortLabel: "LTCA" },
+  LTCD: { provinceCode: "TR-24", lat: 39.7102, lon: 39.527, shortLabel: "LTCD" },
+  LTCE: { provinceCode: "TR-25", lat: 39.9565, lon: 41.1702, shortLabel: "LTCE" },
+  LTBY: { provinceCode: "TR-26", lat: 39.81, lon: 30.5194, shortLabel: "LTBY" },
+  LTBI: { provinceCode: "TR-26", lat: 39.7841, lon: 30.5821, shortLabel: "LTBI" },
+  LTAJ: { provinceCode: "TR-27", lat: 36.9472, lon: 37.4787, shortLabel: "LTAJ" },
+  LTCW: { provinceCode: "TR-30", lat: 37.55, lon: 44.2372, shortLabel: "LTCW" },
+  LTDA: { provinceCode: "TR-31", lat: 36.3628, lon: 36.2822, shortLabel: "LTDA" },
+  LTFC: { provinceCode: "TR-32", lat: 37.8554, lon: 30.3684, shortLabel: "LTFC" },
+  LTDB: { provinceCode: "TR-33", lat: 36.8981, lon: 35.0694, shortLabel: "LTDB" },
+  LTFM: { provinceCode: "TR-34", lat: 41.2753, lon: 28.7519, shortLabel: "LTFM" },
+  LTFJ: { provinceCode: "TR-34", lat: 40.8986, lon: 29.3092, shortLabel: "LTFJ" },
+  LTBA: { provinceCode: "TR-34", lat: 40.9769, lon: 28.8146, shortLabel: "LTBA" },
+  LTBJ: { provinceCode: "TR-35", lat: 38.2924, lon: 27.157, shortLabel: "LTBJ" },
+  LTBL: { provinceCode: "TR-35", lat: 38.513, lon: 27.01, shortLabel: "LTBL" },
+  LTCF: { provinceCode: "TR-36", lat: 40.5622, lon: 43.115, shortLabel: "LTCF" },
+  LTAL: { provinceCode: "TR-37", lat: 41.3142, lon: 33.7958, shortLabel: "LTAL" },
+  LTAU: { provinceCode: "TR-38", lat: 38.7704, lon: 35.4954, shortLabel: "LTAU" },
+  LTBQ: { provinceCode: "TR-41", lat: 40.735, lon: 30.0833, shortLabel: "LTBQ" },
+  LTAN: { provinceCode: "TR-42", lat: 37.979, lon: 32.5619, shortLabel: "LTAN" },
+  LTBZ: { provinceCode: "TR-43", lat: 39.1114, lon: 30.13, shortLabel: "LTBZ" },
+  LTBN: { provinceCode: "TR-43", lat: 39.4267, lon: 30.0169, shortLabel: "LTBN" },
+  LTAT: { provinceCode: "TR-44", lat: 38.4353, lon: 38.091, shortLabel: "LTAT" },
+  LTBT: { provinceCode: "TR-45", lat: 38.8089, lon: 27.8339, shortLabel: "LTBT" },
+  LTCN: { provinceCode: "TR-46", lat: 37.539, lon: 36.9534, shortLabel: "LTCN" },
+  LTCR: { provinceCode: "TR-47", lat: 37.2233, lon: 40.6317, shortLabel: "LTCR" },
+  LTBS: { provinceCode: "TR-48", lat: 36.7131, lon: 28.7925, shortLabel: "LTBS" },
+  LTFE: { provinceCode: "TR-48", lat: 37.2506, lon: 27.6643, shortLabel: "LTFE" },
+  LTCK: { provinceCode: "TR-49", lat: 38.7478, lon: 41.6612, shortLabel: "LTCK" },
+  LTAZ: { provinceCode: "TR-50", lat: 38.7719, lon: 34.5345, shortLabel: "LTAZ" },
+  LTCB: { provinceCode: "TR-52", lat: 40.967, lon: 38.0815, shortLabel: "LTCB" },
+  LTFO: { provinceCode: "TR-53", lat: 41.1692, lon: 40.8289, shortLabel: "LTFO" },
+  LTFH: { provinceCode: "TR-55", lat: 41.2631, lon: 36.5587, shortLabel: "LTFH" },
+  LTCL: { provinceCode: "TR-56", lat: 37.9789, lon: 41.8404, shortLabel: "LTCL" },
+  LTCM: { provinceCode: "TR-57", lat: 42.0209, lon: 35.079, shortLabel: "LTCM" },
+  LTAR: { provinceCode: "TR-58", lat: 39.8138, lon: 36.9035, shortLabel: "LTAR" },
+  LTBU: { provinceCode: "TR-59", lat: 41.1382, lon: 27.9191, shortLabel: "LTBU" },
+  LTAW: { provinceCode: "TR-60", lat: 40.3117, lon: 36.3711, shortLabel: "LTAW" },
+  LTCG: { provinceCode: "TR-61", lat: 40.9951, lon: 39.7897, shortLabel: "LTCG" },
+  LTCS: { provinceCode: "TR-63", lat: 37.4456, lon: 38.8956, shortLabel: "LTCS" },
+  LTBO: { provinceCode: "TR-64", lat: 38.6815, lon: 29.4717, shortLabel: "LTBO" },
+  LTCI: { provinceCode: "TR-65", lat: 38.4682, lon: 43.3323, shortLabel: "LTCI" },
+  LTAS: { provinceCode: "TR-67", lat: 41.5064, lon: 32.0886, shortLabel: "LTAS" },
+  LTCJ: { provinceCode: "TR-72", lat: 37.929, lon: 41.1166, shortLabel: "LTCJ" },
+  LTCV: { provinceCode: "TR-73", lat: 37.3639, lon: 42.0597, shortLabel: "LTCV" },
+  LTCT: { provinceCode: "TR-76", lat: 39.9831, lon: 43.8664, shortLabel: "LTCT" }
+});
+
+interface RawTrTopoJson {
+  type: string;
+  transform: {
+    scale: [number, number];
+    translate: [number, number];
+  };
+  objects: {
+    provinces: {
+      type: string;
+      geometries: Array<{
+        type: string;
+        id: string;
+        arcs: number[][] | number[][][];
+      }>;
+    };
+    foreign_exclusion?: {
+      type: string;
+      geometries: Array<{
+        type: string;
+        arcs: number[][] | number[][][];
+      }>;
+    };
+  };
+  arcs: number[][][];
+}
+
+type GlobalTr81TopoHolder = typeof globalThis & {
+  __ATMOS_TR81_TOPO_DATA__?: DecodedTr81Topology | null;
+  __ATMOS_TR81_TOPO_PROMISE__?: Promise<DecodedTr81Topology | null> | null;
+};
+
+/**
+ * Pure ~25-line TopoJSON delta-arc (`transform + arcs`) decoder for `/geo/tr-81-adm1-topo.json`.
+ * Returns `null` without throwing if given invalid/mocked payloads in test environments.
+ */
+export function decodeTr81Topology(raw: unknown): DecodedTr81Topology | null {
+  if (!raw || typeof raw !== "object") return null;
+  const topo = raw as Partial<RawTrTopoJson>;
+  if (
+    topo.type !== "Topology" ||
+    !topo.transform ||
+    !Array.isArray(topo.transform.scale) ||
+    !Array.isArray(topo.transform.translate) ||
+    !Array.isArray(topo.arcs) ||
+    !topo.objects?.provinces ||
+    !Array.isArray(topo.objects.provinces.geometries)
+  ) {
+    return null;
+  }
+
+  const [sx, sy] = topo.transform.scale;
+  const [tx, ty] = topo.transform.translate;
+  const decodedArcs: Array<Array<readonly [number, number]>> = topo.arcs.map((arc) => {
+    let qx = 0;
+    let qy = 0;
+    return arc.map((pair) => {
+      qx += pair[0];
+      qy += pair[1];
+      return [tx + qx * sx, ty + qy * sy] as const;
+    });
+  });
+
+  const stitchRing = (refs: readonly number[]): Array<readonly [number, number]> => {
+    const out: Array<readonly [number, number]> = [];
+    for (let k = 0; k < refs.length; k++) {
+      const ref = refs[k];
+      const pts = ref >= 0 ? decodedArcs[ref] : decodedArcs[~ref];
+      if (!pts || pts.length === 0) continue;
+      if (ref >= 0) {
+        for (let i = 0; i < pts.length; i++) {
+          if (out.length > 0 && i === 0) continue;
+          out.push(pts[i]);
+        }
+      } else {
+        for (let i = pts.length - 1; i >= 0; i--) {
+          if (out.length > 0 && i === pts.length - 1) continue;
+          out.push(pts[i]);
+        }
+      }
+    }
+    return out;
+  };
+
+  const usedProvinceArcIds = new Set<number>();
+  const provinces: DecodedTr81Province[] = [];
+  const byCode: Record<string, DecodedTr81Province> = {};
+
+  for (const geom of topo.objects.provinces.geometries) {
+    if (!isTrProvinceCode(geom.id)) continue;
+    const code = geom.id;
+    const meta = TR81_PROVINCE_CENTERS[code];
+    const polyList: number[][][] =
+      geom.type === "Polygon"
+        ? [geom.arcs as number[][]]
+        : (geom.arcs as number[][][]);
+
+    const rings: Array<ReadonlyArray<readonly [number, number]>> = [];
+    let minLon = Infinity;
+    let minLat = Infinity;
+    let maxLon = -Infinity;
+    let maxLat = -Infinity;
+
+    for (const poly of polyList) {
+      if (!Array.isArray(poly)) continue;
+      for (const ringRefs of poly) {
+        if (!Array.isArray(ringRefs) || ringRefs.length === 0) continue;
+        for (const r of ringRefs) {
+          usedProvinceArcIds.add(r >= 0 ? r : ~r);
+        }
+        const pts = stitchRing(ringRefs);
+        if (pts.length < 3) continue;
+        for (const [lon, lat] of pts) {
+          if (lon < minLon) minLon = lon;
+          if (lon > maxLon) maxLon = lon;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+        }
+        rings.push(pts);
+      }
+    }
+
+    if (rings.length === 0) continue;
+    const item: DecodedTr81Province = {
+      code,
+      plateNumber: meta?.plateNumber ?? Number(code.slice(3)),
+      nameTr: meta?.nameTr ?? code,
+      bbox: { minLon, minLat, maxLon, maxLat },
+      centroid: {
+        lat: meta?.lat ?? (minLat + maxLat) / 2,
+        lon: meta?.lon ?? (minLon + maxLon) / 2
+      },
+      rings
+    };
+    provinces.push(item);
+    byCode[code] = item;
+  }
+
+  if (provinces.length === 0) return null;
+
+  const provinceArcs: DecodedTr81Arc[] = [];
+  for (const arcIdx of usedProvinceArcIds) {
+    const pts = decodedArcs[arcIdx];
+    if (!pts || pts.length < 2) continue;
+    let minLon = Infinity;
+    let minLat = Infinity;
+    let maxLon = -Infinity;
+    let maxLat = -Infinity;
+    for (const [lon, lat] of pts) {
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+    provinceArcs.push({ minLon, minLat, maxLon, maxLat, points: pts });
+  }
+
+  const foreignExclusionRings: Array<{
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+    ring: ReadonlyArray<readonly [number, number]>;
+  }> = [];
+  const rawForeign = topo.objects.foreign_exclusion?.geometries ?? [];
+  for (const fg of rawForeign) {
+    const polyList: number[][][] =
+      fg.type === "Polygon" ? [fg.arcs as number[][]] : (fg.arcs as number[][][]);
+    for (const poly of polyList) {
+      const extRefs = poly?.[0];
+      if (!Array.isArray(extRefs) || extRefs.length === 0) continue;
+      const ring = stitchRing(extRefs);
+      if (ring.length < 3) continue;
+      let minLon = Infinity;
+      let minLat = Infinity;
+      let maxLon = -Infinity;
+      let maxLat = -Infinity;
+      for (const [lon, lat] of ring) {
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+      foreignExclusionRings.push({ minLon, minLat, maxLon, maxLat, ring });
+    }
+  }
+
+  return {
+    provinces,
+    byCode,
+    provinceArcs,
+    foreignExclusionRings
+  };
+}
+
+function isPointInLonLatRing(
+  lon: number,
+  lat: number,
+  ring: ReadonlyArray<readonly [number, number]>
+): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect =
+      yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+export function findTrProvinceAtLatLon(
+  topo: DecodedTr81Topology | null | undefined,
+  lat: number,
+  lon: number
+): DecodedTr81Province | null {
+  if (!topo || lon < 25.4 || lon > 45.0 || lat < 35.7 || lat > 42.3) return null;
+
+  for (const fx of topo.foreignExclusionRings) {
+    if (lon < fx.minLon || lon > fx.maxLon || lat < fx.minLat || lat > fx.maxLat) {
+      continue;
+    }
+    if (isPointInLonLatRing(lon, lat, fx.ring)) {
+      return null;
+    }
+  }
+
+  for (const prov of topo.provinces) {
+    const b = prov.bbox;
+    if (lon < b.minLon || lon > b.maxLon || lat < b.minLat || lat > b.maxLat) {
+      continue;
+    }
+    for (const ring of prov.rings) {
+      if (isPointInLonLatRing(lon, lat, ring)) {
+        return prov;
+      }
+    }
+  }
+  return null;
+}
+
+export function getCachedTr81TopologySync(): DecodedTr81Topology | null {
+  const g = globalThis as GlobalTr81TopoHolder;
+  return g.__ATMOS_TR81_TOPO_DATA__ ?? null;
+}
+
+/**
+ * Lazy, singleflight browser loader for `/geo/tr-81-adm1-topo.json` (`0 KB` initial bundle cost).
+ * Silently resolves to `null` if `fetch` is unavailable, mocked to non-Topology JSON, or offline.
+ */
+export function loadTr81Adm1Topology(): Promise<DecodedTr81Topology | null> {
+  if (typeof window === "undefined" || typeof window.fetch !== "function") {
+    return Promise.resolve(null);
+  }
+  const g = globalThis as GlobalTr81TopoHolder;
+  if (g.__ATMOS_TR81_TOPO_DATA__) {
+    return Promise.resolve(g.__ATMOS_TR81_TOPO_DATA__);
+  }
+  if (g.__ATMOS_TR81_TOPO_PROMISE__) {
+    return g.__ATMOS_TR81_TOPO_PROMISE__;
+  }
+
+  g.__ATMOS_TR81_TOPO_PROMISE__ = window
+    .fetch("/geo/tr-81-adm1-topo.json")
+    .then(async (res) => {
+      if (!res || !res.ok || typeof res.json !== "function") return null;
+      const raw = await res.json().catch(() => null);
+      const decoded = decodeTr81Topology(raw);
+      if (decoded) {
+        g.__ATMOS_TR81_TOPO_DATA__ = decoded;
+      }
+      return decoded;
+    })
+    .catch(() => null)
+    .finally(() => {
+      g.__ATMOS_TR81_TOPO_PROMISE__ = null;
+    });
+
+  return g.__ATMOS_TR81_TOPO_PROMISE__;
 }
 
 function clamp(val: number, min: number, max: number): number {
@@ -229,6 +775,26 @@ function resolveInitialObservedFrameIndex(data: RadarMetadata): number {
   return Math.max(0, data.frames.length - 1);
 }
 
+function normalizeTrStationToken(raw: string): string {
+  return raw
+    .normalize("NFC")
+    .trim()
+    .replace(/İ/g, "i")
+    .replace(/I/g, "i")
+    .replace(/ı/g, "i")
+    .replace(/Ş/g, "s")
+    .replace(/ş/g, "s")
+    .replace(/Ğ/g, "g")
+    .replace(/ğ/g, "g")
+    .replace(/Ü/g, "u")
+    .replace(/ü/g, "u")
+    .replace(/Ö/g, "o")
+    .replace(/ö/g, "o")
+    .replace(/Ç/g, "c")
+    .replace(/ç/g, "c")
+    .toLowerCase();
+}
+
 interface ActivePointerSample {
   x: number;
   y: number;
@@ -240,9 +806,15 @@ interface ActivePointerSample {
 function LiveRadarMapBase({
   selectedLat,
   selectedLon,
+  selectedProvinceCode,
+  selectedProvinceName,
+  activeWaterBody,
+  verificationStations,
+  provinceSubLocations,
   presetCities,
   onPickCoords,
   onPickCity,
+  onPickProvince,
   unit = "metric",
   timeZone,
   utcOffsetSeconds,
@@ -258,9 +830,24 @@ function LiveRadarMapBase({
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  const [trTopo, setTrTopo] = useState<DecodedTr81Topology | null>(() =>
+    getCachedTr81TopologySync()
+  );
+  const [showProvinceBorders, setShowProvinceBorders] = useState(true);
+  const [hoveredProvinceCode, setHoveredProvinceCode] = useState<TrProvinceCode | null>(null);
+
   const panRafRef = useRef<number>(0);
   const pendingCenterRef = useRef<{ lat: number; lon: number } | null>(null);
   const mobileDragLockRef = useRef<boolean>(false);
+  const prevTargetRef = useRef<{
+    lat: number;
+    lon: number;
+    provinceCode: string | null | undefined;
+  }>({
+    lat: selectedLat,
+    lon: selectedLon,
+    provinceCode: selectedProvinceCode
+  });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 760, height: 540 });
@@ -289,6 +876,7 @@ function LiveRadarMapBase({
   const radarRef = useRef<RadarMetadata | null>(null);
   const decodedFrameSetRef = useRef<Set<string>>(new Set());
   const wheelAccumRef = useRef<{ sum: number; lastMs: number }>({ sum: 0, lastMs: 0 });
+  const hoverCheckMsRef = useRef<number>(0);
 
   const pointersRef = useRef<Map<number, ActivePointerSample>>(new Map());
   const hadMultiTouchRef = useRef<boolean>(false);
@@ -337,6 +925,22 @@ function LiveRadarMapBase({
     mobileDragLockRef.current = mobileDragLock;
   }, [mobileDragLock]);
 
+  // Lazy-load `/geo/tr-81-adm1-topo.json` once on `/world` mount (0 KB initial bundle impact)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let active = true;
+    void loadTr81Adm1Topology()
+      .then((data) => {
+        if (active && data) {
+          setTrTopo(data);
+        }
+      })
+      .catch(() => null);
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // Respect prefers-reduced-motion: pause automatic playback loop by default & when enabled
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -357,20 +961,43 @@ function LiveRadarMapBase({
     return () => mql.removeEventListener?.("change", onChange);
   }, []);
 
+  // Synchronize map center and purge stale city wind-grid state whenever selected city/province changes
   useEffect(() => {
     let active = true;
+    const prev = prevTargetRef.current;
+    const movedFar =
+      Math.hypot(selectedLat - prev.lat, selectedLon - prev.lon) > 0.03 ||
+      (selectedProvinceCode &&
+        prev.provinceCode &&
+        selectedProvinceCode !== prev.provinceCode);
+    prevTargetRef.current = {
+      lat: selectedLat,
+      lon: selectedLon,
+      provinceCode: selectedProvinceCode
+    };
+
+    if (panRafRef.current) {
+      window.cancelAnimationFrame(panRafRef.current);
+      panRafRef.current = 0;
+    }
+    pendingCenterRef.current = null;
+
     queueMicrotask(() => {
-      if (active) {
-        setView((prev) => ({
-          ...prev,
-          center: { lat: selectedLat, lon: selectedLon }
-        }));
+      if (!active) return;
+      if (movedFar) {
+        setWindGrid(null);
+        setWindStale(false);
+        setHoveredProvinceCode(null);
       }
+      setView((cur) => ({
+        ...cur,
+        center: { lat: selectedLat, lon: selectedLon }
+      }));
     });
     return () => {
       active = false;
     };
-  }, [selectedLat, selectedLon]);
+  }, [selectedLat, selectedLon, selectedProvinceCode]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -605,7 +1232,7 @@ function LiveRadarMapBase({
     [centerWorldX, centerWorldY, size.height, size.width, zoom]
   );
 
-  // Fetch 25-point real 10m wind vector grid with antimeridian (±180°) pixel-scale spanLon math
+  // Fetch 25-point real 10m wind vector grid with AbortController cancellation on city/viewport change
   useEffect(() => {
     if (overlayMode === "radar") return;
     const controller = new AbortController();
@@ -631,6 +1258,7 @@ function LiveRadarMapBase({
         eastLon = wrapLon(eastLon - 0.02);
       }
 
+      if (controller.signal.aborted) return;
       setWindLoading(true);
       try {
         const qs = new URLSearchParams({
@@ -643,19 +1271,24 @@ function LiveRadarMapBase({
           signal: controller.signal,
           cache: recoveryCount > 0 || refreshNonce > 0 ? "no-store" : "default"
         });
+        if (controller.signal.aborted) return;
         if (res.ok) {
           const data: WindGridBundle = await res.json();
+          if (controller.signal.aborted) return;
           setWindGrid(data);
           setWindStale((data.freshness?.status ?? "live") !== "live");
         } else {
           setWindStale(true);
         }
       } catch (err) {
+        if (controller.signal.aborted) return;
         if (!(err instanceof Error && err.name === "AbortError")) {
           setWindStale(true);
         }
       } finally {
-        setWindLoading(false);
+        if (!controller.signal.aborted) {
+          setWindLoading(false);
+        }
       }
     }, 280);
 
@@ -899,6 +1532,243 @@ function LiveRadarMapBase({
     [centerWorldX, centerWorldY, size.height, size.width, zoom]
   );
 
+  // Resolve active Turkish province (`TR-01`..`TR-81`) or `null` when outside Turkey
+  const effectiveTrProvinceCode = useMemo((): TrProvinceCode | null => {
+    if (isTrProvinceCode(selectedProvinceCode)) return selectedProvinceCode;
+    if (selectedProvinceCode === "GLOBAL") return null;
+    if (trTopo) {
+      return findTrProvinceAtLatLon(trTopo, selectedLat, selectedLon)?.code ?? null;
+    }
+    return null;
+  }, [selectedProvinceCode, trTopo, selectedLat, selectedLon]);
+
+  const effectiveProvinceBadgeText = useMemo(() => {
+    if (effectiveTrProvinceCode) {
+      const name =
+        selectedProvinceName || TR81_PROVINCE_CENTERS[effectiveTrProvinceCode]?.nameTr;
+      return name ? `${effectiveTrProvinceCode} · ${name}` : effectiveTrProvinceCode;
+    }
+    if (selectedProvinceCode === "GLOBAL") {
+      return "KÜRESEL";
+    }
+    return null;
+  }, [effectiveTrProvinceCode, selectedProvinceCode, selectedProvinceName]);
+
+  // 81-Province Vector SVG Geometry (1 combined arc path + active cyan/amber highlight + hover outline)
+  const trBorderPaths = useMemo(() => {
+    if (!showProvinceBorders || !trTopo || size.width <= 0 || size.height <= 0) {
+      return null;
+    }
+    const nw = screenToLatLon(0, 0);
+    const se = screenToLatLon(size.width, size.height);
+    const minVisLat = Math.min(nw.lat, se.lat) - 0.6;
+    const maxVisLat = Math.max(nw.lat, se.lat) + 0.6;
+    const spanLon = clamp((size.width / (TILE_SIZE * Math.pow(2, zoom))) * 360, 0.4, 360);
+    const minVisLon = center.lon - spanLon / 2 - 0.8;
+    const maxVisLon = center.lon + spanLon / 2 + 0.8;
+
+    // Skip SVG work when viewport does not intersect Turkey
+    if (maxVisLon < 25.4 || minVisLon > 45.2 || maxVisLat < 35.5 || minVisLat > 42.4) {
+      return null;
+    }
+
+    const minSegPx = zoom <= 5 ? 1.5 : zoom === 6 ? 1.0 : 0.4;
+    const buildOpenPath = (pts: ReadonlyArray<readonly [number, number]>): string => {
+      let d = "";
+      let lastX = -9999;
+      let lastY = -9999;
+      for (let i = 0; i < pts.length; i++) {
+        const p = projectToScreen(pts[i][1], pts[i][0]);
+        if (i === 0) {
+          d += `M${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+          lastX = p.x;
+          lastY = p.y;
+        } else if (
+          i === pts.length - 1 ||
+          Math.hypot(p.x - lastX, p.y - lastY) >= minSegPx
+        ) {
+          d += `L${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+          lastX = p.x;
+          lastY = p.y;
+        }
+      }
+      return d;
+    };
+
+    const buildClosedRingsPath = (
+      rings: ReadonlyArray<ReadonlyArray<readonly [number, number]>>
+    ): string => {
+      let d = "";
+      for (const ring of rings) {
+        if (ring.length < 3) continue;
+        const seg = buildOpenPath(ring);
+        if (seg) d += `${seg}Z`;
+      }
+      return d;
+    };
+
+    let allArcsD = "";
+    for (const arc of trTopo.provinceArcs) {
+      if (
+        arc.maxLon < minVisLon ||
+        arc.minLon > maxVisLon ||
+        arc.maxLat < minVisLat ||
+        arc.minLat > maxVisLat
+      ) {
+        continue;
+      }
+      allArcsD += buildOpenPath(arc.points);
+    }
+
+    const activeProv = effectiveTrProvinceCode
+      ? trTopo.byCode[effectiveTrProvinceCode] ?? null
+      : null;
+    const activeD = activeProv ? buildClosedRingsPath(activeProv.rings) : "";
+
+    const hoveredProv =
+      hoveredProvinceCode &&
+      hoveredProvinceCode !== effectiveTrProvinceCode &&
+      !isDragging
+        ? trTopo.byCode[hoveredProvinceCode] ?? null
+        : null;
+    const hoveredD = hoveredProv ? buildClosedRingsPath(hoveredProv.rings) : "";
+
+    return {
+      allArcsD,
+      activeD,
+      hoveredD,
+      hoveredProv
+    };
+  }, [
+    showProvinceBorders,
+    trTopo,
+    size.width,
+    size.height,
+    screenToLatLon,
+    zoom,
+    center.lon,
+    projectToScreen,
+    effectiveTrProvinceCode,
+    hoveredProvinceCode,
+    isDragging
+  ]);
+
+  // Province-locked Live Station Markers (`bundle?.hybrid?.verification?.stations`)
+  const projectedVerificationStations = useMemo(() => {
+    if (!verificationStations || verificationStations.length === 0) return [];
+    const seen = new Set<string>();
+    const out: Array<{
+      id: string;
+      label: string;
+      tempLabel: string | null;
+      x: number;
+      y: number;
+    }> = [];
+
+    for (const st of verificationStations) {
+      const codeKey = String(st.icaoId || "").trim().toUpperCase();
+      if (!codeKey || seen.has(codeKey)) continue;
+
+      let stLat: number | null = null;
+      let stLon: number | null = null;
+      let shortLabel = codeKey;
+
+      const known = TR_VERIFIED_STATION_COORDS[codeKey];
+      if (known) {
+        // Strict cross-province isolation: reject stations owned by any other province
+        if (effectiveTrProvinceCode && known.provinceCode !== effectiveTrProvinceCode) {
+          continue;
+        }
+        if (selectedProvinceCode === "GLOBAL") {
+          continue;
+        }
+        stLat = known.lat;
+        stLon = known.lon;
+        shortLabel = known.shortLabel;
+      } else {
+        const stAny = st as MetarObservation & {
+          lat?: number;
+          lon?: number;
+          provinceCode?: string;
+        };
+        if (
+          typeof stAny.lat === "number" &&
+          Number.isFinite(stAny.lat) &&
+          typeof stAny.lon === "number" &&
+          Number.isFinite(stAny.lon)
+        ) {
+          if (
+            stAny.provinceCode &&
+            effectiveTrProvinceCode &&
+            stAny.provinceCode !== effectiveTrProvinceCode
+          ) {
+            continue;
+          }
+          if (trTopo && effectiveTrProvinceCode) {
+            const polyHit = findTrProvinceAtLatLon(trTopo, stAny.lat, stAny.lon);
+            if (polyHit && polyHit.code !== effectiveTrProvinceCode) {
+              continue;
+            }
+          }
+          stLat = stAny.lat;
+          stLon = stAny.lon;
+          shortLabel = st.stationName ? st.stationName.split("(")[0].trim() : codeKey;
+        } else if (provinceSubLocations && provinceSubLocations.length > 0) {
+          const stNorm = normalizeTrStationToken(st.stationName || codeKey);
+          const matchedSub = provinceSubLocations.find((sub) => {
+            const subNorm = normalizeTrStationToken(sub.name);
+            return stNorm.includes(subNorm) || subNorm.includes(stNorm);
+          });
+          if (matchedSub) {
+            stLat = matchedSub.lat;
+            stLon = matchedSub.lon;
+            shortLabel = matchedSub.name.split("/")[0].trim();
+          }
+        }
+      }
+
+      if (stLat === null || stLon === null) continue;
+      if (Math.hypot(stLat - selectedLat, stLon - selectedLon) < 0.012) continue;
+
+      const pt = projectToScreen(stLat, stLon);
+      if (
+        pt.x < 32 ||
+        pt.x > size.width - 32 ||
+        pt.y < 58 ||
+        pt.y > size.height - 62
+      ) {
+        continue;
+      }
+
+      seen.add(codeKey);
+      out.push({
+        id: codeKey,
+        label: shortLabel,
+        tempLabel:
+          typeof st.tempC === "number" && Number.isFinite(st.tempC)
+            ? formatTemperature(st.tempC, unit)
+            : null,
+        x: pt.x,
+        y: pt.y
+      });
+      if (out.length >= 8) break;
+    }
+
+    return out;
+  }, [
+    verificationStations,
+    effectiveTrProvinceCode,
+    selectedProvinceCode,
+    trTopo,
+    provinceSubLocations,
+    selectedLat,
+    selectedLon,
+    projectToScreen,
+    size.width,
+    size.height,
+    unit
+  ]);
+
   const initPinchState = () => {
     const pts = Array.from(pointersRef.current.values());
     if (pts.length < 2 || !containerRef.current) return;
@@ -970,6 +1840,27 @@ function LiveRadarMapBase({
       if (travel > maxGestureTravelRef.current) {
         maxGestureTravelRef.current = travel;
       }
+    }
+
+    // Desktop hover highlight over 81 provinces when idle (zero drag interference)
+    if (
+      pointersRef.current.size === 0 &&
+      !dragRef.current.active &&
+      e.pointerType === "mouse" &&
+      showProvinceBorders &&
+      trTopo &&
+      containerRef.current
+    ) {
+      const nowMs = performance.now();
+      if (nowMs - hoverCheckMsRef.current >= 32) {
+        hoverCheckMsRef.current = nowMs;
+        const rect = containerRef.current.getBoundingClientRect();
+        const pt = screenToLatLon(e.clientX - rect.left, e.clientY - rect.top);
+        const hit = findTrProvinceAtLatLon(trTopo, pt.lat, pt.lon);
+        const nextCode = hit?.code ?? null;
+        setHoveredProvinceCode((prev) => (prev === nextCode ? prev : nextCode));
+      }
+      return;
     }
 
     // Two-finger Pinch-to-Zoom + Midpoint Geo-Anchored Pan
@@ -1108,7 +1999,24 @@ function LiveRadarMapBase({
       const clickX = e.clientX - rect.left;
       const clickY = e.clientY - rect.top;
       const pt = screenToLatLon(clickX, clickY);
-      onPickCoords(Number(pt.lat.toFixed(3)), Number(pt.lon.toFixed(3)));
+      const latRounded = Number(pt.lat.toFixed(3));
+      const lonRounded = Number(pt.lon.toFixed(3));
+
+      const hitProvince =
+        showProvinceBorders && trTopo
+          ? findTrProvinceAtLatLon(trTopo, latRounded, lonRounded)
+          : null;
+
+      if (hitProvince && onPickProvince && viewRef.current.zoom <= 6) {
+        const centerMeta = TR81_PROVINCE_CENTERS[hitProvince.code];
+        if (centerMeta) {
+          onPickProvince(centerMeta);
+        } else {
+          onPickCoords(latRounded, lonRounded);
+        }
+      } else {
+        onPickCoords(latRounded, lonRounded);
+      }
     }
 
     hadMultiTouchRef.current = false;
@@ -1358,6 +2266,7 @@ function LiveRadarMapBase({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
+        onPointerLeave={() => setHoveredProvinceCode(null)}
         className={`relative h-full w-full cursor-crosshair active:cursor-grabbing focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 focus-visible:ring-inset ${
           mobileDragLock ? "touch-none" : "sm:touch-none touch-pan-y"
         }`}
@@ -1458,6 +2367,59 @@ function LiveRadarMapBase({
           ))}
         </div>
 
+        {/* Tembel Yüklenen Resmi 81-İl Vektör Sınır Katmanı & Seçili İl Camgöbeği/Kehribar Vurgusu */}
+        {trBorderPaths && (
+          <svg
+            viewBox={`0 0 ${Math.max(1, size.width)} ${Math.max(1, size.height)}`}
+            className="pointer-events-none absolute inset-0 z-[8] h-full w-full overflow-hidden"
+            aria-hidden="true"
+          >
+            {trBorderPaths.allArcsD && (
+              <path
+                d={trBorderPaths.allArcsD}
+                fill="none"
+                stroke={
+                  basemap === "satellite"
+                    ? "rgba(248, 250, 252, 0.38)"
+                    : "rgba(148, 210, 250, 0.28)"
+                }
+                strokeWidth={zoom >= 7 ? 1.15 : 0.9}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            )}
+            {trBorderPaths.hoveredD && (
+              <path
+                d={trBorderPaths.hoveredD}
+                fill="rgba(56, 189, 248, 0.06)"
+                fillRule="evenodd"
+                stroke="rgba(56, 189, 248, 0.62)"
+                strokeWidth="1.35"
+                strokeLinejoin="round"
+              />
+            )}
+            {trBorderPaths.activeD && (
+              <>
+                <path
+                  d={trBorderPaths.activeD}
+                  fill="rgba(56, 189, 248, 0.08)"
+                  fillRule="evenodd"
+                  stroke="rgba(245, 158, 11, 0.48)"
+                  strokeWidth={zoom >= 7 ? 4.2 : 3.4}
+                  strokeLinejoin="round"
+                />
+                <path
+                  d={trBorderPaths.activeD}
+                  fill="none"
+                  stroke="#38bdf8"
+                  strokeWidth={zoom >= 7 ? 1.9 : 1.55}
+                  strokeLinejoin="round"
+                />
+              </>
+            )}
+          </svg>
+        )}
+
         {/* 8-Oktant Konvektif Fırtına Hücre Vektörleri & 30dk İlerleme Okları (SVG Katmanı) */}
         {projectedConvectiveCells.length > 0 && (
           <svg
@@ -1531,7 +2493,20 @@ function LiveRadarMapBase({
           </svg>
         )}
 
-        {/* Hazır Şehir İşaretçileri (Üst/alt HUD barlarıyla çakışmaması için z-10 ve güvenli kenar marjı) */}
+        {/* Seçili İle Ait Canlı Doğrulama İstasyonu İşaretçileri (`verification.stations`) */}
+        {projectedVerificationStations.map((st) => (
+          <div
+            key={`vst-${st.id}`}
+            style={{ left: st.x, top: st.y }}
+            className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 rounded-md border border-emerald-400/35 bg-obsidian-950/88 px-1.5 py-0.5 font-mono text-[10px] text-emerald-100 shadow-sm tabular"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span>{st.label}</span>
+            {st.tempLabel && <span className="text-emerald-300">{st.tempLabel}</span>}
+          </div>
+        ))}
+
+        {/* Hazır Şehir İşaretçileri (Üst/alt HUD barlarıyla ve aktif istasyonlarla çakışmaz) */}
         {presetCities.map((city) => {
           const pt = projectToScreen(city.lat, city.lon);
           if (
@@ -1546,6 +2521,10 @@ function LiveRadarMapBase({
             Math.abs(city.lat - selectedLat) < 0.15 &&
             Math.abs(city.lon - selectedLon) < 0.15;
           if (isSelected) return null;
+          const overlapsStation = projectedVerificationStations.some(
+            (st) => Math.hypot(st.x - pt.x, st.y - pt.y) < 38
+          );
+          if (overlapsStation) return null;
 
           return (
             <button
@@ -1572,7 +2551,7 @@ function LiveRadarMapBase({
           selectedPt.y <= size.height + 20 && (
             <div
               style={{ left: selectedPt.x, top: selectedPt.y }}
-              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+              className="pointer-events-none absolute z-[12] -translate-x-1/2 -translate-y-1/2"
             >
               <div className="relative flex h-12 w-12 items-center justify-center">
                 <span className="atmos-beacon-ring absolute h-8 w-8 rounded-full border border-[var(--atmos-accent)]" />
@@ -1612,7 +2591,7 @@ function LiveRadarMapBase({
 
       {/* Birleşik Çakışmasız Üst HUD Kuşağı (Dar ekranda kompakt çekmece, geniş ekranda sol-sağ ayrılır) */}
       <div className="pointer-events-none absolute inset-x-3 top-3 z-20 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex flex-col gap-1.5 sm:max-w-[56%]">
+        <div className="flex flex-col gap-1.5 sm:max-w-[58%]">
           <div className="atmos-hud-glass pointer-events-auto sm:pointer-events-none max-w-full rounded-xl px-2.5 py-1.5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono text-ink-secondary tabular">
@@ -1623,6 +2602,20 @@ function LiveRadarMapBase({
                       ? "DOPPLER RADAR"
                       : "DOPPLER + RÜZGAR"}
                 </span>
+                {effectiveProvinceBadgeText && (
+                  <span className="rounded border border-sky-400/35 bg-sky-400/12 px-1.5 py-0.2 text-[10px] font-medium text-sky-200">
+                    {effectiveProvinceBadgeText}
+                  </span>
+                )}
+                {activeWaterBody && (
+                  <span className="hidden md:inline-flex items-center gap-1 rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-0.2 text-[10px] text-cyan-200">
+                    <Waves className="h-2.5 w-2.5 text-cyan-300" />
+                    <span>
+                      {activeWaterBody.labelTr}{" "}
+                      {formatTemperature(activeWaterBody.tempC, unit)}
+                    </span>
+                  </span>
+                )}
                 {showRadar && (
                   <>
                     <span className="text-ink-muted">·</span>
@@ -1700,7 +2693,7 @@ function LiveRadarMapBase({
                 </div>
               )}
 
-              {/* Mobil Çekmece İçi Katman & Taban Seçicileri */}
+              {/* Mobil Çekmece İçi Katman, 81 İl Sınırı & Taban Seçicileri */}
               <div className="flex flex-wrap items-center gap-1.5 pt-1 sm:hidden">
                 <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/90 p-0.5 text-[11px]">
                   <button
@@ -1766,9 +2759,35 @@ function LiveRadarMapBase({
                     <span>Uydu</span>
                   </button>
                 </div>
+
+                <button
+                  type="button"
+                  aria-pressed={showProvinceBorders}
+                  onClick={() => setShowProvinceBorders((v) => !v)}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    showProvinceBorders
+                      ? "border-sky-400/45 bg-sky-400/15 text-sky-200"
+                      : "border-white/10 bg-obsidian-950/90 text-ink-muted hover:text-ink-primary"
+                  }`}
+                >
+                  <MapIcon className="h-3 w-3" />
+                  <span>81 İl Sınırı</span>
+                </button>
               </div>
             </div>
           </div>
+
+          {trBorderPaths?.hoveredProv && (
+            <div className="atmos-hud-glass hidden sm:inline-flex self-start items-center gap-1.5 rounded-lg border border-sky-400/35 bg-obsidian-950/90 px-2.5 py-1 font-mono text-[11px] text-sky-100">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+              <span>
+                {trBorderPaths.hoveredProv.code} · {trBorderPaths.hoveredProv.nameTr}
+              </span>
+              <span className="text-[10px] text-ink-muted">
+                ({zoom <= 6 ? "Tıkla: İl Seç" : "Tıkla: Nokta Ölç"})
+              </span>
+            </div>
+          )}
 
           {/* Radar Hatası (HUD akışı içinde çakışmasız durur; yalnızca elde kayıtlı kare yoksa gösterilir) */}
           {showRadar && radarError && !radar && (
@@ -1785,9 +2804,25 @@ function LiveRadarMapBase({
           )}
         </div>
 
-        {/* Üst Sağ: Masaüstü Katman & Taban Seçiciler + Yakınlaştır & Mobil Sürükleme Kilidi */}
+        {/* Üst Sağ: Masaüstü Katman, 81 İl Sınırı & Taban Seçiciler + Yakınlaştır & Mobil Sürükleme Kilidi */}
         <div className="pointer-events-auto flex flex-col items-end gap-1.5 self-end sm:self-auto">
           <div className="hidden sm:flex flex-wrap justify-end gap-1.5">
+            {/* 81 İl Resmi Sınır Katmanı Düğmesi (Varsayılan Açık) */}
+            <button
+              type="button"
+              aria-pressed={showProvinceBorders}
+              onClick={() => setShowProvinceBorders((v) => !v)}
+              title="Resmi 81 İl Sınır Katmanı"
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                showProvinceBorders
+                  ? "border-sky-400/45 bg-obsidian-950/90 text-sky-200 shadow-[0_0_12px_rgba(56,189,248,0.16)]"
+                  : "border-white/10 bg-obsidian-950/85 text-ink-muted hover:text-ink-primary"
+              }`}
+            >
+              <MapIcon className="h-3 w-3 text-sky-300" />
+              <span>81 İl Sınırı</span>
+            </button>
+
             {/* Canlı Atmosfer Katman Seçici */}
             <div className="inline-flex rounded-lg border border-white/10 bg-obsidian-950/85 p-0.5 text-[11px]">
               <button
@@ -1969,7 +3004,11 @@ function LiveRadarMapBase({
         )}
 
         <div className="pointer-events-none hidden sm:flex items-center gap-2 rounded-xl border border-white/10 bg-obsidian-950/85 px-2.5 py-2 text-[11px] text-ink-muted">
-          <span>Tıkla: Koordinat Ölç · Esri · RainViewer HD · Open-Meteo</span>
+          <span>
+            {showProvinceBorders && zoom <= 6
+              ? "Tıkla: İl Seç (Z7+ Nokta Ölç) · Esri · RainViewer HD · Open-Meteo"
+              : "Tıkla: Koordinat Ölç · Esri · RainViewer HD · Open-Meteo"}
+          </span>
         </div>
       </div>
     </div>

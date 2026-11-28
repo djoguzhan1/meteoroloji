@@ -1,3 +1,5 @@
+import type { ProvinceClientSummary } from "./provinces/types";
+
 export type UnitSystem = "metric" | "imperial";
 
 export type PrecipType = "none" | "rain" | "snow";
@@ -169,6 +171,8 @@ export type GeoLocation = {
   id: string;
   name: string;
   admin1?: string;
+  district?: string;
+  provinceCode?: string;
   country: string;
   countryCode?: string;
   lat: number;
@@ -638,6 +642,12 @@ export type LiveVerificationReport = {
   rows: ModelVerificationRow[];
 };
 
+export type AtmosCalibrationTierLabel =
+  | "BURSA_FROZEN_V5"
+  | "TIER_A_EMPIRICAL_WMO"
+  | "TIER_B_DONOR_ALARO"
+  | "GLOBAL";
+
 export type AtmosEngineMeta = {
   activeRegime: string;
   activeRegimeLabel: string;
@@ -666,6 +676,13 @@ export type AtmosEngineMeta = {
   bursaTier1Online: number;
   ltbrIsolated: boolean;
   marmaraSstC?: number | null;
+  provinceCode?: string;
+  provinceName?: string;
+  calibrationTier?: AtmosCalibrationTierLabel;
+  tier1OnlineCount?: number;
+  seaOrLakeTempC?: number | null;
+  waterBodyLabelTr?: string | null;
+  activeMicroclimateTags?: string[];
   bimodalHoursResolved?: number;
   mgmDistrictMatched?: string | null;
   accuracyBreakdown?: {
@@ -701,6 +718,7 @@ export type HybridMeta = {
 
 export type WeatherBundle = {
   location: GeoLocation;
+  provinceSummary?: ProvinceClientSummary | null;
   source: "hybrid-nwp-verified" | "hybrid-nwp" | "open-meteo";
   fetchedAt: string;
   timezone: string;
@@ -741,6 +759,7 @@ export type MultiModelBundle = {
   elevation?: number;
   name?: string;
   admin1?: string;
+  provinceCode?: string;
   country?: string;
   timezone?: string;
   utcOffsetSeconds?: number;

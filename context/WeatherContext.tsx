@@ -12,8 +12,14 @@ import {
 } from "react";
 import { usePathname } from "next/navigation";
 import {
+  extractBundleProvinceCode,
+  isClientCacheLocationCompatible,
+  MAX_ELEVATION_DELTA_CACHE_M,
+  normalizeProvinceCodeToken,
+  readCachedModelsBundleAsync,
   readCachedWeatherBundleAsync,
   readCachedWeatherBundleSync,
+  writeCachedModelsBundle,
   writeCachedWeatherBundle
 } from "@/lib/client-forecast-cache";
 import {
@@ -31,6 +37,7 @@ import {
   canonicalizeStationIdentity,
   DEFAULT_LOCATION,
   dispatchAtmosRefreshAll,
+  normalizeCanonicalBursaLocation,
   PRESET_CITIES,
   readMigratedStorageItem
 } from "@/lib/weather-client";
@@ -42,6 +49,7 @@ import type {
   DataFreshnessMeta,
   GeoLocation,
   HourlyHorizonHours,
+  MultiModelBundle,
   SceneAtmosphereInput,
   UnitSystem,
   WeatherAlertRule,
@@ -51,6 +59,16 @@ import type {
 const STORAGE_KEYS = ATMOS_STORAGE_KEYS;
 const RECOVERY_BACKOFF_SEC = [10, 20, 35, 60] as const;
 
+export const ATMOS_EPOCH_CHANGE_EVENT = "atmos:location-epoch-change" as const;
+
+export interface EpochTicket {
+  readonly epochId: number;
+  readonly location: GeoLocation;
+  readonly provinceCode?: string;
+  readonly weatherAbortController: AbortController;
+  readonly modelsAbortController: AbortController;
+}
+
 export function resolveEffectiveFrameIndex(
   pathname: string | null | undefined,
   savedHomeFrameIndex: number
@@ -58,15 +76,123 @@ export function resolveEffectiveFrameIndex(
   return (pathname ?? "/") === "/" ? savedHomeFrameIndex : 0;
 }
 
+/**
+ * Appends `&pc=<provinceCode>` to `/api/weather` requests when `loc.provinceCode` is present,
+ * while keeping the browser address bar canonical URL (`lib/location-url.ts`) untouched.
+ */
+export function buildWeatherApiUrlWithProvince(loc: GeoLocation): string {
+  const base = buildWeatherApiUrl(loc);
+  const pc = normalizeProvinceCodeToken(loc.provinceCode);
+  if (!pc) return base;
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}pc=${encodeURIComponent(pc)}`;
+}
+
+/**
+ * Builds `/api/models` request URL with optional `&pc=<provinceCode>` firewall parameter.
+ */
+export function buildModelsApiUrlWithProvince(loc: GeoLocation): string {
+  const c = canonicalizeStationIdentity(normalizeCanonicalBursaLocation(loc));
+  const qs = new URLSearchParams({
+    lat: String(c.lat),
+    lon: String(c.lon),
+    name: c.name,
+    country: c.country ?? ""
+  });
+  if (c.admin1) {
+    qs.set("admin1", c.admin1);
+  }
+  if (typeof c.elevation === "number" && Number.isFinite(c.elevation)) {
+    qs.set("elevation", String(Math.round(c.elevation)));
+  }
+  if (c.timezone) {
+    qs.set("timezone", c.timezone);
+  }
+  const base = `/api/models?${qs.toString()}`;
+  const pc =
+    normalizeProvinceCodeToken(c.provinceCode) ??
+    normalizeProvinceCodeToken(loc.provinceCode);
+  if (!pc) return base;
+  return `${base}&pc=${encodeURIComponent(pc)}`;
+}
+
+/**
+ * Verifies that an asynchronous `/api/weather` or `/api/models` payload still belongs
+ * to the active monotonic `epochId`, coordinates, `provinceCode`, and `|Δelev| <= 65 m` gate.
+ */
+export function isEpochResponseValidForActiveLocation(params: {
+  ticketEpochId: number;
+  currentEpochId: number;
+  requestedLocation: GeoLocation;
+  activeLocation: GeoLocation;
+  responseLocation?:
+    | (Pick<GeoLocation, "lat" | "lon"> & {
+        id?: string;
+        provinceCode?: string | null;
+        elevation?: number | null;
+      })
+    | null;
+  responseProvinceCode?: string | null;
+}): boolean {
+  const {
+    ticketEpochId,
+    currentEpochId,
+    requestedLocation,
+    activeLocation,
+    responseLocation,
+    responseProvinceCode
+  } = params;
+
+  if (ticketEpochId !== currentEpochId) {
+    return false;
+  }
+
+  if (!isClientCacheLocationCompatible(activeLocation, requestedLocation)) {
+    return false;
+  }
+
+  if (responseLocation) {
+    const activePc = normalizeProvinceCodeToken(activeLocation.provinceCode);
+    const respPc =
+      normalizeProvinceCodeToken(responseProvinceCode) ??
+      normalizeProvinceCodeToken(responseLocation.provinceCode);
+    if (activePc && respPc && activePc !== respPc) {
+      return false;
+    }
+
+    if (
+      Math.abs(activeLocation.lat - responseLocation.lat) > 0.05 ||
+      Math.abs(activeLocation.lon - responseLocation.lon) > 0.05
+    ) {
+      return false;
+    }
+
+    if (
+      typeof activeLocation.elevation === "number" &&
+      Number.isFinite(activeLocation.elevation) &&
+      typeof responseLocation.elevation === "number" &&
+      Number.isFinite(responseLocation.elevation) &&
+      Math.abs(activeLocation.elevation - responseLocation.elevation) >
+        MAX_ELEVATION_DELTA_CACHE_M
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export type WeatherDataContextValue = {
   bundle: WeatherBundle | null;
   activeLocation: GeoLocation;
+  requestEpochId?: number;
   setActiveLocation: (loc: GeoLocation, preloadedBundle?: WeatherBundle | null) => void;
   promoteLocationWithBundle: (
     loc: GeoLocation,
     preloadedBundle: WeatherBundle | null
   ) => void;
   syncExternalBundle: (incomingBundle: WeatherBundle) => void;
+  fetchModelsForActiveEpoch?: (overrideLoc?: GeoLocation) => Promise<MultiModelBundle | null>;
   favorites: GeoLocation[];
   addFavorite: (loc: GeoLocation) => void;
   removeFavorite: (id: string) => void;
@@ -191,6 +317,9 @@ function resolveTodayDateFromBundle(b: WeatherBundle | null): string | null {
 }
 
 function mergeLocationIntoBundle(data: WeatherBundle, loc: GeoLocation): WeatherBundle {
+  const resolvedProvinceCode =
+    normalizeProvinceCodeToken(loc.provinceCode) ??
+    extractBundleProvinceCode(data);
   return {
     ...data,
     location: {
@@ -198,6 +327,8 @@ function mergeLocationIntoBundle(data: WeatherBundle, loc: GeoLocation): Weather
       id: loc.id || data.location.id,
       name: loc.name || data.location.name,
       admin1: loc.admin1 ?? data.location.admin1,
+      district: loc.district ?? data.location.district,
+      ...(resolvedProvinceCode ? { provinceCode: resolvedProvinceCode } : {}),
       country: loc.country || data.location.country,
       countryCode: loc.countryCode ?? data.location.countryCode,
       elevation: loc.elevation ?? data.location.elevation,
@@ -222,6 +353,231 @@ const FALLBACK_SCENE: SceneAtmosphereInput = {
   cape: 0
 };
 
+/**
+ * Deterministic, framework-independent state & epoch coordinator encapsulating the exact
+ * city-transition, `AbortController`, `&pc=` query, `popstate`, zero-hybrid-flash, and
+ * `StormScene` sky-hold contract used by `WeatherProvider`.
+ */
+export interface WeatherEpochTransitionSnapshot {
+  epochId: number;
+  activeLocation: GeoLocation;
+  bundle: WeatherBundle | null;
+  models: MultiModelBundle | null;
+  frameIndex: number;
+  focusedDate: string | null;
+  atmosphere: SceneAtmosphereInput;
+  loading: boolean;
+}
+
+export function createWeatherEpochTransitionCoordinator(options?: {
+  initialLocation?: GeoLocation;
+  initialBundle?: WeatherBundle | null;
+  fetchImpl?: typeof fetch;
+  storage?: Storage | null;
+}) {
+  const fetchFn = options?.fetchImpl ?? globalThis.fetch;
+  let epochId = 0;
+  let activeLocation = canonicalizeStationIdentity(
+    options?.initialBundle?.location ?? options?.initialLocation ?? DEFAULT_LOCATION
+  );
+  let bundle: WeatherBundle | null =
+    options?.initialBundle &&
+    isClientCacheLocationCompatible(
+      activeLocation,
+      options.initialBundle.location,
+      extractBundleProvinceCode(options.initialBundle)
+    )
+      ? options.initialBundle
+      : null;
+  let models: MultiModelBundle | null = null;
+  let frameIndex = 0;
+  let focusedDate: string | null = null;
+  let loading = false;
+  let lastAtmosphere: SceneAtmosphereInput | null = bundle
+    ? resolveActiveTemporalView(bundle, 0).atmosphere
+    : null;
+
+  let weatherController: AbortController | null = null;
+  let modelsController: AbortController | null = null;
+
+  const issueEpochTicket = (rawLoc: GeoLocation): EpochTicket => {
+    const loc = canonicalizeStationIdentity(rawLoc);
+    epochId += 1;
+    weatherController?.abort();
+    modelsController?.abort();
+    weatherController = new AbortController();
+    modelsController = new AbortController();
+    return {
+      epochId,
+      location: loc,
+      provinceCode: normalizeProvinceCodeToken(loc.provinceCode),
+      weatherAbortController: weatherController,
+      modelsAbortController: modelsController
+    };
+  };
+
+  const getAtmosphere = (): SceneAtmosphereInput => {
+    if (bundle) {
+      const nextAtm = resolveActiveTemporalView(bundle, frameIndex).atmosphere;
+      lastAtmosphere = nextAtm;
+      return nextAtm;
+    }
+    if (lastAtmosphere) {
+      return lastAtmosphere;
+    }
+    const solarElev = estimateInstantSolarElevationDeg(
+      activeLocation.lat,
+      activeLocation.lon,
+      new Date()
+    );
+    return {
+      ...FALLBACK_SCENE,
+      solarElevationDeg: solarElev,
+      daylight: Math.max(0, Math.min(1, (solarElev + 6) / 36))
+    };
+  };
+
+  const getSnapshot = (): WeatherEpochTransitionSnapshot => ({
+    epochId,
+    activeLocation,
+    bundle,
+    models,
+    frameIndex,
+    focusedDate,
+    atmosphere: getAtmosphere(),
+    loading
+  });
+
+  const setTemporalFocus = (nextFrameIdx: number, nextDate: string | null) => {
+    frameIndex = nextFrameIdx;
+    focusedDate = nextDate;
+  };
+
+  const switchLocation = (rawLoc: GeoLocation): {
+    ticket: EpochTicket;
+    weatherPromise: Promise<WeatherBundle | null>;
+    modelsPromise: Promise<MultiModelBundle | null>;
+  } => {
+    const ticket = issueEpochTicket(rawLoc);
+    const loc = ticket.location;
+
+    if (bundle) {
+      lastAtmosphere = resolveActiveTemporalView(bundle, frameIndex).atmosphere;
+    }
+
+    activeLocation = loc;
+    frameIndex = 0;
+    focusedDate = null;
+    models = null;
+
+    const syncHit = readCachedWeatherBundleSync(loc, Date.now(), {
+      storage: options?.storage
+    });
+    if (syncHit) {
+      bundle = syncHit;
+      loading = false;
+    } else {
+      // Zero hybrid flash: NEVER retain previous city's bundle under new city's label
+      bundle = null;
+      loading = true;
+    }
+
+    const weatherPromise = (async (): Promise<WeatherBundle | null> => {
+      try {
+        const res = await fetchFn(buildWeatherApiUrlWithProvince(loc), {
+          signal: ticket.weatherAbortController.signal,
+          cache: "no-store"
+        });
+        if (!res.ok) return null;
+        const data: WeatherBundle = await res.json();
+        if (
+          !isEpochResponseValidForActiveLocation({
+            ticketEpochId: ticket.epochId,
+            currentEpochId: epochId,
+            requestedLocation: loc,
+            activeLocation,
+            responseLocation: data.location,
+            responseProvinceCode: extractBundleProvinceCode(data)
+          })
+        ) {
+          return null;
+        }
+        const merged = mergeLocationIntoBundle(data, loc);
+        bundle = merged;
+        lastAtmosphere = resolveActiveTemporalView(merged, 0).atmosphere;
+        if ((merged.freshness?.status ?? "live") === "live") {
+          writeCachedWeatherBundle(merged, Date.now(), options?.storage);
+        }
+        return merged;
+      } catch {
+        return null;
+      } finally {
+        if (ticket.epochId === epochId) {
+          loading = false;
+        }
+      }
+    })();
+
+    const modelsPromise = (async (): Promise<MultiModelBundle | null> => {
+      try {
+        const res = await fetchFn(buildModelsApiUrlWithProvince(loc), {
+          signal: ticket.modelsAbortController.signal,
+          cache: "no-store"
+        });
+        if (!res.ok) return null;
+        const data: MultiModelBundle = await res.json();
+        if (
+          !isEpochResponseValidForActiveLocation({
+            ticketEpochId: ticket.epochId,
+            currentEpochId: epochId,
+            requestedLocation: loc,
+            activeLocation,
+            responseLocation: {
+              lat: data.lat,
+              lon: data.lon,
+              provinceCode: data.provinceCode,
+              elevation: data.elevation
+            },
+            responseProvinceCode: data.provinceCode
+          })
+        ) {
+          return null;
+        }
+        models = data;
+        if ((data.freshness?.status ?? "live") === "live") {
+          writeCachedModelsBundle(data, Date.now(), options?.storage);
+        }
+        return data;
+      } catch {
+        return null;
+      }
+    })();
+
+    return { ticket, weatherPromise, modelsPromise };
+  };
+
+  const handlePopStateSearch = (searchStr: string) => {
+    const parsed = parseLocationFromSearchParams(searchStr);
+    const nextLoc =
+      parsed.kind === "coords"
+        ? parsed.location
+        : parsed.kind === "none"
+          ? DEFAULT_LOCATION
+          : null;
+    if (nextLoc && !isClientCacheLocationCompatible(activeLocation, nextLoc)) {
+      return switchLocation(nextLoc);
+    }
+    return null;
+  };
+
+  return {
+    getSnapshot,
+    setTemporalFocus,
+    switchLocation,
+    handlePopStateSearch
+  };
+}
+
 export type WeatherProviderProps = {
   initialBundle: WeatherBundle | null;
   initialLocation?: GeoLocation;
@@ -241,15 +597,30 @@ export function WeatherProvider({
   const resolvedInitialLocation = useMemo(
     () =>
       canonicalizeStationIdentity(
-        initialBundle?.location ?? initialLocation ?? DEFAULT_LOCATION
+        initialLocation ?? initialBundle?.location ?? DEFAULT_LOCATION
       ),
     [initialBundle, initialLocation]
   );
 
-  const [bundle, setBundle] = useState<WeatherBundle | null>(initialBundle);
+  const sanitizedInitialBundle = useMemo<WeatherBundle | null>(() => {
+    if (!initialBundle) return null;
+    if (
+      !isClientCacheLocationCompatible(
+        resolvedInitialLocation,
+        initialBundle.location,
+        extractBundleProvinceCode(initialBundle)
+      )
+    ) {
+      return null;
+    }
+    return initialBundle;
+  }, [initialBundle, resolvedInitialLocation]);
+
+  const [bundle, setBundle] = useState<WeatherBundle | null>(sanitizedInitialBundle);
   const [activeLocation, setActiveLocationState] = useState<GeoLocation>(
     resolvedInitialLocation
   );
+  const [requestEpochId, setRequestEpochId] = useState(0);
   const [loading, setLoading] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
@@ -269,19 +640,27 @@ export function WeatherProvider({
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
 
+  const requestEpochRef = useRef(0);
   const loadSeqRef = useRef(0);
   const locationReqSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const modelsAbortRef = useRef<AbortController | null>(null);
   const gpsAbortRef = useRef<AbortController | null>(null);
-  const bundleRef = useRef<WeatherBundle | null>(initialBundle);
+  const bundleRef = useRef<WeatherBundle | null>(sanitizedInitialBundle);
   const activeLocRef = useRef<GeoLocation>(resolvedInitialLocation);
+  const [lastKnownAtmosphere, setLastKnownAtmosphere] = useState<SceneAtmosphereInput | null>(
+    sanitizedInitialBundle
+      ? resolveActiveTemporalView(sanitizedInitialBundle, 0).atmosphere
+      : null
+  );
   const frameIndexRef = useRef(0);
   const errorRef = useRef<string | null>(initialError);
   const retryAttemptRef = useRef(0);
   const wasOfflineSinceLiveRef = useRef(false);
   const hadInitialFailureRef = useRef(
-    initialBundle === null ||
-      (initialBundle?.freshness !== undefined && initialBundle.freshness.status !== "live")
+    sanitizedInitialBundle === null ||
+      (sanitizedInitialBundle?.freshness !== undefined &&
+        sanitizedInitialBundle.freshness.status !== "live")
   );
   const recoveryBadgeTimerRef = useRef<number | null>(null);
 
@@ -289,6 +668,13 @@ export function WeatherProvider({
     activePathname,
     frameIndexState
   );
+
+  const abortAllInFlightEpochRequests = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    modelsAbortRef.current?.abort();
+    modelsAbortRef.current = null;
+  }, []);
 
   const setFrameIndex = useCallback((idx: number) => {
     setFrameIndexState((prev) => (prev === idx ? prev : idx));
@@ -341,15 +727,21 @@ export function WeatherProvider({
   const loadForLocation = useCallback(
     async (
       loc: GeoLocation,
-      opts?: { background?: boolean; manual?: boolean }
+      opts?: { background?: boolean; manual?: boolean; epochId?: number }
     ) => {
+      const ticketEpochId = opts?.epochId ?? requestEpochRef.current;
       const seq = ++loadSeqRef.current;
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
 
       const hasMatchingBundle = Boolean(
-        bundleRef.current && areLocationsEquivalent(bundleRef.current.location, loc)
+        bundleRef.current &&
+          isClientCacheLocationCompatible(
+            loc,
+            bundleRef.current.location,
+            extractBundleProvinceCode(bundleRef.current)
+          )
       );
       const runInBackground = Boolean(opts?.background || hasMatchingBundle);
 
@@ -368,7 +760,7 @@ export function WeatherProvider({
           Boolean(opts?.manual) ||
           bundleRef.current?.freshness?.status !== "live";
 
-        const res = await fetch(buildWeatherApiUrl(loc), {
+        const res = await fetch(buildWeatherApiUrlWithProvince(loc), {
           signal: controller.signal,
           cache: bypassHttpCache ? "no-store" : "default"
         });
@@ -378,7 +770,18 @@ export function WeatherProvider({
         }
         const data: WeatherBundle = await res.json();
         if (seq !== loadSeqRef.current) return;
-        if (!areLocationsEquivalent(activeLocRef.current, loc)) return;
+        if (
+          !isEpochResponseValidForActiveLocation({
+            ticketEpochId,
+            currentEpochId: requestEpochRef.current,
+            requestedLocation: loc,
+            activeLocation: activeLocRef.current,
+            responseLocation: data.location,
+            responseProvinceCode: extractBundleProvinceCode(data)
+          })
+        ) {
+          return;
+        }
 
         const merged = mergeLocationIntoBundle(data, loc);
 
@@ -387,17 +790,25 @@ export function WeatherProvider({
           wasOfflineSinceLiveRef.current ||
           hadInitialFailureRef.current ||
           (bundleRef.current !== null &&
-            areLocationsEquivalent(bundleRef.current.location, loc) &&
+            isClientCacheLocationCompatible(
+              loc,
+              bundleRef.current.location,
+              extractBundleProvinceCode(bundleRef.current)
+            ) &&
             bundleRef.current.freshness !== undefined &&
             bundleRef.current.freshness.status !== "live");
 
-        // Preserve user's selected hour across silent background live updates
+        // Preserve user's selected hour across silent background live updates on the SAME city
         let nextFrameIdx = 0;
         if (
           runInBackground &&
           frameIndexRef.current > 0 &&
           bundleRef.current &&
-          areLocationsEquivalent(bundleRef.current.location, loc)
+          isClientCacheLocationCompatible(
+            loc,
+            bundleRef.current.location,
+            extractBundleProvinceCode(bundleRef.current)
+          )
         ) {
           const prevIso = bundleRef.current.hourly[frameIndexRef.current]?.time;
           if (prevIso) {
@@ -409,9 +820,6 @@ export function WeatherProvider({
         bundleRef.current = merged;
         setBundle(merged);
         setFrameIndexState(nextFrameIdx);
-        if (!runInBackground && nextFrameIdx === 0) {
-          setFocusedDateState(resolveTodayDateFromBundle(merged));
-        }
         setError(null);
 
         const nextStatus = merged.freshness?.status ?? "live";
@@ -435,7 +843,16 @@ export function WeatherProvider({
       } catch (e) {
         if (e instanceof Error && e.name === "AbortError") return;
         if (seq !== loadSeqRef.current) return;
-        if (!areLocationsEquivalent(activeLocRef.current, loc)) return;
+        if (
+          !isEpochResponseValidForActiveLocation({
+            ticketEpochId,
+            currentEpochId: requestEpochRef.current,
+            requestedLocation: loc,
+            activeLocation: activeLocRef.current
+          })
+        ) {
+          return;
+        }
 
         const errMessage =
           e instanceof Error
@@ -444,10 +861,14 @@ export function WeatherProvider({
 
         retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, 6);
 
-        // Tier 1 client defense: keep current bundle if it belongs to `loc`, marking it stale & re-anchored
+        // Tier 1 client defense: keep current bundle ONLY if it strictly belongs to `loc`
         if (
           bundleRef.current &&
-          areLocationsEquivalent(bundleRef.current.location, loc)
+          isClientCacheLocationCompatible(
+            loc,
+            bundleRef.current.location,
+            extractBundleProvinceCode(bundleRef.current)
+          )
         ) {
           const priorTier = bundleRef.current.freshness?.sourceTier;
           const fallbackBundle = reanchorWeatherBundleToNow(
@@ -464,10 +885,11 @@ export function WeatherProvider({
               modelsRespondedCount: bundleRef.current.hybrid.activeModels.length
             }
           );
+          bundleRef.current = fallbackBundle;
           setBundle(fallbackBundle);
           setError(null);
         } else {
-          // Tier 2 client defense: check IndexedDB / localStorage L4 vault for `loc`
+          // Tier 2 client defense: check IndexedDB / localStorage vault for `loc`
           const cachedFallback = await readCachedWeatherBundleAsync(
             loc,
             Date.now(),
@@ -476,20 +898,26 @@ export function WeatherProvider({
               staleReason: errMessage
             }
           );
-          if (seq !== loadSeqRef.current) return;
+          if (
+            seq !== loadSeqRef.current ||
+            ticketEpochId !== requestEpochRef.current
+          ) {
+            return;
+          }
           if (cachedFallback) {
             bundleRef.current = cachedFallback;
             setBundle(cachedFallback);
             setFrameIndexState(0);
-            setFocusedDateState(resolveTodayDateFromBundle(cachedFallback));
+            setFocusedDateState(null);
             setError(null);
           } else {
+            bundleRef.current = null;
             setBundle(null);
             setError(errMessage);
           }
         }
       } finally {
-        if (seq === loadSeqRef.current) {
+        if (seq === loadSeqRef.current && ticketEpochId === requestEpochRef.current) {
           setLoading(false);
           setIsRevalidating(false);
         }
@@ -498,39 +926,123 @@ export function WeatherProvider({
     [triggerJustRecovered]
   );
 
+  const fetchModelsForActiveEpoch = useCallback(
+    async (overrideLoc?: GeoLocation): Promise<MultiModelBundle | null> => {
+      const targetLoc = canonicalizeStationIdentity(
+        overrideLoc ?? activeLocRef.current
+      );
+      const ticketEpochId = requestEpochRef.current;
+      modelsAbortRef.current?.abort();
+      const modelsController = new AbortController();
+      modelsAbortRef.current = modelsController;
+
+      try {
+        const res = await fetch(buildModelsApiUrlWithProvince(targetLoc), {
+          signal: modelsController.signal,
+          cache: "no-store"
+        });
+        if (!res.ok) return null;
+        const data: MultiModelBundle = await res.json();
+        if (
+          !isEpochResponseValidForActiveLocation({
+            ticketEpochId,
+            currentEpochId: requestEpochRef.current,
+            requestedLocation: targetLoc,
+            activeLocation: activeLocRef.current,
+            responseLocation: {
+              lat: data.lat,
+              lon: data.lon,
+              provinceCode: data.provinceCode,
+              elevation: data.elevation
+            },
+            responseProvinceCode: data.provinceCode
+          })
+        ) {
+          return null;
+        }
+        if ((data.freshness?.status ?? "live") === "live") {
+          writeCachedModelsBundle(data);
+        }
+        return data;
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return null;
+        if (ticketEpochId !== requestEpochRef.current) return null;
+        return readCachedModelsBundleAsync(
+          targetLoc.lat,
+          targetLoc.lon,
+          Date.now(),
+          {
+            forceStale: true,
+            provinceCode: targetLoc.provinceCode,
+            elevation: targetLoc.elevation
+          }
+        );
+      }
+    },
+    []
+  );
+
   const switchAndHydrateLocation = useCallback(
     (rawLoc: GeoLocation, preloadedBundle?: WeatherBundle | null) => {
       const loc = canonicalizeStationIdentity(rawLoc);
+      const nextEpochId = ++requestEpochRef.current;
+      setRequestEpochId(nextEpochId);
+
+      // Immediately abort any in-flight `/api/weather` AND `/api/models` requests from the previous city
+      abortAllInFlightEpochRequests();
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent(ATMOS_EPOCH_CHANGE_EVENT, {
+            detail: { epochId: nextEpochId, location: loc }
+          })
+        );
+      }
+
+      if (bundleRef.current) {
+        setLastKnownAtmosphere(
+          resolveActiveTemporalView(bundleRef.current, frameIndexRef.current).atmosphere
+        );
+      }
+
       setActiveLocationState(loc);
       activeLocRef.current = loc;
       retryAttemptRef.current = 0;
       setRetryCountdownSec(null);
       frameIndexRef.current = 0;
       setFrameIndexState(0);
+      setFocusedDateState(null);
 
       if (
         preloadedBundle &&
-        areLocationsEquivalent(preloadedBundle.location, loc)
+        isClientCacheLocationCompatible(
+          loc,
+          preloadedBundle.location,
+          extractBundleProvinceCode(preloadedBundle)
+        )
       ) {
         loadSeqRef.current += 1;
-        abortRef.current?.abort();
         const mergedPreloaded = mergeLocationIntoBundle(preloadedBundle, loc);
         bundleRef.current = mergedPreloaded;
         setBundle(mergedPreloaded);
         setError(null);
         setLoading(false);
         setIsRevalidating(false);
-        setFocusedDateState(resolveTodayDateFromBundle(mergedPreloaded));
         if ((mergedPreloaded.freshness?.status ?? "live") === "live") {
           writeCachedWeatherBundle(mergedPreloaded);
         } else {
-          void loadForLocation(loc, { background: true });
+          void loadForLocation(loc, { background: true, epochId: nextEpochId });
         }
         return;
       }
 
       const sameAsCurrent = Boolean(
-        bundleRef.current && areLocationsEquivalent(bundleRef.current.location, loc)
+        bundleRef.current &&
+          isClientCacheLocationCompatible(
+            loc,
+            bundleRef.current.location,
+            extractBundleProvinceCode(bundleRef.current)
+          )
       );
 
       if (!sameAsCurrent) {
@@ -545,23 +1057,30 @@ export function WeatherProvider({
           setBundle(syncCached);
           setError(null);
         } else {
-          // Strict city isolation: NEVER keep the old city's bundle under the new city's title!
+          // Strict zero-bleed isolation: NEVER display the old city's bundle under the new city's title!
           bundleRef.current = null;
           setBundle(null);
           setError(null);
         }
       }
 
-      setFocusedDateState(resolveTodayDateFromBundle(bundleRef.current));
-
-      void loadForLocation(loc, { background: Boolean(bundleRef.current) });
+      void loadForLocation(loc, {
+        background: Boolean(bundleRef.current),
+        epochId: nextEpochId
+      });
     },
-    [loadForLocation]
+    [abortAllInFlightEpochRequests, loadForLocation]
   );
 
   const syncExternalBundle = useCallback((incomingBundle: WeatherBundle) => {
     if (!incomingBundle) return;
-    if (!areLocationsEquivalent(incomingBundle.location, activeLocRef.current)) {
+    if (
+      !isClientCacheLocationCompatible(
+        activeLocRef.current,
+        incomingBundle.location,
+        extractBundleProvinceCode(incomingBundle)
+      )
+    ) {
       return;
     }
     const merged = mergeLocationIntoBundle(incomingBundle, activeLocRef.current);
@@ -584,7 +1103,7 @@ export function WeatherProvider({
     }
   }, []);
 
-  // Initial mount: persist live SSR bundle, restore preferences, sync URL/cookie, and recover from L4 if SSR failed
+  // Initial mount: persist live SSR bundle, restore preferences, sync URL/cookie, and recover from L2 if SSR failed
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
@@ -596,10 +1115,10 @@ export function WeatherProvider({
       }
 
       if (
-        initialBundle &&
-        (initialBundle.freshness?.status ?? "live") === "live"
+        sanitizedInitialBundle &&
+        (sanitizedInitialBundle.freshness?.status ?? "live") === "live"
       ) {
-        writeCachedWeatherBundle(initialBundle);
+        writeCachedWeatherBundle(sanitizedInitialBundle);
       }
 
       try {
@@ -635,9 +1154,13 @@ export function WeatherProvider({
           }
           const alreadyHydrated =
             bundleRef.current &&
-            areLocationsEquivalent(bundleRef.current.location, parsedUrl.location);
+            isClientCacheLocationCompatible(
+              parsedUrl.location,
+              bundleRef.current.location,
+              extractBundleProvinceCode(bundleRef.current)
+            );
           if (!alreadyHydrated) {
-            if (!areLocationsEquivalent(resolvedInitialLocation, parsedUrl.location)) {
+            if (!isClientCacheLocationCompatible(resolvedInitialLocation, parsedUrl.location)) {
               syncLocationToBrowserUrlAndCookie(parsedUrl.location);
               switchAndHydrateLocation(parsedUrl.location);
               return;
@@ -682,7 +1205,7 @@ export function WeatherProvider({
               typeof parsedLoc.lon === "number"
             ) {
               const loc = canonicalizeStationIdentity(parsedLoc);
-              if (!areLocationsEquivalent(loc, resolvedInitialLocation)) {
+              if (!isClientCacheLocationCompatible(loc, resolvedInitialLocation)) {
                 syncLocationToBrowserUrlAndCookie(loc);
                 switchAndHydrateLocation(loc);
                 return;
@@ -695,18 +1218,19 @@ export function WeatherProvider({
         // ignore storage errors
       }
 
-      // 3. SSR başlangıçta başarısız olduysa (initialBundle === null), L4 tarayıcı kasasından anında kurtar
-      if (!initialBundle) {
+      // 3. SSR başlangıçta başarısız olduysa (sanitizedInitialBundle === null), L2 tarayıcı kasasından anında kurtar
+      if (!sanitizedInitialBundle) {
+        const bootEpoch = requestEpochRef.current;
         void readCachedWeatherBundleAsync(resolvedInitialLocation, Date.now(), {
           forceStale: true,
           staleReason:
             initialError ??
             "Sunucu başlangıç verisi alınamadı; tarayıcı kasasındaki son tahmin yüklendi"
         }).then((cached) => {
-          if (!active || !cached) return;
+          if (!active || !cached || bootEpoch !== requestEpochRef.current) return;
           if (
             !bundleRef.current &&
-            areLocationsEquivalent(activeLocRef.current, resolvedInitialLocation)
+            isClientCacheLocationCompatible(activeLocRef.current, resolvedInitialLocation)
           ) {
             bundleRef.current = cached;
             setBundle(cached);
@@ -718,13 +1242,18 @@ export function WeatherProvider({
 
     const handlePopState = () => {
       const parsed = parseLocationFromSearchParams(window.location.search);
-      if (parsed.kind === "coords") {
-        if (!areLocationsEquivalent(activeLocRef.current, parsed.location)) {
-          locationReqSeqRef.current += 1;
-          gpsAbortRef.current?.abort();
-          setGpsLoading(false);
-          switchAndHydrateLocation(parsed.location);
-        }
+      const targetLoc =
+        parsed.kind === "coords"
+          ? parsed.location
+          : parsed.kind === "none"
+            ? DEFAULT_LOCATION
+            : null;
+      if (targetLoc && !isClientCacheLocationCompatible(activeLocRef.current, targetLoc)) {
+        locationReqSeqRef.current += 1;
+        abortAllInFlightEpochRequests();
+        gpsAbortRef.current?.abort();
+        setGpsLoading(false);
+        switchAndHydrateLocation(targetLoc);
       }
     };
 
@@ -732,6 +1261,7 @@ export function WeatherProvider({
     return () => {
       active = false;
       window.removeEventListener("popstate", handlePopState);
+      abortAllInFlightEpochRequests();
       gpsAbortRef.current?.abort();
       if (recoveryBadgeTimerRef.current !== null) {
         window.clearTimeout(recoveryBadgeTimerRef.current);
@@ -753,7 +1283,8 @@ export function WeatherProvider({
         location: activeLocRef.current
       });
       void loadForLocation(activeLocRef.current, {
-        background: Boolean(bundleRef.current)
+        background: Boolean(bundleRef.current),
+        epochId: requestEpochRef.current
       });
     };
 
@@ -775,7 +1306,8 @@ export function WeatherProvider({
       if (!cur || curStatus !== "live" || errorRef.current || ageMs >= LIVE_FRESHNESS_MAX_AGE_MS) {
         retryAttemptRef.current = 0;
         void loadForLocation(activeLocRef.current, {
-          background: Boolean(cur)
+          background: Boolean(cur),
+          epochId: requestEpochRef.current
         });
       }
     };
@@ -790,11 +1322,26 @@ export function WeatherProvider({
     };
   }, [loadForLocation]);
 
-  const freshness: DataFreshnessMeta | null = bundle?.freshness ?? null;
+  // Render-time zero-bleed firewall: never expose a bundle that mismatches activeLocation
+  const verifiedActiveBundle = useMemo<WeatherBundle | null>(() => {
+    if (!bundle) return null;
+    if (
+      !isClientCacheLocationCompatible(
+        activeLocation,
+        bundle.location,
+        extractBundleProvinceCode(bundle)
+      )
+    ) {
+      return null;
+    }
+    return bundle;
+  }, [bundle, activeLocation]);
+
+  const freshness: DataFreshnessMeta | null = verifiedActiveBundle?.freshness ?? null;
   const isStale = freshness?.status === "stale";
   const isDegraded = freshness?.status === "degraded";
   const needsAutoRecovery =
-    isStale || isDegraded || (bundle === null && error !== null);
+    isStale || isDegraded || (verifiedActiveBundle === null && error !== null);
 
   // Adaptive exponential backoff poller (10s -> 20s -> 35s -> 60s) with isolated 1s live countdown
   useEffect(() => {
@@ -819,7 +1366,8 @@ export function WeatherProvider({
         window.clearInterval(interval);
         setRetryCountdownSec(0);
         void loadForLocation(activeLocRef.current, {
-          background: Boolean(bundleRef.current)
+          background: Boolean(bundleRef.current),
+          epochId: requestEpochRef.current
         });
       } else {
         setRetryCountdownSec(remaining);
@@ -856,7 +1404,10 @@ export function WeatherProvider({
       if (typeof navigator !== "undefined" && navigator.onLine === false) return;
       const fetchedMs = Date.parse(cur.fetchedAt);
       if (Number.isFinite(fetchedMs) && nowMs - fetchedMs >= LIVE_FRESHNESS_MAX_AGE_MS) {
-        void loadForLocation(activeLocRef.current, { background: true });
+        void loadForLocation(activeLocRef.current, {
+          background: true,
+          epochId: requestEpochRef.current
+        });
       }
     }, 45_000);
 
@@ -866,6 +1417,7 @@ export function WeatherProvider({
   const setActiveLocation = useCallback(
     (rawLoc: GeoLocation, preloadedBundle?: WeatherBundle | null) => {
       locationReqSeqRef.current += 1;
+      abortAllInFlightEpochRequests();
       gpsAbortRef.current?.abort();
       setGpsLoading(false);
       setGpsError(null);
@@ -874,7 +1426,7 @@ export function WeatherProvider({
       syncLocationToBrowserUrlAndCookie(loc);
       switchAndHydrateLocation(loc, preloadedBundle);
     },
-    [switchAndHydrateLocation]
+    [abortAllInFlightEpochRequests, switchAndHydrateLocation]
   );
 
   const promoteLocationWithBundle = useCallback(
@@ -936,6 +1488,8 @@ export function WeatherProvider({
             id: `gps_${lat.toFixed(3)}_${lon.toFixed(3)}`,
             name: String(geo?.name || "Mevcut Konum"),
             admin1: geo?.admin1 ? String(geo.admin1) : undefined,
+            district: geo?.district ? String(geo.district) : undefined,
+            provinceCode: geo?.provinceCode ? String(geo.provinceCode) : undefined,
             country: String(geo?.country || ""),
             countryCode: geo?.countryCode ? String(geo.countryCode) : undefined,
             lat,
@@ -987,7 +1541,8 @@ export function WeatherProvider({
     });
     await loadForLocation(activeLocRef.current, {
       background: Boolean(bundleRef.current),
-      manual: true
+      manual: true,
+      epochId: requestEpochRef.current
     });
   }, [loadForLocation]);
 
@@ -1089,9 +1644,11 @@ export function WeatherProvider({
 
   // %100 deterministik rota-yalıtımlı zaman görünümü ve fiziksel 3D sahne girdisi
   const temporalView = useMemo<ActiveTemporalView | null>(() => {
-    if (!bundle) return null;
-    return resolveActiveTemporalView(bundle, effectiveFrameIndex);
-  }, [bundle, effectiveFrameIndex]);
+    if (!verifiedActiveBundle) return null;
+    return resolveActiveTemporalView(verifiedActiveBundle, effectiveFrameIndex);
+  }, [verifiedActiveBundle, effectiveFrameIndex]);
+
+  // Keep lastKnownAtmosphere synchronized via transition boundary above
 
   const effectiveFocusedDate = useMemo<string | null>(() => {
     if (!temporalView?.dayContext.date) return focusedDate;
@@ -1099,17 +1656,20 @@ export function WeatherProvider({
       return temporalView.dayContext.date;
     }
     if (
-      bundle &&
-      bundle.daily.length > 0 &&
-      !bundle.daily.some((d) => d.date === focusedDate)
+      verifiedActiveBundle &&
+      verifiedActiveBundle.daily.length > 0 &&
+      !verifiedActiveBundle.daily.some((d) => d.date === focusedDate)
     ) {
       return temporalView.dayContext.date;
     }
     return focusedDate;
-  }, [bundle, focusedDate, effectiveFrameIndex, temporalView]);
+  }, [verifiedActiveBundle, focusedDate, effectiveFrameIndex, temporalView]);
 
+  // Smooth StormScene driver: retains last live sky atmosphere across uncached city transitions
+  // so WebGL sky never flashes pitch-black while data cards strictly await the new city!
   const atmosphere: SceneAtmosphereInput = useMemo(() => {
     if (temporalView) return temporalView.atmosphere;
+    if (lastKnownAtmosphere) return lastKnownAtmosphere;
     const solarElev = estimateInstantSolarElevationDeg(
       activeLocation.lat,
       activeLocation.lon,
@@ -1124,15 +1684,17 @@ export function WeatherProvider({
       lightningProbPct: 0,
       precipitationMmHr: 0
     };
-  }, [temporalView, activeLocation.lat, activeLocation.lon]);
+  }, [temporalView, lastKnownAtmosphere, activeLocation.lat, activeLocation.lon]);
 
   const dataValue = useMemo<WeatherDataContextValue>(
     () => ({
-      bundle,
+      bundle: verifiedActiveBundle,
       activeLocation,
+      requestEpochId,
       setActiveLocation,
       promoteLocationWithBundle,
       syncExternalBundle,
+      fetchModelsForActiveEpoch,
       favorites,
       addFavorite,
       removeFavorite,
@@ -1152,11 +1714,13 @@ export function WeatherProvider({
       requestGpsLocation
     }),
     [
-      bundle,
+      verifiedActiveBundle,
       activeLocation,
+      requestEpochId,
       setActiveLocation,
       promoteLocationWithBundle,
       syncExternalBundle,
+      fetchModelsForActiveEpoch,
       favorites,
       addFavorite,
       removeFavorite,

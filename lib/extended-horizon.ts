@@ -22,7 +22,14 @@ import {
   computeCalibratedWeightedSpread,
   computeIntrinsicAccuracyIndex
 } from "./accuracy-index";
-import { ATMOS_HTTP_USER_AGENT, isWithinBursaDomain } from "./bursa-mesh";
+import { ATMOS_HTTP_USER_AGENT } from "./bursa-mesh";
+import { computeTrDailyClimatologyNormal } from "./provinces/climatology-1991-2020";
+import { resolveProvinceCode } from "./provinces/geo-adm1-resolver";
+import {
+  isTrProvinceCode,
+  isValidProvinceCode,
+  type ProvinceCode
+} from "./provinces/types";
 import {
   type BimodalEnsembleClusterResult,
   resolveBimodalEnsembleCluster
@@ -112,21 +119,39 @@ export interface DailyClimatologyNormal {
   normalMeanC: number;
 }
 
+function resolveEffectiveHorizonProvince(
+  lat: number,
+  lon: number,
+  provinceCode?: ProvinceCode | null
+): ProvinceCode {
+  if (provinceCode && isValidProvinceCode(provinceCode)) {
+    return provinceCode;
+  }
+  return resolveProvinceCode({ lat, lon }).provinceCode;
+}
+
 /**
  * Computes daily climatological normal (`normalMaxC`, `normalMinC`, `normalMeanC`) for any date:
- *  - Within Bursa domain: exact WMO 17116 (100 m) 1991–2020 normals + orographic lapse-rate transport.
- *  - Global locations: latitude, hemisphere phase, and elevation-adjusted harmonic seasonal curve.
+ *  - `TR-16` Bursa: exact WMO 17116 (100 m) 1991–2020 normals + orographic lapse-rate transport.
+ *  - Other 80 Turkish provinces (`TR-01..TR-81`, `!== "TR-16"`): official WMO/MGM 1991–2020 province normals.
+ *  - `"GLOBAL"` locations: latitude, hemisphere phase, and elevation-adjusted harmonic seasonal curve.
  */
 export function computeDailyClimatologyNormals(params: {
   lat: number;
   lon: number;
   elevationM?: number;
   dateYmd: string;
+  provinceCode?: ProvinceCode | null;
 }): DailyClimatologyNormal {
   const doy = dayOfYearFromYmd(params.dateYmd);
   const elevM = Number.isFinite(params.elevationM) ? (params.elevationM as number) : 100;
+  const effectiveProvince = resolveEffectiveHorizonProvince(
+    params.lat,
+    params.lon,
+    params.provinceCode
+  );
 
-  if (isWithinBursaDomain(params.lat, params.lon)) {
+  if (effectiveProvince === "TR-16") {
     const baseMax100 = interpolateCyclicMonthly(BURSA_17116_TMAX_NORMALS_C, doy);
     const baseMin100 = interpolateCyclicMonthly(BURSA_17116_TMIN_NORMALS_C, doy);
     const dzKm = (elevM - 100) / 1000;
@@ -136,6 +161,21 @@ export function computeDailyClimatologyNormals(params: {
       normalMaxC,
       normalMinC,
       normalMeanC: Number(((normalMaxC + normalMinC) * 0.5).toFixed(1))
+    };
+  }
+
+  if (isTrProvinceCode(effectiveProvince)) {
+    const trNorm = computeTrDailyClimatologyNormal({
+      provinceCode: effectiveProvince,
+      lat: params.lat,
+      lon: params.lon,
+      elevationM: elevM,
+      dayOfYear: doy
+    });
+    return {
+      normalMaxC: trNorm.tmaxNormalC,
+      normalMinC: trNorm.tminNormalC,
+      normalMeanC: Number(((trNorm.tmaxNormalC + trNorm.tminNormalC) * 0.5).toFixed(1))
     };
   }
 
@@ -192,6 +232,7 @@ export interface ExtendedSynopticHourInput {
   lat: number;
   lon: number;
   elevationM: number;
+  provinceCode?: ProvinceCode | null;
   tempSnapshot: HybridModelSnapshot;
   dewSnapshot: HybridModelSnapshot;
   pressSnapshot: HybridModelSnapshot;
@@ -316,11 +357,23 @@ export function calibrateExtendedSynopticHour(
 
   // Blend Bursa EMOS topographic/diurnal backbone with dynamically renormalized active-model consensus
   // (As GEM/JMA drop out past +252h, dynamic renormalization prevents stale median-imputation weight!)
+  const effectiveProvince = resolveEffectiveHorizonProvince(
+    input.lat,
+    input.lon,
+    input.provinceCode
+  );
+  const safeBursaCandidateC =
+    effectiveProvince === "TR-16" &&
+    input.bursaEmosCandidateC !== null &&
+    Number.isFinite(input.bursaEmosCandidateC)
+      ? input.bursaEmosCandidateC
+      : null;
+
   const bursaBackboneBlend =
-    input.bursaEmosCandidateC !== null && Number.isFinite(input.bursaEmosCandidateC)
+    safeBursaCandidateC !== null
       ? leadHour <= 240
-        ? 0.65 * input.bursaEmosCandidateC + 0.35 * detTemp.corrected
-        : 0.45 * input.bursaEmosCandidateC + 0.55 * detTemp.corrected
+        ? 0.65 * safeBursaCandidateC + 0.35 * detTemp.corrected
+        : 0.45 * safeBursaCandidateC + 0.55 * detTemp.corrected
       : detTemp.corrected;
 
   const localBiasShiftC = clamp(bursaBackboneBlend - detTemp.rawMean, -3.8, 3.8);
@@ -377,7 +430,8 @@ export function calibrateExtendedSynopticHour(
     lat: input.lat,
     lon: input.lon,
     elevationM: input.elevationM,
-    dateYmd: input.dateYmd
+    dateYmd: input.dateYmd,
+    provinceCode: effectiveProvince
   });
   const climHourTempC = diurnalClimatologyAtHour(normal, localHour);
   const climShrinkW = clamp(((leadHour - 168) / 192) * 0.12, 0, 0.12);
@@ -479,7 +533,7 @@ export function calibrateExtendedSynopticHour(
     matchedVerificationHours: input.mos.report.matchedHours,
     nowcastKalmanGain: input.mos.summary.nowcastKalmanGain,
     bestTempUbRmseC: bestUbRmse,
-    isBursaEmosActive: input.bursaEmosCandidateC !== null,
+    isBursaEmosActive: safeBursaCandidateC !== null,
     calibratedTempSpreadC,
     calibratedPressureSpreadHpa: calibratedPressSpreadHpa,
     wetModelFraction: detTotal > 0 ? detAgreeing / detTotal : null,
@@ -737,11 +791,17 @@ export function buildCalibratedSubseasonalOutlook(params: {
   lat: number;
   lon: number;
   elevationM: number;
+  provinceCode?: ProvinceCode | null;
 }): SubseasonalOutlookBundle | null {
   const { raw, calibratedDaily } = params;
   if (!raw || raw.dates.length < 18 || calibratedDaily.length < 7) {
     return null;
   }
+  const effectiveProvince = resolveEffectiveHorizonProvince(
+    params.lat,
+    params.lon,
+    params.provinceCode
+  );
 
   const dateToIdx = new Map<string, number>();
   raw.dates.forEach((d, idx) => dateToIdx.set(d, idx));
@@ -809,7 +869,8 @@ export function buildCalibratedSubseasonalOutlook(params: {
       lat: params.lat,
       lon: params.lon,
       elevationM: params.elevationM,
-      dateYmd: dateStr
+      dateYmd: dateStr,
+      provinceCode: effectiveProvince
     });
 
     const subDayOffset = days.length; // 0..14 -> Day 16..30

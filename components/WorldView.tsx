@@ -16,6 +16,7 @@ import {
   Radio,
   RefreshCw,
   Star,
+  Waves,
   Wind
 } from "lucide-react";
 import { useWeatherData, useWeatherStatus } from "@/context/WeatherContext";
@@ -30,6 +31,7 @@ import {
   reanchorWeatherBundleToNow
 } from "@/lib/forecast-resilience";
 import { buildLocationHref } from "@/lib/location-url";
+import { isTrProvinceCode, type TrProvinceCode } from "@/lib/provinces/types";
 import { resolveActiveTemporalView } from "@/lib/temporal-view";
 import {
   ATMOS_REFRESH_ALL_EVENT,
@@ -44,11 +46,17 @@ import {
   formatTemperature,
   formatWindSpeed,
   GLOBE_CITIES,
+  PRESET_CITIES,
   windDirectionToCompass
 } from "@/lib/weather-client";
-import type { GeoLocation, WeatherBundle } from "@/lib/weather-types";
+import type { GeoLocation, MetarObservation, WeatherBundle } from "@/lib/weather-types";
 import { atmosUiSfx } from "@/lib/ui-sfx";
-import type { LiveRadarFrameState } from "./LiveRadarMap";
+import type {
+  DecodedTr81Province,
+  DecodedTr81Topology,
+  LiveRadarFrameState,
+  TrProvinceCenterMeta
+} from "./LiveRadarMap";
 import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
@@ -69,6 +77,196 @@ const GlobeScene = dynamic(() => import("./GlobeScene"), {
     </div>
   )
 });
+
+const TR_PROVINCE_NAMES_BY_PLATE: readonly string[] = [
+  "",
+  "Adana", "Adıyaman", "Afyonkarahisar", "Ağrı", "Amasya", "Ankara", "Antalya", "Artvin", "Aydın", "Balıkesir",
+  "Bilecik", "Bingöl", "Bitlis", "Bolu", "Burdur", "Bursa", "Çanakkale", "Çankırı", "Çorum", "Denizli",
+  "Diyarbakır", "Edirne", "Elazığ", "Erzincan", "Erzurum", "Eskişehir", "Gaziantep", "Giresun", "Gümüşhane", "Hakkari",
+  "Hatay", "Isparta", "Mersin", "İstanbul", "İzmir", "Kars", "Kastamonu", "Kayseri", "Kırklareli", "Kırşehir",
+  "Kocaeli", "Konya", "Kütahya", "Malatya", "Manisa", "Kahramanmaraş", "Mardin", "Muğla", "Muş", "Nevşehir",
+  "Niğde", "Ordu", "Rize", "Sakarya", "Samsun", "Siirt", "Sinop", "Sivas", "Tekirdağ", "Tokat",
+  "Trabzon", "Tunceli", "Şanlıurfa", "Uşak", "Van", "Yozgat", "Zonguldak", "Aksaray", "Bayburt", "Karaman",
+  "Kırıkkale", "Batman", "Şırnak", "Bartın", "Ardahan", "Iğdır", "Yalova", "Karabük", "Kilis", "Osmaniye", "Düzce"
+];
+
+function normalizeTrAsciiToken(raw: string): string {
+  return raw
+    .normalize("NFC")
+    .trim()
+    .replace(/İ/g, "i")
+    .replace(/I/g, "i")
+    .replace(/ı/g, "i")
+    .replace(/Ş/g, "s")
+    .replace(/ş/g, "s")
+    .replace(/Ğ/g, "g")
+    .replace(/ğ/g, "g")
+    .replace(/Ü/g, "u")
+    .replace(/ü/g, "u")
+    .replace(/Ö/g, "o")
+    .replace(/ö/g, "o")
+    .replace(/Ç/g, "c")
+    .replace(/ç/g, "c")
+    .replace(/Â/g, "a")
+    .replace(/â/g, "a")
+    .toLowerCase();
+}
+
+const CLIENT_ADMIN_TOKEN_TO_CODE: Readonly<Record<string, TrProvinceCode>> = (() => {
+  const map: Record<string, TrProvinceCode> = {};
+  for (let p = 1; p <= 81; p++) {
+    const code = `TR-${String(p).padStart(2, "0")}` as TrProvinceCode;
+    const norm = normalizeTrAsciiToken(TR_PROVINCE_NAMES_BY_PLATE[p]);
+    map[norm] = code;
+  }
+  map["icel"] = "TR-33";
+  map["afyon"] = "TR-03";
+  map["antakya"] = "TR-31";
+  map["izmit"] = "TR-41";
+  map["adapazari"] = "TR-54";
+  map["maras"] = "TR-46";
+  map["urfa"] = "TR-63";
+  map["antep"] = "TR-27";
+  return Object.freeze(map);
+})();
+
+const REJECTED_GEO_REGION_NAMES = new Set([
+  "marmara",
+  "marmara bolgesi",
+  "ege",
+  "ege bolgesi",
+  "akdeniz",
+  "akdeniz bolgesi",
+  "ic anadolu",
+  "ic anadolu bolgesi",
+  "karadeniz",
+  "karadeniz bolgesi",
+  "dogu anadolu",
+  "dogu anadolu bolgesi",
+  "guneydogu anadolu",
+  "guneydogu anadolu bolgesi",
+  "turkiye",
+  "turkey"
+]);
+
+function inferTrProvinceCodeFromText(
+  admin1?: string,
+  name?: string,
+  countryCode?: string
+): TrProvinceCode | "GLOBAL" | null {
+  if (countryCode && countryCode.toUpperCase() !== "TR") {
+    return "GLOBAL";
+  }
+  for (const raw of [admin1, name]) {
+    if (!raw) continue;
+    const upper = raw.trim().toUpperCase();
+    if (isTrProvinceCode(upper)) return upper;
+    const parts = normalizeTrAsciiToken(raw)
+      .split(/[·,/|()[\]\u2013\u2014-]+/)
+      .map((s) => s.replace(/\b(?:ili|province|merkez)\b/g, "").trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      if (REJECTED_GEO_REGION_NAMES.has(part) || part.includes("bolgesi")) continue;
+      const hit = CLIENT_ADMIN_TOKEN_TO_CODE[part];
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function isGeographicRegionLabel(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const norm = normalizeTrAsciiToken(raw);
+  return REJECTED_GEO_REGION_NAMES.has(norm) || norm.includes("bolgesi") || norm.includes("region");
+}
+
+const BURSA_ONLY_STATION_IDS = new Set([
+  "17116-OSM",
+  "OSM-ETEK",
+  "NILUFER",
+  "YILDIRIM",
+  "KESTEL",
+  "GURSU",
+  "MUDANYA",
+  "GEMLIK",
+  "KARACABEY",
+  "ULUDAG",
+  "SARIALAN",
+  "LTBR"
+]);
+
+const TR_AIRPORT_OWNER_BY_ICAO: Readonly<Record<string, TrProvinceCode>> = Object.freeze({
+  LTAF: "TR-01", LTAG: "TR-01", LTCP: "TR-02", LTAH: "TR-03", LTCO: "TR-04",
+  LTAP: "TR-05", LTAC: "TR-06", LTAB: "TR-06", LTAD: "TR-06", LTAI: "TR-07",
+  LTFG: "TR-07", LTBD: "TR-09", LTBF: "TR-10", LTBG: "TR-10", LTFD: "TR-10",
+  LTCU: "TR-12", LTBR: "TR-16", LTBH: "TR-17", LTFK: "TR-17", LTAY: "TR-20",
+  LTCC: "TR-21", LTCA: "TR-23", LTCD: "TR-24", LTCE: "TR-25", LTBY: "TR-26",
+  LTBI: "TR-26", LTAJ: "TR-27", LTCW: "TR-30", LTDA: "TR-31", LTFC: "TR-32",
+  LTDB: "TR-33", LTFM: "TR-34", LTFJ: "TR-34", LTBA: "TR-34", LTBJ: "TR-35",
+  LTBL: "TR-35", LTCF: "TR-36", LTAL: "TR-37", LTAU: "TR-38", LTBQ: "TR-41",
+  LTAN: "TR-42", LTBZ: "TR-43", LTBN: "TR-43", LTAT: "TR-44", LTBT: "TR-45",
+  LTCN: "TR-46", LTCR: "TR-47", LTBS: "TR-48", LTFE: "TR-48", LTCK: "TR-49",
+  LTAZ: "TR-50", LTCB: "TR-52", LTFO: "TR-53", LTFH: "TR-55", LTCL: "TR-56",
+  LTCM: "TR-57", LTAR: "TR-58", LTBU: "TR-59", LTAW: "TR-60", LTCG: "TR-61",
+  LTCS: "TR-63", LTBO: "TR-64", LTCI: "TR-65", LTAS: "TR-67", LTCJ: "TR-72",
+  LTCV: "TR-73", LTCT: "TR-76"
+});
+
+function isStationOwnedByActiveProvince(
+  st: MetarObservation,
+  activeProvinceCode: TrProvinceCode | "GLOBAL" | null
+): boolean {
+  const code = String(st.icaoId || "").trim().toUpperCase();
+  if (!code) return false;
+  if (activeProvinceCode && isTrProvinceCode(activeProvinceCode)) {
+    if (BURSA_ONLY_STATION_IDS.has(code) && activeProvinceCode !== "TR-16") {
+      return false;
+    }
+    const airportOwner = TR_AIRPORT_OWNER_BY_ICAO[code];
+    if (airportOwner && airportOwner !== activeProvinceCode) {
+      return false;
+    }
+    if (/^(?:LG|UG|UD|OS|OI|LB|LC)[A-Z]{2}$/.test(code)) {
+      return false;
+    }
+    const stProv = (st as MetarObservation & { provinceCode?: string }).provinceCode;
+    if (stProv && stProv !== activeProvinceCode) {
+      return false;
+    }
+    return true;
+  }
+  if (activeProvinceCode === "GLOBAL") {
+    return !BURSA_ONLY_STATION_IDS.has(code);
+  }
+  return true;
+}
+
+function buildProvinceCenterLocation(meta: TrProvinceCenterMeta): GeoLocation {
+  const presetMatch = PRESET_CITIES.find(
+    (c) =>
+      c.countryCode === "TR" &&
+      normalizeTrAsciiToken(c.name) === normalizeTrAsciiToken(meta.nameTr)
+  );
+  if (presetMatch) {
+    return {
+      ...presetMatch,
+      provinceCode: meta.code
+    };
+  }
+  const slug = normalizeTrAsciiToken(meta.nameTr).replace(/[^a-z0-9]+/g, "-");
+  return canonicalizeStationIdentity({
+    id: meta.code === "TR-16" ? "bursa-tr" : `tr-${String(meta.plateNumber).padStart(2, "0")}-${slug}`,
+    name: meta.nameTr,
+    admin1: meta.nameTr,
+    provinceCode: meta.code,
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: meta.lat,
+    lon: meta.lon,
+    elevation: meta.elevationM,
+    timezone: "Europe/Istanbul"
+  });
+}
 
 function formatRadarNowcastSummary(meta?: {
   radarSummaryCode?: string;
@@ -108,6 +306,16 @@ function formatRadarNowcastSummary(meta?: {
   };
 }
 
+interface LazyRadarGeoModule {
+  trTopo: DecodedTr81Topology | null;
+  centersByCode: Readonly<Record<TrProvinceCode, TrProvinceCenterMeta>>;
+  findProvinceAt: (
+    topo: DecodedTr81Topology | null | undefined,
+    lat: number,
+    lon: number
+  ) => DecodedTr81Province | null;
+}
+
 export default function WorldView() {
   const router = useRouter();
   const {
@@ -129,18 +337,135 @@ export default function WorldView() {
   const [fetching, setFetching] = useState(false);
   const [pointError, setPointError] = useState<string | null>(null);
   const [radarFrameState, setRadarFrameState] = useState<LiveRadarFrameState | null>(null);
+  const [radarGeo, setRadarGeo] = useState<LazyRadarGeoModule | null>(null);
 
   const requestSeqRef = useRef(0);
+  const pointAbortRef = useRef<AbortController | null>(null);
   const manualPickRef = useRef(manualPick);
 
   useEffect(() => {
     manualPickRef.current = manualPick;
   }, [manualPick]);
 
+  // Abort any in-flight coordinate/city request on unmount
+  useEffect(() => {
+    return () => {
+      pointAbortRef.current?.abort();
+    };
+  }, []);
+
+  // Lazy-bind shared in-memory `tr-81-adm1-topo.json` solver from the `/world` dynamic chunk
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let mounted = true;
+    void import("./LiveRadarMap")
+      .then(async (mod) => {
+        const topo = await mod.loadTr81Adm1Topology().catch(() => null);
+        if (!mounted) return;
+        setRadarGeo({
+          trTopo: topo,
+          centersByCode: mod.TR81_PROVINCE_CENTERS,
+          findProvinceAt: mod.findTrProvinceAtLatLon
+        });
+      })
+      .catch(() => null);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // When global `activeLocation` changes in header/search, abort stale manual requests & clear residual state
+  useEffect(() => {
+    pointAbortRef.current?.abort();
+    pointAbortRef.current = null;
+    queueMicrotask(() => {
+      setManualPick((prev) =>
+        prev && prev.baseId !== activeLocation.id ? null : prev
+      );
+      setFetching(false);
+      setPointError(null);
+    });
+  }, [
+    activeLocation.id,
+    activeLocation.lat,
+    activeLocation.lon,
+    activeLocation.provinceCode
+  ]);
+
   const isManualActive =
     manualPick !== null && manualPick.baseId === activeLocation.id;
   const selectedLoc = isManualActive ? manualPick.loc : activeLocation;
-  const pointBundle = isManualActive ? manualPick.bundle : bundle;
+  const rawCandidateBundle = isManualActive ? manualPick.bundle : bundle;
+
+  // Strict location & province firewall: NEVER allow a previous city's bundle to linger on screen
+  const pointBundle = useMemo(() => {
+    if (!rawCandidateBundle) return null;
+    const directEq = areLocationsEquivalent(rawCandidateBundle.location, selectedLoc, 0.08);
+    const canonEq =
+      directEq ||
+      areLocationsEquivalent(
+        canonicalizeStationIdentity(rawCandidateBundle.location),
+        canonicalizeStationIdentity(selectedLoc),
+        0.08
+      );
+    if (!canonEq) return null;
+    if (
+      selectedLoc.provinceCode &&
+      rawCandidateBundle.location.provinceCode &&
+      selectedLoc.provinceCode !== rawCandidateBundle.location.provinceCode
+    ) {
+      return null;
+    }
+    return rawCandidateBundle;
+  }, [rawCandidateBundle, selectedLoc]);
+
+  // Resolve authoritative active province code (`TR-01`..`TR-81` or `"GLOBAL"`)
+  const activeProvinceCode = useMemo((): TrProvinceCode | "GLOBAL" | null => {
+    const candidates = [
+      selectedLoc.provinceCode,
+      pointBundle?.location.provinceCode,
+      pointBundle?.hybrid.engineMeta?.provinceCode,
+      pointBundle?.provinceSummary?.provinceCode
+    ];
+    for (const c of candidates) {
+      if (isTrProvinceCode(c)) return c;
+      if (c === "GLOBAL") return "GLOBAL";
+    }
+    if (radarGeo?.trTopo) {
+      const polyHit = radarGeo.findProvinceAt(
+        radarGeo.trTopo,
+        selectedLoc.lat,
+        selectedLoc.lon
+      );
+      if (polyHit) return polyHit.code;
+      if (
+        selectedLoc.lon < 25.4 ||
+        selectedLoc.lon > 45.0 ||
+        selectedLoc.lat < 35.7 ||
+        selectedLoc.lat > 42.3
+      ) {
+        return "GLOBAL";
+      }
+    }
+    return inferTrProvinceCodeFromText(
+      selectedLoc.admin1,
+      selectedLoc.name,
+      selectedLoc.countryCode
+    );
+  }, [selectedLoc, pointBundle, radarGeo]);
+
+  const activeProvinceName = useMemo((): string | null => {
+    if (activeProvinceCode && isTrProvinceCode(activeProvinceCode)) {
+      const plate = Number(activeProvinceCode.slice(3));
+      return (
+        pointBundle?.provinceSummary?.provinceName ||
+        pointBundle?.hybrid.engineMeta?.provinceName ||
+        TR_PROVINCE_NAMES_BY_PLATE[plate] ||
+        null
+      );
+    }
+    return null;
+  }, [activeProvinceCode, pointBundle]);
 
   // 100% SSOT Data Parity with Weather ("Hava") tab via resolveActiveTemporalView(pointBundle, 0)
   const temporal = useMemo(
@@ -149,8 +474,35 @@ export default function WorldView() {
   );
 
   const fetchPoint = useCallback(
-    async (rawLoc: GeoLocation, opts?: { forceRefresh?: boolean }) => {
-      const loc = canonicalizeStationIdentity(rawLoc);
+    async (
+      rawLoc: GeoLocation,
+      opts?: { forceRefresh?: boolean; sharedController?: AbortController }
+    ) => {
+      const canon = canonicalizeStationIdentity(rawLoc);
+      const polyHit =
+        radarGeo?.trTopo && !canon.provinceCode
+          ? radarGeo.findProvinceAt(radarGeo.trTopo, canon.lat, canon.lon)
+          : null;
+      const loc: GeoLocation = polyHit
+        ? {
+            ...canon,
+            provinceCode: polyHit.code,
+            admin1:
+              canon.admin1 && !isGeographicRegionLabel(canon.admin1)
+                ? canon.admin1
+                : polyHit.nameTr,
+            country: canon.country || "Türkiye",
+            countryCode: canon.countryCode || "TR",
+            timezone: canon.timezone || "Europe/Istanbul"
+          }
+        : canon;
+
+      if (!opts?.sharedController) {
+        pointAbortRef.current?.abort();
+      }
+      const controller = opts?.sharedController ?? new AbortController();
+      pointAbortRef.current = controller;
+
       const seq = ++requestSeqRef.current;
       const baseId = activeLocation.id;
 
@@ -194,21 +546,27 @@ export default function WorldView() {
 
       try {
         const res = await fetch(buildWeatherApiUrl(loc), {
+          signal: controller.signal,
           cache: opts?.forceRefresh || initialPointBundle ? "no-store" : "default"
         });
+        if (controller.signal.aborted || seq !== requestSeqRef.current) return;
         if (!res.ok) {
           const body = await res.json().catch(() => null);
           throw new Error(body?.error ?? `HTTP ${res.status}`);
         }
         const data: WeatherBundle = await res.json();
-        if (seq !== requestSeqRef.current) return;
+        if (controller.signal.aborted || seq !== requestSeqRef.current) return;
         const merged: WeatherBundle = {
           ...data,
           location: {
             ...data.location,
             id: loc.id || data.location.id,
             name: loc.name || data.location.name,
-            admin1: loc.admin1 ?? data.location.admin1,
+            admin1:
+              loc.admin1 && !isGeographicRegionLabel(loc.admin1)
+                ? loc.admin1
+                : data.location.admin1,
+            provinceCode: data.location.provinceCode ?? loc.provinceCode,
             country: loc.country || data.location.country,
             countryCode: loc.countryCode ?? data.location.countryCode,
             elevation: loc.elevation ?? data.location.elevation,
@@ -220,12 +578,18 @@ export default function WorldView() {
         }
         setManualPick({
           baseId,
-          loc,
+          loc: merged.location,
           bundle: merged
         });
         setPointError(null);
       } catch (e) {
-        if (seq !== requestSeqRef.current) return;
+        if (
+          controller.signal.aborted ||
+          (e instanceof Error && e.name === "AbortError") ||
+          seq !== requestSeqRef.current
+        ) {
+          return;
+        }
         const msg =
           e instanceof Error
             ? e.message
@@ -255,7 +619,7 @@ export default function WorldView() {
             forceStale: true,
             staleReason: msg
           });
-          if (seq !== requestSeqRef.current) return;
+          if (controller.signal.aborted || seq !== requestSeqRef.current) return;
           if (idbHit) {
             setManualPick({ baseId, loc, bundle: idbHit });
             setPointError(null);
@@ -264,10 +628,12 @@ export default function WorldView() {
           }
         }
       } finally {
-        if (seq === requestSeqRef.current) setFetching(false);
+        if (!controller.signal.aborted && seq === requestSeqRef.current) {
+          setFetching(false);
+        }
       }
     },
-    [activeLocation, bundle, isOffline]
+    [activeLocation, bundle, isOffline, radarGeo]
   );
 
   // Auto-recover manually selected coordinate/city when live connection returns
@@ -294,46 +660,96 @@ export default function WorldView() {
     return () => window.removeEventListener(ATMOS_REFRESH_ALL_EVENT, onGlobalRefresh);
   }, [activeLocation.id, fetchPoint]);
 
+  const handlePickProvince = useCallback(
+    (provMeta: TrProvinceCenterMeta) => {
+      atmosUiSfx.playNavTick();
+      const targetLoc = buildProvinceCenterLocation(provMeta);
+      void fetchPoint(targetLoc);
+    },
+    [fetchPoint]
+  );
+
   const handlePickCoords = useCallback(
     async (lat: number, lon: number) => {
+      pointAbortRef.current?.abort();
+      const controller = new AbortController();
+      pointAbortRef.current = controller;
+
       const seq = ++requestSeqRef.current;
+      const baseId = activeLocation.id;
+      const hitProv = radarGeo?.trTopo
+        ? radarGeo.findProvinceAt(radarGeo.trTopo, lat, lon)
+        : null;
+
+      const fallbackCoordLabel = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+      // Immediate optimistic update: clears stale markers/water-body and highlights clicked province in 0ms
+      setManualPick({
+        baseId,
+        loc: {
+          id: `coord_${lat.toFixed(4)}_${lon.toFixed(4)}`,
+          name: hitProv ? `${hitProv.nameTr} (${fallbackCoordLabel})` : fallbackCoordLabel,
+          admin1: hitProv?.nameTr,
+          provinceCode: hitProv ? hitProv.code : radarGeo?.trTopo ? "GLOBAL" : undefined,
+          country: hitProv ? "Türkiye" : "Koordinat",
+          countryCode: hitProv ? "TR" : undefined,
+          lat,
+          lon,
+          timezone: hitProv ? "Europe/Istanbul" : undefined
+        },
+        bundle: null
+      });
       setFetching(true);
-      let name = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
-      let country = "Koordinat";
-      let admin1: string | undefined;
-      let countryCode: string | undefined;
+      setPointError(null);
+
+      let name = hitProv ? hitProv.nameTr : fallbackCoordLabel;
+      let country = hitProv ? "Türkiye" : "Koordinat";
+      let admin1: string | undefined = hitProv?.nameTr;
+      let countryCode: string | undefined = hitProv ? "TR" : undefined;
       let elevation: number | undefined;
-      let timezone: string | undefined;
+      let timezone: string | undefined = hitProv ? "Europe/Istanbul" : undefined;
+
       try {
         const r = await fetch(
-          `/api/reverse-geocode?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`
+          `/api/reverse-geocode?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`,
+          { signal: controller.signal }
         );
         if (r.ok) {
           const geo = await r.json();
-          name = geo.name || name;
-          country = geo.country || country;
-          if (typeof geo.admin1 === "string" && geo.admin1.trim()) {
-            admin1 = geo.admin1.trim();
+          if (geo.name && !isGeographicRegionLabel(String(geo.name))) {
+            name = String(geo.name);
           }
-          if (typeof geo.countryCode === "string" && geo.countryCode.trim()) {
-            countryCode = geo.countryCode.trim().toUpperCase();
+          if (!hitProv) {
+            country = geo.country || country;
+            if (
+              typeof geo.admin1 === "string" &&
+              geo.admin1.trim() &&
+              !isGeographicRegionLabel(geo.admin1)
+            ) {
+              admin1 = geo.admin1.trim();
+            }
+            if (typeof geo.countryCode === "string" && geo.countryCode.trim()) {
+              countryCode = geo.countryCode.trim().toUpperCase();
+            }
+            if (typeof geo.timezone === "string" && geo.timezone.trim()) {
+              timezone = geo.timezone.trim();
+            }
           }
           if (typeof geo.elevation === "number" && Number.isFinite(geo.elevation)) {
             elevation = Math.round(geo.elevation);
           }
-          if (typeof geo.timezone === "string" && geo.timezone.trim()) {
-            timezone = geo.timezone.trim();
-          }
         }
-      } catch {
-        // koordinat adı korunur
+      } catch (err) {
+        if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+          return;
+        }
       }
-      if (seq !== requestSeqRef.current) return;
+      if (controller.signal.aborted || seq !== requestSeqRef.current) return;
 
       const loc = canonicalizeStationIdentity({
         id: `coord_${lat.toFixed(4)}_${lon.toFixed(4)}`,
         name,
         admin1,
+        provinceCode: hitProv ? hitProv.code : countryCode && countryCode !== "TR" ? "GLOBAL" : undefined,
         country,
         countryCode,
         lat,
@@ -341,9 +757,9 @@ export default function WorldView() {
         elevation,
         timezone
       });
-      await fetchPoint(loc);
+      await fetchPoint(loc, { sharedController: controller });
     },
-    [fetchPoint]
+    [activeLocation.id, fetchPoint, radarGeo]
   );
 
   const fav = isFavorite(selectedLoc);
@@ -353,6 +769,69 @@ export default function WorldView() {
   );
   const engineMeta = pointBundle?.hybrid.engineMeta;
   const nowcastUi = formatRadarNowcastSummary(engineMeta);
+
+  // Strictly province-scoped active water body (`waterBodyLabelTr` & `seaOrLakeTempC`; Marmara fallback ONLY for TR-16)
+  const activeWaterBody = useMemo(() => {
+    if (!pointBundle) return null;
+    if (
+      engineMeta?.waterBodyLabelTr &&
+      typeof engineMeta.seaOrLakeTempC === "number" &&
+      Number.isFinite(engineMeta.seaOrLakeTempC)
+    ) {
+      return {
+        labelTr: engineMeta.waterBodyLabelTr,
+        tempC: engineMeta.seaOrLakeTempC
+      };
+    }
+    const summaryBody = pointBundle.provinceSummary?.activeWaterBodies?.find(
+      (wb) => typeof wb.liveTempC === "number" && Number.isFinite(wb.liveTempC)
+    );
+    if (
+      summaryBody &&
+      typeof summaryBody.liveTempC === "number" &&
+      (!pointBundle.provinceSummary?.provinceCode ||
+        !activeProvinceCode ||
+        pointBundle.provinceSummary.provinceCode === activeProvinceCode)
+    ) {
+      return {
+        labelTr: summaryBody.labelTr,
+        tempC: summaryBody.liveTempC
+      };
+    }
+    if (
+      activeProvinceCode === "TR-16" &&
+      typeof engineMeta?.marmaraSstC === "number" &&
+      Number.isFinite(engineMeta.marmaraSstC)
+    ) {
+      return {
+        labelTr: "Marmara Denizi",
+        tempC: engineMeta.marmaraSstC
+      };
+    }
+    return null;
+  }, [pointBundle, engineMeta, activeProvinceCode]);
+
+  // Strictly province-scoped verification stations (`bundle?.hybrid?.verification?.stations`)
+  const activeVerificationStations = useMemo(() => {
+    const list = pointBundle?.hybrid?.verification?.stations;
+    if (!list || list.length === 0) return [];
+    return list.filter((st) => isStationOwnedByActiveProvince(st, activeProvinceCode));
+  }, [pointBundle, activeProvinceCode]);
+
+  // Province-scoped curated microclimate sub-locations (coast / plain / foothill / summit)
+  const activeProvinceSubLocations = useMemo(() => {
+    const summary = pointBundle?.provinceSummary;
+    if (!summary || !activeProvinceCode || summary.provinceCode !== activeProvinceCode) {
+      return undefined;
+    }
+    return summary.curatedSubLocations;
+  }, [pointBundle?.provinceSummary, activeProvinceCode]);
+
+  const quickStripCities = useMemo(() => {
+    const inPreset = GLOBE_CITIES.some((c) => areLocationsEquivalent(c, selectedLoc));
+    if (inPreset) return GLOBE_CITIES;
+    return [selectedLoc, ...GLOBE_CITIES];
+  }, [selectedLoc]);
 
   const liveRainMmHr =
     typeof engineMeta?.currentRadarRainMmHr === "number" && engineMeta.radarAvailable
@@ -420,6 +899,14 @@ export default function WorldView() {
   const resolvedElevationM =
     selectedLoc.elevation ?? pointBundle?.location.elevation;
 
+  const adminSubtitle = useMemo(() => {
+    const cleanAdmin =
+      selectedLoc.admin1 && !isGeographicRegionLabel(selectedLoc.admin1)
+        ? selectedLoc.admin1
+        : activeProvinceName ?? undefined;
+    return [cleanAdmin, selectedLoc.country].filter(Boolean).join(" · ");
+  }, [selectedLoc.admin1, selectedLoc.country, activeProvinceName]);
+
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
       {/* Kompakt Üst Başlık + Görünüm Geçişi */}
@@ -471,9 +958,42 @@ export default function WorldView() {
         </div>
       </div>
 
-      {/* Tek Satır Kaydırılabilir Hızlı İstasyon Şeridi */}
+      {/* Tek Satır Kaydırılabilir Hızlı İstasyon Şeridi + 81 İl Seçici */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-        {GLOBE_CITIES.map((city) => {
+        {radarGeo && (
+          <label className="sr-only" htmlFor="world-tr81-select">
+            81 İl Hızlı Seçim
+          </label>
+        )}
+        {radarGeo && (
+          <select
+            id="world-tr81-select"
+            aria-label="81 İl Hızlı Seçim"
+            value={activeProvinceCode && isTrProvinceCode(activeProvinceCode) ? activeProvinceCode : ""}
+            onChange={(ev) => {
+              const code = ev.target.value;
+              if (isTrProvinceCode(code)) {
+                const meta = radarGeo.centersByCode[code];
+                if (meta) handlePickProvince(meta);
+              }
+            }}
+            className="shrink-0 rounded-lg border border-sky-400/30 bg-obsidian-900/95 px-2.5 py-1.5 font-mono text-xs font-medium text-sky-200 focus:border-sky-400 focus:outline-none"
+          >
+            <option value="">81 İl Seç...</option>
+            {Array.from({ length: 81 }, (_, idx) => {
+              const plate = idx + 1;
+              const code = `TR-${String(plate).padStart(2, "0")}` as TrProvinceCode;
+              const pName = TR_PROVINCE_NAMES_BY_PLATE[plate];
+              return (
+                <option key={code} value={code}>
+                  {String(plate).padStart(2, "0")} · {pName}
+                </option>
+              );
+            })}
+          </select>
+        )}
+
+        {quickStripCities.map((city) => {
           const active = areLocationsEquivalent(selectedLoc, city);
           return (
             <button
@@ -502,9 +1022,15 @@ export default function WorldView() {
             <LiveRadarMap
               selectedLat={selectedLoc.lat}
               selectedLon={selectedLoc.lon}
+              selectedProvinceCode={activeProvinceCode}
+              selectedProvinceName={activeProvinceName}
+              activeWaterBody={activeWaterBody}
+              verificationStations={activeVerificationStations}
+              provinceSubLocations={activeProvinceSubLocations}
               presetCities={GLOBE_CITIES}
               onPickCoords={(lat, lon) => void handlePickCoords(lat, lon)}
               onPickCity={(city) => void fetchPoint(city)}
+              onPickProvince={handlePickProvince}
               unit={unit}
               timeZone={pointBundle?.timezone ?? selectedLoc.timezone}
               utcOffsetSeconds={pointBundle?.utcOffsetSeconds}
@@ -532,7 +1058,7 @@ export default function WorldView() {
           <div className="space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-ink-muted tabular">
+                <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-ink-muted tabular">
                   <MapPin className="h-3.5 w-3.5 text-signal-sky" />
                   <span>{formatLatLon(selectedLoc.lat, selectedLoc.lon, 3)}</span>
                   {resolvedElevationM !== undefined && Number.isFinite(resolvedElevationM) && (
@@ -541,7 +1067,16 @@ export default function WorldView() {
                       <span>Rakım {formatElevation(resolvedElevationM, unit)}</span>
                     </>
                   )}
-                </p>
+                  {activeProvinceCode && (
+                    <span className="rounded border border-sky-400/35 bg-sky-400/12 px-1.5 py-0.5 text-[10px] font-medium text-sky-200">
+                      {isTrProvinceCode(activeProvinceCode) && activeProvinceName
+                        ? `${activeProvinceCode} · ${activeProvinceName}`
+                        : activeProvinceCode === "GLOBAL"
+                          ? "KÜRESEL"
+                          : activeProvinceCode}
+                    </span>
+                  )}
+                </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   <h2 className="font-display text-2xl font-semibold text-ink-primary">
                     {selectedLoc.name}
@@ -553,10 +1088,8 @@ export default function WorldView() {
                     </span>
                   )}
                 </div>
-                {(selectedLoc.admin1 || selectedLoc.country) && (
-                  <p className="text-xs text-ink-secondary">
-                    {[selectedLoc.admin1, selectedLoc.country].filter(Boolean).join(" · ")}
-                  </p>
+                {adminSubtitle && (
+                  <p className="text-xs text-ink-secondary">{adminSubtitle}</p>
                 )}
               </div>
               {fetching && (
@@ -565,6 +1098,48 @@ export default function WorldView() {
                 </span>
               )}
             </div>
+
+            {/* Seçili İl Mikroiklim Alt Noktaları (Sahil / Ova / Etek / Zirve) */}
+            {activeProvinceSubLocations && activeProvinceSubLocations.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {activeProvinceSubLocations.map((sub) => {
+                  const isSubSelected =
+                    Math.hypot(sub.lat - selectedLoc.lat, sub.lon - selectedLoc.lon) < 0.015 &&
+                    Math.abs((resolvedElevationM ?? sub.elevationM) - sub.elevationM) < 80;
+                  return (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => {
+                        atmosUiSfx.playNavTick();
+                        void fetchPoint({
+                          id: sub.id,
+                          name: sub.name,
+                          admin1: activeProvinceName ?? selectedLoc.admin1,
+                          provinceCode:
+                            activeProvinceCode && isTrProvinceCode(activeProvinceCode)
+                              ? activeProvinceCode
+                              : undefined,
+                          country: "Türkiye",
+                          countryCode: "TR",
+                          lat: sub.lat,
+                          lon: sub.lon,
+                          elevation: sub.elevationM,
+                          timezone: "Europe/Istanbul"
+                        });
+                      }}
+                      className={`rounded-md border px-2 py-1 font-mono text-[10px] transition-colors tabular ${
+                        isSubSelected
+                          ? "border-sky-400/45 bg-sky-400/15 text-sky-100"
+                          : "border-white/10 bg-white/[0.03] text-ink-muted hover:text-ink-primary"
+                      }`}
+                    >
+                      {sub.name} ({formatElevation(sub.elevationM, unit)})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {pointError && !pointBundle && (
               <div className="rounded-xl border border-signal-rose/35 bg-signal-rose/10 p-3 text-xs text-ink-primary flex items-center justify-between gap-2">
@@ -617,6 +1192,19 @@ export default function WorldView() {
                     </div>
                   )}
                 </div>
+
+                {/* Aktif Su Kütlesi Sıcaklığı (`waterBodyLabelTr` & `seaOrLakeTempC`) */}
+                {activeWaterBody && (
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-cyan-400/25 bg-cyan-400/[0.07] px-3 py-2 text-xs">
+                    <span className="flex items-center gap-1.5 font-medium text-cyan-100">
+                      <Waves className="h-3.5 w-3.5 text-cyan-300" />
+                      <span>{activeWaterBody.labelTr}</span>
+                    </span>
+                    <span className="font-mono font-semibold text-cyan-200 tabular">
+                      Su {formatTemperature(activeWaterBody.tempC, unit)}
+                    </span>
+                  </div>
+                )}
 
                 {/* Canlı Doppler Radar & 180 dk Nowcast Telemetri Özeti */}
                 <div className="surface-tile p-3 space-y-2">
@@ -723,6 +1311,37 @@ export default function WorldView() {
                     </p>
                   </div>
                 </div>
+
+                {/* Seçili İle Kilitli Canlı Doğrulama İstasyonları (`verification.stations`) */}
+                {activeVerificationStations.length > 0 && (
+                  <div className="surface-tile p-3 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-mono text-ink-muted">
+                      <span>CANLI İSTASYON DOĞRULAMA AĞI</span>
+                      <span className="text-emerald-300">
+                        {activeVerificationStations.length} istasyon
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {activeVerificationStations.slice(0, 4).map((st) => (
+                        <span
+                          key={`${st.icaoId}-${st.elevationM}`}
+                          className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-ink-secondary tabular"
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                          <span className="text-ink-primary">{st.icaoId}</span>
+                          {typeof st.tempC === "number" && Number.isFinite(st.tempC) && (
+                            <span className="text-emerald-300">
+                              {formatTemperature(st.tempC, unit)}
+                            </span>
+                          )}
+                          <span className="text-ink-muted">
+                            {formatElevation(st.elevationM, unit)}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <div className="surface-tile p-6 text-center text-xs text-ink-muted">

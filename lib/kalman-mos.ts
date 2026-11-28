@@ -8,6 +8,13 @@ import {
   MEDIUM_RANGE_PRIOR_WEIGHTS,
   WMO_PRIOR_WEIGHTS
 } from "./model-registry";
+import {
+  computeRegimeGateFactor,
+  evaluateRegimeGateComponents,
+  type TargetSynopticContext,
+  type TrainingRegimeSummary,
+  windDirSpeedToUVKmh
+} from "./provinces/engine/regime-bimodal-solver";
 import type { LedgerStationPoint } from "./state-ledger";
 import { computeRuralBasinToUrbanOffsetC } from "./topographic-cressman";
 import { createFastZonedTimeResolver } from "./weather-client";
@@ -19,6 +26,17 @@ import type {
   LiveVerificationReport,
   ModelVerificationRow
 } from "./weather-types";
+
+export {
+  computeRegimeGateFactor,
+  evaluateRegimeGateComponents,
+  type TargetSynopticContext,
+  type TrainingRegimeSummary
+};
+
+export type ProvinceScopedLedgerStationPoint = LedgerStationPoint & {
+  stationProvinceCode?: string;
+};
 
 export type CressmanHourlyObs = {
   utcKey: string;
@@ -73,7 +91,13 @@ export type KalmanMosModel = {
   anchor: NowcastSensorAnchor;
   report: LiveVerificationReport;
   summary: KalmanCalibrationSummary;
+  trainingRegimeSummary?: TrainingRegimeSummary;
+  provinceCode?: string;
+  kalmanTempBiasCapC?: number;
+  coldBasinAirportIcaos?: readonly string[];
 };
+
+const DEFAULT_COLD_BASIN_AIRPORT_ICAOS = ["LTBR"] as const;
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
@@ -96,6 +120,24 @@ function haversineKmLocal(lat1: number, lon1: number, lat2: number, lon2: number
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
 }
 
+function filterLedgerByProvince(
+  ledgerStationHistory: ProvinceScopedLedgerStationPoint[] | undefined,
+  provinceCode: string | undefined
+): ProvinceScopedLedgerStationPoint[] | undefined {
+  if (!ledgerStationHistory || !provinceCode) return ledgerStationHistory;
+  const targetCode = provinceCode.trim();
+  if (!targetCode) return ledgerStationHistory;
+  return ledgerStationHistory.filter((pt) => {
+    if (
+      typeof pt.stationProvinceCode === "string" &&
+      pt.stationProvinceCode.trim().length > 0
+    ) {
+      return pt.stationProvinceCode.trim() === targetCode;
+    }
+    return true;
+  });
+}
+
 /**
  * Huber/MAD tabanlı aykırı hata filtresi: sensör sıçramaları Kalman bias'ını bozamaz.
  */
@@ -115,7 +157,7 @@ function filterRobustErrors(
 }
 
 /**
- * 48-72 saatlik çoklu ICAO METAR ağı + Kalıcı Bursa MGM 19-İlçe Defterinden (state-ledger)
+ * 48-72 saatlik çoklu ICAO METAR ağı + Kalıcı MGM İstasyon Defterinden (state-ledger)
  * Cressman / IDW + canlı atmosferik lapse rate düzeltmeli saatlik şehir gözlem serisi üretir.
  */
 export function buildCressmanMetarTimeline(
@@ -124,9 +166,13 @@ export function buildCressmanMetarTimeline(
   envLapseRateCPerM: number,
   cityLat?: number,
   cityLon?: number,
-  ledgerStationHistory?: LedgerStationPoint[],
+  ledgerStationHistory?: ProvinceScopedLedgerStationPoint[],
   timezone?: string,
-  utcOffsetSeconds = 10800
+  utcOffsetSeconds = 10800,
+  options?: {
+    provinceCode?: string;
+    coldBasinAirportIcaos?: readonly string[];
+  }
 ): Map<string, CressmanHourlyObs> {
   const isBursaOvaTarget =
     cityLat !== undefined &&
@@ -136,6 +182,17 @@ export function buildCressmanMetarTimeline(
     cityLon < 29.35;
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
   const tzResolver = createFastZonedTimeResolver(timezone, utcOffsetSeconds);
+
+  const scopedLedger = filterLedgerByProvince(
+    ledgerStationHistory,
+    options?.provinceCode
+  );
+  const hasExplicitColdBasinIcaos = options?.coldBasinAirportIcaos !== undefined;
+  const coldBasinIcaoSet = new Set(
+    (options?.coldBasinAirportIcaos ?? DEFAULT_COLD_BASIN_AIRPORT_ICAOS)
+      .map((id) => id.trim().toUpperCase())
+      .filter(Boolean)
+  );
 
   type StationSample = {
     weight: number;
@@ -149,10 +206,10 @@ export function buildCressmanMetarTimeline(
   };
 
   const bucket = new Map<string, Map<string, StationSample>>();
-  const hasLedgerBursa = Boolean(ledgerStationHistory && ledgerStationHistory.length >= 6);
+  const hasLocalLedger = Boolean(scopedLedger && scopedLedger.length >= 6);
 
-  if (ledgerStationHistory && cityLat !== undefined && cityLon !== undefined) {
-    for (const pt of ledgerStationHistory) {
+  if (scopedLedger && cityLat !== undefined && cityLon !== undefined) {
+    for (const pt of scopedLedger) {
       const distKm = Math.max(0.5, haversineKmLocal(cityLat, cityLon, pt.lat, pt.lon));
       if (distKm > 48) continue;
       const elevDiffToCity = cityElevationM - pt.elevationM;
@@ -188,8 +245,19 @@ export function buildCressmanMetarTimeline(
 
     const distKm = Math.max(1, net.station.distanceKm);
     const elevPenalty = 1 + Math.abs(elevDiffToCity) / 280;
-    const isLtbrTrap = isBursaOvaTarget && net.station.icaoId === "LTBR";
-    const barrierFactor = isLtbrTrap ? (hasLedgerBursa ? 0.05 : network.length > 1 ? 0.22 : 1.0) : 1.0;
+    const icaoUpper = net.station.icaoId.trim().toUpperCase();
+    const isColdBasinTrap =
+      coldBasinIcaoSet.has(icaoUpper) &&
+      (icaoUpper === "LTBR" && !hasExplicitColdBasinIcaos
+        ? isBursaOvaTarget
+        : net.station.distanceKm >= 6 || hasLocalLedger || network.length > 1);
+    const barrierFactor = isColdBasinTrap
+      ? hasLocalLedger
+        ? 0.05
+        : network.length > 1
+          ? 0.22
+          : 1.0
+      : 1.0;
     const stationWeight = barrierFactor / ((distKm * distKm + 14 * 14) * elevPenalty);
 
     for (const ob of net.history) {
@@ -208,8 +276,8 @@ export function buildCressmanMetarTimeline(
 
       const localH = tzResolver.epochMsToLocalParts(roundedMs).hour;
       const isNightOb = localH >= 18 || localH <= 8;
-      const ltbrBasinUnbias =
-        isBursaOvaTarget && net.station.icaoId === "LTBR"
+      const coldBasinUnbias =
+        isColdBasinTrap && (isBursaOvaTarget || net.station.distanceKm >= 6)
           ? computeRuralBasinToUrbanOffsetC(
               0.04,
               0.96,
@@ -225,7 +293,7 @@ export function buildCressmanMetarTimeline(
           : 0;
       const tempCity =
         typeof ob.temp === "number" && Number.isFinite(ob.temp)
-          ? ob.temp + tempElevDelta + ltbrBasinUnbias
+          ? ob.temp + tempElevDelta + coldBasinUnbias
           : null;
       const dewCity =
         typeof ob.dewp === "number" && Number.isFinite(ob.dewp)
@@ -338,11 +406,242 @@ function emptyBiasProfile(): ModelBiasProfile {
   };
 }
 
+function meanFiniteAtIndex(
+  modelHourlyUtc: Record<string, Array<number | null> | undefined>,
+  keys: readonly string[],
+  idx: number
+): number | null {
+  let sum = 0;
+  let count = 0;
+  for (const k of keys) {
+    const v = modelHourlyUtc[k]?.[idx];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      sum += v;
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : null;
+}
+
+function extractWindUVAtIndex(
+  modelHourlyUtc: Record<string, Array<number | null> | undefined>,
+  spdPrefix: string,
+  dirPrefix: string,
+  spdKeys: readonly string[],
+  dirKeys: readonly string[],
+  idx: number
+): { u: number; v: number } | null {
+  if (spdKeys.length === 0 || dirKeys.length === 0) return null;
+
+  let pairSumU = 0;
+  let pairSumV = 0;
+  let pairCount = 0;
+  for (const sk of spdKeys) {
+    const spd = modelHourlyUtc[sk]?.[idx];
+    if (typeof spd !== "number" || !Number.isFinite(spd)) continue;
+    const suffix = sk === spdPrefix ? "" : sk.slice(spdPrefix.length);
+    const dk = suffix ? `${dirPrefix}${suffix}` : dirPrefix;
+    const dir = modelHourlyUtc[dk]?.[idx];
+    if (typeof dir === "number" && Number.isFinite(dir)) {
+      const uv = windDirSpeedToUVKmh(dir, spd);
+      pairSumU += uv.u;
+      pairSumV += uv.v;
+      pairCount++;
+    }
+  }
+  if (pairCount > 0) {
+    return { u: pairSumU / pairCount, v: pairSumV / pairCount };
+  }
+
+  const meanSpd = meanFiniteAtIndex(modelHourlyUtc, spdKeys, idx);
+  if (meanSpd === null) return null;
+  let sinSum = 0;
+  let cosSum = 0;
+  let dirCount = 0;
+  for (const dk of dirKeys) {
+    const d = modelHourlyUtc[dk]?.[idx];
+    if (typeof d === "number" && Number.isFinite(d)) {
+      const rad = (d * Math.PI) / 180;
+      sinSum += Math.sin(rad);
+      cosSum += Math.cos(rad);
+      dirCount++;
+    }
+  }
+  if (dirCount === 0) return null;
+  const norm = Math.hypot(sinSum, cosSum);
+  if (norm <= 1e-6) return { u: 0, v: 0 };
+  const meanDirDeg = ((Math.atan2(sinSum / norm, cosSum / norm) * 180) / Math.PI + 360) % 360;
+  return windDirSpeedToUVKmh(meanDirDeg, meanSpd);
+}
+
+function summarizeTrainingRegime({
+  modelHourlyUtc,
+  utcTimeIndex,
+  timeline,
+  network,
+  scopedLedger,
+  nowUtcMs
+}: {
+  modelHourlyUtc: Record<string, Array<number | null> | undefined> | null;
+  utcTimeIndex: Map<string, number>;
+  timeline: Map<string, CressmanHourlyObs>;
+  network: MetarNetworkStation[];
+  scopedLedger: ProvinceScopedLedgerStationPoint[] | undefined;
+  nowUtcMs: number;
+}): TrainingRegimeSummary {
+  const obsWindByUtc = new Map<string, { u: number; v: number }>();
+  if (scopedLedger) {
+    for (const pt of scopedLedger) {
+      if (
+        typeof pt.windSpeedKmh === "number" &&
+        Number.isFinite(pt.windSpeedKmh) &&
+        typeof pt.windDirDeg === "number" &&
+        Number.isFinite(pt.windDirDeg)
+      ) {
+        obsWindByUtc.set(pt.utcHourKey, windDirSpeedToUVKmh(pt.windDirDeg, pt.windSpeedKmh));
+      }
+    }
+  }
+  for (const net of network) {
+    for (const ob of net.history) {
+      if (
+        typeof ob.wspd === "number" &&
+        Number.isFinite(ob.wspd) &&
+        typeof ob.wdir === "number" &&
+        Number.isFinite(ob.wdir)
+      ) {
+        const roundedMs = Math.round((ob.obsTime * 1000) / 3600000) * 3600000;
+        const uKey = new Date(roundedMs).toISOString().slice(0, 16);
+        if (!obsWindByUtc.has(uKey)) {
+          obsWindByUtc.set(uKey, windDirSpeedToUVKmh(ob.wdir, ob.wspd * 1.852));
+        }
+      }
+    }
+  }
+
+  const allKeys = modelHourlyUtc ? Object.keys(modelHourlyUtc) : [];
+  const t2mKeys = allKeys.filter(
+    (k) => k === "temperature_2m" || k.startsWith("temperature_2m_")
+  );
+  const t850Keys = allKeys.filter(
+    (k) => k === "temperature_850hPa" || k.startsWith("temperature_850hPa_")
+  );
+  const w850SpdKeys = allKeys.filter(
+    (k) => k === "wind_speed_850hPa" || k.startsWith("wind_speed_850hPa_")
+  );
+  const w850DirKeys = allKeys.filter(
+    (k) => k === "wind_direction_850hPa" || k.startsWith("wind_direction_850hPa_")
+  );
+  const w10mSpdKeys = allKeys.filter(
+    (k) => k === "wind_speed_10m" || k.startsWith("wind_speed_10m_")
+  );
+  const w10mDirKeys = allKeys.filter(
+    (k) => k === "wind_direction_10m" || k.startsWith("wind_direction_10m_")
+  );
+
+  let t2mSum = 0;
+  let t2mW = 0;
+  let t850Sum = 0;
+  let t850W = 0;
+  let uSum = 0;
+  let vSum = 0;
+  let uvW = 0;
+
+  const ewmaLambda = 0.94; // Synoptic 48-72h window EWMA
+
+  const accumulateSlot = (
+    utcKey: string,
+    idx: number | undefined,
+    ageHours: number,
+    obsTempC: number | null
+  ) => {
+    const w = Math.pow(ewmaLambda, Math.max(0, ageHours));
+    const modelT2m =
+      modelHourlyUtc && idx !== undefined
+        ? meanFiniteAtIndex(modelHourlyUtc, t2mKeys, idx)
+        : null;
+    const effT2m = obsTempC ?? modelT2m;
+    if (effT2m !== null && Number.isFinite(effT2m)) {
+      t2mSum += w * effT2m;
+      t2mW += w;
+    }
+
+    if (modelHourlyUtc && idx !== undefined) {
+      const mT850 = meanFiniteAtIndex(modelHourlyUtc, t850Keys, idx);
+      if (mT850 !== null && Number.isFinite(mT850)) {
+        t850Sum += w * mT850;
+        t850W += w;
+      }
+
+      const uv850 =
+        extractWindUVAtIndex(
+          modelHourlyUtc,
+          "wind_speed_850hPa",
+          "wind_direction_850hPa",
+          w850SpdKeys,
+          w850DirKeys,
+          idx
+        ) ??
+        extractWindUVAtIndex(
+          modelHourlyUtc,
+          "wind_speed_10m",
+          "wind_direction_10m",
+          w10mSpdKeys,
+          w10mDirKeys,
+          idx
+        ) ??
+        obsWindByUtc.get(utcKey) ??
+        null;
+
+      if (uv850 !== null) {
+        uSum += w * uv850.u;
+        vSum += w * uv850.v;
+        uvW += w;
+      }
+    } else {
+      const obsUv = obsWindByUtc.get(utcKey);
+      if (obsUv) {
+        uSum += w * obsUv.u;
+        vSum += w * obsUv.v;
+        uvW += w;
+      }
+    }
+  };
+
+  let usedTimelineSlots = 0;
+  for (const [utcKey, obs] of timeline.entries()) {
+    const ageHours = (nowUtcMs - obs.obsTimeMs) / 3600000;
+    if (ageHours < -0.5 || ageHours > 72) continue;
+    usedTimelineSlots++;
+    accumulateSlot(utcKey, utcTimeIndex.get(utcKey), ageHours, obs.tempC);
+  }
+
+  if (usedTimelineSlots === 0 && modelHourlyUtc && utcTimeIndex.size > 0) {
+    for (const [utcKey, idx] of utcTimeIndex.entries()) {
+      const slotMs = Date.parse(`${utcKey}:00Z`);
+      if (!Number.isFinite(slotMs)) continue;
+      const ageHours = (nowUtcMs - slotMs) / 3600000;
+      if (ageHours < -0.5 || ageHours > 72) continue;
+      accumulateSlot(utcKey, idx, ageHours, null);
+    }
+  }
+
+  return {
+    meanTemp2mC: t2mW > 0 ? Number((t2mSum / t2mW).toFixed(3)) : null,
+    meanTemp850C: t850W > 0 ? Number((t850Sum / t850W).toFixed(3)) : null,
+    meanWind850U: uvW > 0 ? Number((uSum / uvW).toFixed(3)) : null,
+    meanWind850V: uvW > 0 ? Number((vSum / uvW).toFixed(3)) : null
+  };
+}
+
 /**
- * ATMOS v5.0 — 8-Model Kalman + Diurnal-Phase MOS Eğitim Motoru:
- * - Son 48-72 saatlik Bursa MGM 19-İlçe Defteri + çoklu-istasyon METAR ağına karşı 8 modelin bias & UBRMSE'sini çıkarır.
- * - Ağırlıkları ham RMSE değil, bias temizlendikten sonraki rastgele hata (UBRMSE²) ile belirler.
- * - Yağış Brier skoruyla yağış ağırlıklarını da canlı kalibre eder.
+ * ATMOS v5.0 / ARC-04 — 8-Model Rejim-Korumalı Kalman + Diurnal-Phase MOS Eğitim Motoru:
+ * - Son 48-72 saatlik il-sınır kilitli MGM İstasyon Defteri + çoklu-istasyon METAR ağına karşı
+ *   8 modelin bias & UBRMSE'sini çıkarır.
+ * - Bölgesel havalimanı çanak tuzağı koruması (`coldBasinAirportIcaos`) ve bölgesel bias tavanı
+ *   (`kalmanTempBiasCapC`, örn. Doğu Anadolu kar çanaklarında 10.0°C) uygular.
+ * - Sinoptik eğitim özeti S_0 (`trainingRegimeSummary`) kaydederek cephesel hava kütlesi
+ *   değişimlerinde eski rejim yanlılığının taşınmasını engeller.
  */
 export function trainKalmanMos({
   network,
@@ -356,7 +655,10 @@ export function trainKalmanMos({
   utcOffsetSeconds,
   timezone,
   ensembleMembers = 0,
-  ledgerStationHistory
+  ledgerStationHistory,
+  provinceCode,
+  kalmanTempBiasCapC = 4.5,
+  coldBasinAirportIcaos
 }: {
   network: MetarNetworkStation[];
   cityElevationM: number;
@@ -369,19 +671,64 @@ export function trainKalmanMos({
   utcOffsetSeconds: number;
   timezone?: string;
   ensembleMembers?: number;
-  ledgerStationHistory?: LedgerStationPoint[];
+  ledgerStationHistory?: ProvinceScopedLedgerStationPoint[];
+  provinceCode?: string;
+  kalmanTempBiasCapC?: number;
+  coldBasinAirportIcaos?: readonly string[];
 }): KalmanMosModel {
   const safeLapse = clamp(envLapseRateCPerM, -0.0098, 0.004);
   const tzResolver = createFastZonedTimeResolver(timezone, utcOffsetSeconds);
+
+  const normalizedProvinceCode =
+    typeof provinceCode === "string" && provinceCode.trim().length > 0
+      ? provinceCode.trim()
+      : undefined;
+
+  // Strict province border lock: zero cross-province station leakage!
+  const scopedLedgerHistory = filterLedgerByProvince(
+    ledgerStationHistory,
+    normalizedProvinceCode
+  );
+
+  const effectiveColdBasinIcaos =
+    coldBasinAirportIcaos ?? DEFAULT_COLD_BASIN_AIRPORT_ICAOS;
+  const hasExplicitColdBasinIcaos = coldBasinAirportIcaos !== undefined;
+  const coldBasinIcaoSet = new Set(
+    effectiveColdBasinIcaos.map((id) => id.trim().toUpperCase()).filter(Boolean)
+  );
+
+  const effectiveTempBiasCapC =
+    typeof kalmanTempBiasCapC === "number" &&
+    Number.isFinite(kalmanTempBiasCapC) &&
+    kalmanTempBiasCapC > 0
+      ? clamp(kalmanTempBiasCapC, 1.0, 15.0)
+      : 4.5;
+  const isDeepContinentalCap = effectiveTempBiasCapC > 4.5;
+  const capScale = effectiveTempBiasCapC / 4.5;
+  const robustErrorHardLimitC = isDeepContinentalCap ? effectiveTempBiasCapC + 2.5 : 6.5;
+  const transientBiasCapC = isDeepContinentalCap
+    ? Number((2.8 * capScale).toFixed(4))
+    : 2.8;
+  const diurnalBiasCapC = isDeepContinentalCap
+    ? Number((2.5 * capScale).toFixed(4))
+    : 2.5;
+  const persistentShrinkN0 = isDeepContinentalCap ? 2.5 : 5.0;
+  const tempEwmaLambda = isDeepContinentalCap ? 0.93 : 0.86;
+  const tempEwmaShrinkN0 = isDeepContinentalCap ? 2.0 : 3.0;
+
   const timeline = buildCressmanMetarTimeline(
     network,
     cityElevationM,
     safeLapse,
     cityLat,
     cityLon,
-    ledgerStationHistory,
+    scopedLedgerHistory,
     timezone,
-    utcOffsetSeconds
+    utcOffsetSeconds,
+    {
+      provinceCode: normalizedProvinceCode,
+      coldBasinAirportIcaos
+    }
   );
 
   const isBursaWmo100mGrid =
@@ -479,8 +826,17 @@ export function trainKalmanMos({
     }
   }
 
+  const trainingRegimeSummary = summarizeTrainingRegime({
+    modelHourlyUtc,
+    utcTimeIndex,
+    timeline,
+    network,
+    scopedLedger: scopedLedgerHistory,
+    nowUtcMs
+  });
+
   const uniqueLedgerStations = Array.from(
-    new Set((ledgerStationHistory ?? []).map((p) => p.stationId))
+    new Set((scopedLedgerHistory ?? []).map((p) => p.stationId))
   );
   const hasMgmMeshCalibration = uniqueLedgerStations.length > 0 && matchedHours >= 6;
   const hasLiveCalibration =
@@ -520,8 +876,8 @@ export function trainKalmanMos({
   let biasCountForAvg = 0;
 
   for (const k of CORE_MODEL_KEYS) {
-    const ts = filterRobustErrors(tSamples[k], 6.5);
-    const tds = filterRobustErrors(tdSamples[k], 7.0);
+    const ts = filterRobustErrors(tSamples[k], robustErrorHardLimitC);
+    const tds = filterRobustErrors(tdSamples[k], Math.max(7.0, robustErrorHardLimitC));
     const ps = filterRobustErrors(pSamples[k], 7.5);
     const ws = filterRobustErrors(wSamples[k], 32.0);
 
@@ -540,13 +896,30 @@ export function trainKalmanMos({
       prof.tempMeanBiasC = Number(meanErr.toFixed(2));
       prof.tempMaeC = Number(mae.toFixed(2));
 
-      const persistentBias = clamp(meanErr * (n / (n + 5.0)), -4.5, 4.5);
-      const ewmaTotal = computeEwmaBias(ts, 0.86, 3.0, 4.5);
-      const transientBias = clamp(ewmaTotal - persistentBias, -2.8, 2.8);
+      const persistentBias = clamp(
+        meanErr * (n / (n + persistentShrinkN0)),
+        -effectiveTempBiasCapC,
+        effectiveTempBiasCapC
+      );
+      const ewmaTotal = computeEwmaBias(
+        ts,
+        tempEwmaLambda,
+        tempEwmaShrinkN0,
+        effectiveTempBiasCapC
+      );
+      const transientBias = clamp(
+        ewmaTotal - persistentBias,
+        -transientBiasCapC,
+        transientBiasCapC
+      );
 
       prof.tempPersistentBiasC = persistentBias;
       prof.tempTransientBiasC = transientBias;
-      prof.tempKalmanBiasC = clamp(persistentBias + transientBias, -4.5, 4.5);
+      prof.tempKalmanBiasC = clamp(
+        persistentBias + transientBias,
+        -effectiveTempBiasCapC,
+        effectiveTempBiasCapC
+      );
 
       const binSums = [0, 0, 0, 0];
       const binCounts = [0, 0, 0, 0];
@@ -557,7 +930,11 @@ export function trainKalmanMos({
       prof.tempDiurnalBiasC = [0, 1, 2, 3].map((b) => {
         if (binCounts[b] < 2) return 0;
         const meanB = binSums[b] / binCounts[b];
-        return clamp(meanB * (binCounts[b] / (binCounts[b] + 3.0)), -2.5, 2.5);
+        return clamp(
+          meanB * (binCounts[b] / (binCounts[b] + 3.0)),
+          -diurnalBiasCapC,
+          diurnalBiasCapC
+        );
       }) as [number, number, number, number];
 
       tempRmses[k] = prof.tempRmseC;
@@ -569,7 +946,12 @@ export function trainKalmanMos({
     if (tds.length >= 6) {
       const mse = tds.reduce((a, s) => a + s.err * s.err, 0) / tds.length;
       prof.dewRmseC = Number(Math.sqrt(mse).toFixed(2));
-      prof.dewKalmanBiasC = computeEwmaBias(tds, 0.89, 4.0, 4.0);
+      prof.dewKalmanBiasC = computeEwmaBias(
+        tds,
+        0.89,
+        4.0,
+        Math.max(4.0, effectiveTempBiasCapC * 0.85)
+      );
     }
 
     if (ps.length >= 6) {
@@ -701,7 +1083,20 @@ export function trainKalmanMos({
     )
   };
 
-  const primary = network[0]?.station ?? null;
+  // Select primary METAR station (preferring non-cold-basin-trap station when an explicit cold-basin airport list is given)
+  const firstStation = network[0]?.station ?? null;
+  const primary =
+    hasExplicitColdBasinIcaos &&
+    firstStation &&
+    coldBasinIcaoSet.has(firstStation.icaoId.trim().toUpperCase())
+      ? (network.find(
+          (n) =>
+            !coldBasinIcaoSet.has(n.station.icaoId.trim().toUpperCase()) &&
+            n.station.distanceKm <= 45 &&
+            n.station.ageMinutes <= 65
+        )?.station ?? firstStation)
+      : firstStation;
+
   let anchor: NowcastSensorAnchor = {
     active: false,
     tempObsCityC: null,
@@ -722,7 +1117,34 @@ export function trainKalmanMos({
     const dewElevDelta =
       Math.max(-0.0028, Math.min(0.0015, safeLapse * 0.35)) * elevDiff;
 
-    const obsT = primary.tempC !== null ? primary.tempC + tempElevDelta : null;
+    const primaryIcaoUpper = primary.icaoId.trim().toUpperCase();
+    const isPrimaryExplicitTrap =
+      hasExplicitColdBasinIcaos &&
+      coldBasinIcaoSet.has(primaryIcaoUpper) &&
+      primary.distanceKm >= 6;
+
+    const nowLocalHour = tzResolver.epochMsToLocalParts(nowUtcMs).hour;
+    const isNightNow = nowLocalHour >= 18 || nowLocalHour <= 8;
+    const primaryBasinUnbias = isPrimaryExplicitTrap
+      ? computeRuralBasinToUrbanOffsetC(
+          0.04,
+          0.96,
+          0.85,
+          {
+            isNight: isNightNow,
+            localHour: nowLocalHour,
+            cloudCoverPct: primary.wxString?.includes("OVC") ? 90 : 25,
+            ambientWindSpeedKt:
+              primary.windSpeedKmh !== null ? primary.windSpeedKmh / 1.852 : 4
+          },
+          primary.windSpeedKmh !== null ? primary.windSpeedKmh / 1.852 : null
+        )
+      : 0;
+
+    const obsT =
+      primary.tempC !== null
+        ? primary.tempC + tempElevDelta + primaryBasinUnbias
+        : null;
     const obsTd = primary.dewPointC !== null ? primary.dewPointC + dewElevDelta : null;
 
     const sigmaObsT = Math.hypot(
@@ -732,12 +1154,14 @@ export function trainKalmanMos({
       Math.abs(elevDiff) * 0.0018
     );
     const sigmaModelT = 1.15;
-    const kTemp = clamp(
+    const rawKTemp = clamp(
       (sigmaModelT * sigmaModelT) /
         (sigmaModelT * sigmaModelT + sigmaObsT * sigmaObsT),
       0,
       0.76
     );
+    const kTemp =
+      isPrimaryExplicitTrap && hasMgmMeshCalibration ? rawKTemp * 0.15 : rawKTemp;
 
     const sigmaObsP = Math.hypot(0.25, primary.distanceKm * 0.008, primary.ageMinutes * 0.006);
     const kPress = clamp(1.0 / (1.0 + sigmaObsP * sigmaObsP), 0, 0.84);
@@ -847,7 +1271,11 @@ export function trainKalmanMos({
     biases,
     anchor,
     report,
-    summary
+    summary,
+    trainingRegimeSummary,
+    provinceCode: normalizedProvinceCode,
+    kalmanTempBiasCapC: effectiveTempBiasCapC,
+    coldBasinAirportIcaos: effectiveColdBasinIcaos
   };
 }
 
@@ -878,7 +1306,8 @@ export function blendKalmanCorrectedScalar({
   leadHour,
   localHour,
   fallback,
-  ensembleP50 = null
+  ensembleP50 = null,
+  targetSynopticContext
 }: {
   snapshot: HybridModelSnapshot;
   mos: KalmanMosModel;
@@ -887,13 +1316,60 @@ export function blendKalmanCorrectedScalar({
   localHour: number;
   fallback: number;
   ensembleP50?: number | null;
+  targetSynopticContext?: TargetSynopticContext | null;
 }): number {
   const weightDomain = param === "dewPoint" ? "temperature" : param;
-  const weights = getLeadTimeWeights(
+  const baseWeights = getLeadTimeWeights(
     mos.shortRangeWeights[weightDomain],
     mos.mediumRangeWeights[weightDomain],
     leadHour
   );
+
+  const hasSynopticGate = Boolean(targetSynopticContext && mos.trainingRegimeSummary);
+  const synopticBaseComponents = hasSynopticGate
+    ? evaluateRegimeGateComponents({
+        trainingRegimeSummary: mos.trainingRegimeSummary,
+        targetSynopticContext,
+        biasRemoveC: 0
+      })
+    : null;
+  const airmassWindGate = synopticBaseComponents
+    ? synopticBaseComponents.airmassGate * synopticBaseComponents.windGate
+    : 1.0;
+
+  let weights = baseWeights;
+  if (
+    hasSynopticGate &&
+    (param === "temperature" || param === "dewPoint") &&
+    airmassWindGate < 0.999
+  ) {
+    const neutralPriorW = getLeadTimeWeights(
+      WMO_PRIOR_WEIGHTS.temperature,
+      MEDIUM_RANGE_PRIOR_WEIGHTS.temperature,
+      leadHour
+    );
+    const blendedW = {} as Record<CoreModelKey, number>;
+    let wSum = 0;
+    for (const k of CORE_MODEL_KEYS) {
+      const v =
+        airmassWindGate * baseWeights[k] + (1 - airmassWindGate) * neutralPriorW[k];
+      blendedW[k] = v;
+      wSum += v;
+    }
+    if (wSum > 0) {
+      for (const k of CORE_MODEL_KEYS) blendedW[k] /= wSum;
+      weights = blendedW;
+    }
+  }
+
+  const mosBiasCapC =
+    typeof mos.kalmanTempBiasCapC === "number" &&
+    Number.isFinite(mos.kalmanTempBiasCapC) &&
+    mos.kalmanTempBiasCapC > 0
+      ? mos.kalmanTempBiasCapC
+      : 4.5;
+  const ensShiftCapC = mosBiasCapC <= 4.5 ? 3.5 : mosBiasCapC * (3.5 / 4.5);
+  const anchorTempCapC = mosBiasCapC <= 4.5 ? 4.5 : mosBiasCapC;
 
   const bin = Math.min(3, Math.max(0, Math.floor((((localHour % 24) + 24) % 24) / 6)));
   const persistDecay = Math.exp(-Math.max(0, leadHour) / 60);
@@ -913,13 +1389,28 @@ export function blendKalmanCorrectedScalar({
     const b = mos.biases[k];
     let corr = rawVal;
     if (param === "temperature") {
-      const biasRemove =
+      const rawBiasRemove =
         b.tempPersistentBiasC * persistDecay +
         b.tempTransientBiasC * transientDecay +
         0.72 * b.tempDiurnalBiasC[bin] * diurnalDecay;
-      corr = rawVal - biasRemove;
+      const regimeGate = hasSynopticGate
+        ? computeRegimeGateFactor({
+            trainingRegimeSummary: mos.trainingRegimeSummary,
+            targetSynopticContext,
+            biasRemoveC: rawBiasRemove
+          })
+        : 1.0;
+      corr = rawVal - rawBiasRemove * regimeGate;
     } else if (param === "dewPoint") {
-      corr = rawVal - b.dewKalmanBiasC * dewDecay;
+      const rawDewBiasRemove = b.dewKalmanBiasC * dewDecay;
+      const regimeGate = hasSynopticGate
+        ? computeRegimeGateFactor({
+            trainingRegimeSummary: mos.trainingRegimeSummary,
+            targetSynopticContext,
+            biasRemoveC: rawDewBiasRemove
+          })
+        : 1.0;
+      corr = rawVal - rawDewBiasRemove * regimeGate;
     } else if (param === "pressure") {
       corr = rawVal - b.pressKalmanBiasHpa * Math.exp(-Math.max(0, leadHour) / 15);
     } else if (param === "wind") {
@@ -955,18 +1446,29 @@ export function blendKalmanCorrectedScalar({
     param === "temperature"
   ) {
     const ensWeight = clamp((leadHour - 24) / 120, 0, 0.36);
-    const biasAlignedEnsP50 = ensembleP50 + clamp(meanKalmanShift, -3.5, 3.5);
+    const biasAlignedEnsP50 =
+      ensembleP50 + clamp(meanKalmanShift, -ensShiftCapC, ensShiftCapC);
     fused = fused * (1 - ensWeight) + biasAlignedEnsP50 * ensWeight;
   }
 
   if (mos.anchor.active && leadHour >= 0 && leadHour <= 6) {
     const anchorDecay = Math.exp(-leadHour / 2.4);
+    const anchorRegimeGate = hasSynopticGate ? airmassWindGate : 1.0;
     if (param === "temperature" && mos.anchor.tempObsCityC !== null) {
-      const innovation = clamp(mos.anchor.tempObsCityC - fused, -4.5, 4.5);
-      fused += innovation * mos.anchor.tempKalmanGain * anchorDecay;
+      const innovation = clamp(
+        mos.anchor.tempObsCityC - fused,
+        -anchorTempCapC,
+        anchorTempCapC
+      );
+      fused += innovation * mos.anchor.tempKalmanGain * anchorDecay * anchorRegimeGate;
     } else if (param === "dewPoint" && mos.anchor.dewObsCityC !== null) {
-      const innovation = clamp(mos.anchor.dewObsCityC - fused, -4.5, 4.5);
-      fused += innovation * mos.anchor.tempKalmanGain * 0.85 * anchorDecay;
+      const innovation = clamp(
+        mos.anchor.dewObsCityC - fused,
+        -anchorTempCapC,
+        anchorTempCapC
+      );
+      fused +=
+        innovation * mos.anchor.tempKalmanGain * 0.85 * anchorDecay * anchorRegimeGate;
     } else if (param === "pressure" && mos.anchor.pressObsHpa !== null) {
       const innovation = clamp(mos.anchor.pressObsHpa - fused, -4.0, 4.0);
       fused += innovation * mos.anchor.pressKalmanGain * anchorDecay;

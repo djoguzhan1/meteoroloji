@@ -1,26 +1,33 @@
 /**
- * ATMOS v5.0 — Persistent Observation & Calibrated Forecast Run Ledger
+ * ATMOS v5.0 — Province-Sharded Persistent Observation & Calibrated Forecast Run Ledger
  * File: lib/state-ledger.ts
  *
- * Eliminates serverless/process amnesia by persisting:
- *  1. Rolling 96-hour Bursa MGM 19-district & target-point verified observations
- *     -> Powers real Bursa MGM 48-72h model verification (replacing 47 km LTBR airport),
- *     -> Supplies true `sameHour24hResidualC` for diurnal AR(2) error locking,
- *     -> Tracks true observed intraday min/max & accumulated rain for `daily[0]` ("Bugün").
- *  2. Rolling 6-hourly Calibrated Forecast Run Snapshots (R0, R-1, R-2, R-3)
- *     -> Guarantees apples-to-apples Calibrated-vs-Calibrated `dProg/dt` run consistency
- *        (fixing the v4.5 bug where calibrated EMOS was damped back toward raw uncalibrated NWP).
- *
- * Pure Node.js (`node:fs`) atomic write-through store with zero native C++ dependencies
- * (works across Node 18/20/22+, Docker, VPS, and serverless `/tmp` fallback).
+ * Eliminates serverless/process amnesia AND enforces 0.00% cross-province state bleed:
+ *  1. Dedicated Bursa TR-16 ledger: `.data/bursa-tr16/ledger.json`
+ *     - Parameterless `recordStationObservationsToLedger` (called by SHA-256 frozen `bursa-mesh.ts`)
+ *       writes exclusively to `.data/bursa-tr16/ledger.json` and strips perimeter neighbor stations
+ *       (`LTFJ` Istanbul, `LTBG` Balikesir, cross-bay Yalova PWS).
+ *  2. 80 isolated provincial ledgers: `.data/provinces/TR-XX/ledger.json` (plus `.data/global/ledger.json`)
+ *     via `recordProvinceStationObservationsToLedger` & `getProvinceStationHistoryFromLedger`.
+ *  3. Elevation + Province namespaced `makeLedgerLocationKey` (`TR-XX:lat,lon:eElev`) with 100%
+ *     backward compatibility for legacy 2-arg callers and `process.env.ATMOS_LEDGER_PATH` tests.
+ *  4. Copy-on-write & `structuredClone` isolation (zero in-place `.push`/`.sort` mutation on shared arrays).
  */
+
+import {
+  cloneIsolatedValue,
+  parseProvinceFromCacheKey
+} from "./provinces/isolation/namespaced-cache";
+import { isValidProvinceCode, type ProvinceCode } from "./provinces/types";
 
 type NodeFsSubset = typeof import("node:fs");
 type NodePathSubset = typeof import("node:path");
 
 function getNodeBuiltin<T>(specifier: string): T | null {
   if (typeof process === "undefined" || !process.versions?.node) return null;
-  const procAny = process as unknown as { getBuiltinModule?: (id: string) => T | undefined };
+  const procAny = process as unknown as {
+    getBuiltinModule?: (id: string) => T | undefined;
+  };
   if (typeof procAny.getBuiltinModule === "function") {
     return procAny.getBuiltinModule(specifier) ?? null;
   }
@@ -52,7 +59,7 @@ export interface LedgerStationPoint {
 }
 
 export interface LedgerTargetResidualPoint {
-  locKey: string; // rounded "lat,lon"
+  locKey: string; // legacy "lat,lon" or strict "TR-XX:lat,lon:eElev"
   utcHourKey: string; // "YYYY-MM-DDTHH:00"
   localDateYmd: string; // "YYYY-MM-DD" in local timezone
   localHour: number; // 0..23
@@ -79,6 +86,11 @@ export interface LedgerCalibratedRun {
   hours: Record<string, LedgerForecastHourLock>;
 }
 
+export interface LedgerLocationKeyOptions {
+  provinceCode?: ProvinceCode;
+  elevationM?: number | null;
+}
+
 interface LedgerDiskSchema {
   version: 5;
   updatedAtMs: number;
@@ -90,12 +102,41 @@ interface LedgerDiskSchema {
   calibratedRuns: Record<string, LedgerCalibratedRun[]>;
 }
 
+interface LedgerShardRuntime {
+  filePath: string;
+  ledger: LedgerDiskSchema;
+  lastDiskFlushMs: number;
+  dirty: boolean;
+  pendingTimer: ReturnType<typeof setTimeout> | null;
+  writeSeq: number;
+}
+
 const RETENTION_MS = 96 * 3600 * 1000; // 96 hours
 const MAX_RUNS_PER_LOC = 6;
+const LEDGER_WRITE_THROTTLE_MS = 15_000;
+const PROVINCE_STATION_SEP = "::";
 
-let memoryCache: LedgerDiskSchema | null = null;
-let resolvedLedgerPath: string | null = null;
-let lastDiskFlushMs = 0;
+/** Non-Bursa neighbor stations that must never enter Bursa's TR-16 ledger */
+const NON_BURSA_LEDGER_STATION_IDS = new Set([
+  "LTFJ",
+  "ICAO_LTFJ",
+  "LTBG",
+  "ICAO_LTBG",
+  "LTBQ",
+  "ICAO_LTBQ",
+  "LTBA",
+  "ICAO_LTBA",
+  "LTFM",
+  "ICAO_LTFM",
+  "LTBY",
+  "ICAO_LTBY",
+  "17114",
+  "WMO_17114"
+]);
+
+const ledgerShards = new Map<string, LedgerShardRuntime>();
+let cachedBaseDir: string | null = null;
+let cachedBaseDirEnv: string | undefined;
 
 function emptySchema(): LedgerDiskSchema {
   return {
@@ -107,53 +148,108 @@ function emptySchema(): LedgerDiskSchema {
   };
 }
 
-function resolveWritableLedgerPath(): string {
-  if (!nodeFs || !nodePath) return "/tmp/atmos-v5-ledger.json";
-  if (nodeFs && typeof process !== "undefined" && process.env?.ATMOS_LEDGER_PATH) {
-    return process.env.ATMOS_LEDGER_PATH;
-  }
-  if (resolvedLedgerPath) return resolvedLedgerPath;
+function hasExplicitLegacyLedgerPath(): boolean {
+  return Boolean(
+    typeof process !== "undefined" &&
+      process.env?.ATMOS_LEDGER_PATH &&
+      process.env.ATMOS_LEDGER_PATH.trim().length > 0
+  );
+}
 
-  const candidates = [
-    nodePath!.resolve(process.cwd(), ".data/atmos-v5-ledger.json"),
-    "/tmp/atmos-v5-ledger.json"
-  ];
+function resolveBaseDataDir(): string {
+  if (!nodeFs || !nodePath) return "/tmp/atmos-v5-data";
+
+  const envDataDir =
+    typeof process !== "undefined" && process.env?.ATMOS_DATA_DIR
+      ? process.env.ATMOS_DATA_DIR.trim()
+      : undefined;
+
+  if (cachedBaseDir && cachedBaseDirEnv === envDataDir) {
+    return cachedBaseDir;
+  }
+
+  const candidates = envDataDir
+    ? [nodePath.resolve(envDataDir), "/tmp/atmos-v5-data"]
+    : [nodePath.resolve(process.cwd(), ".data"), "/tmp/atmos-v5-data"];
 
   for (const candidate of candidates) {
     try {
-      nodeFs!.mkdirSync(nodePath!.dirname(candidate), { recursive: true });
-      nodeFs!.accessSync(nodePath!.dirname(candidate), nodeFs!.constants.W_OK);
-      resolvedLedgerPath = candidate;
+      nodeFs.mkdirSync(candidate, { recursive: true });
+      nodeFs.accessSync(candidate, nodeFs.constants.W_OK);
+      cachedBaseDir = candidate;
+      cachedBaseDirEnv = envDataDir;
       return candidate;
     } catch {
-      // Fall through to next writable path
+      // Fall through to next writable directory
     }
   }
-  resolvedLedgerPath = "/tmp/atmos-v5-ledger.json";
-  return resolvedLedgerPath;
+
+  cachedBaseDir = "/tmp/atmos-v5-data";
+  cachedBaseDirEnv = envDataDir;
+  return cachedBaseDir;
 }
 
-function loadLedger(): LedgerDiskSchema {
-  if (memoryCache) return memoryCache;
-  if (!nodeFs || !nodePath) {
-    memoryCache = emptySchema();
-    return memoryCache;
+/**
+ * Resolves the isolated physical disk shard path for a given `ProvinceCode`.
+ *  - `TR-16` -> `<baseDir>/bursa-tr16/ledger.json`
+ *  - `TR-01..TR-81` (`!= TR-16`) -> `<baseDir>/provinces/<provinceCode>/ledger.json`
+ *  - `GLOBAL` -> `<baseDir>/global/ledger.json`
+ */
+export function resolveLedgerShardPath(provinceCode: ProvinceCode = "TR-16"): string {
+  if (hasExplicitLegacyLedgerPath()) {
+    return process.env.ATMOS_LEDGER_PATH!;
   }
-  const filePath = resolveWritableLedgerPath();
-  try {
-    if (nodeFs!.existsSync(filePath)) {
-      const raw = nodeFs!.readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw) as LedgerDiskSchema;
-      if (parsed && parsed.version === 5 && parsed.stations && parsed.targetHistory && parsed.calibratedRuns) {
-        memoryCache = parsed;
-        return memoryCache;
+  const baseDir = resolveBaseDataDir();
+  if (!nodePath) {
+    if (provinceCode === "TR-16") return `${baseDir}/bursa-tr16/ledger.json`;
+    if (provinceCode === "GLOBAL") return `${baseDir}/global/ledger.json`;
+    return `${baseDir}/provinces/${provinceCode}/ledger.json`;
+  }
+  if (provinceCode === "TR-16") {
+    return nodePath.join(baseDir, "bursa-tr16", "ledger.json");
+  }
+  if (provinceCode === "GLOBAL") {
+    return nodePath.join(baseDir, "global", "ledger.json");
+  }
+  return nodePath.join(baseDir, "provinces", provinceCode, "ledger.json");
+}
+
+function loadLedgerShard(provinceCode: ProvinceCode): LedgerShardRuntime {
+  const filePath = resolveLedgerShardPath(provinceCode);
+  const existing = ledgerShards.get(filePath);
+  if (existing) return existing;
+
+  let loaded: LedgerDiskSchema | null = null;
+  if (nodeFs && nodePath) {
+    try {
+      if (nodeFs.existsSync(filePath)) {
+        const raw = nodeFs.readFileSync(filePath, "utf8");
+        const parsed = JSON.parse(raw) as LedgerDiskSchema;
+        if (
+          parsed &&
+          parsed.version === 5 &&
+          parsed.stations &&
+          parsed.targetHistory &&
+          parsed.calibratedRuns
+        ) {
+          loaded = parsed;
+        }
       }
+    } catch {
+      // Corrupted or unreadable file -> start clean
     }
-  } catch {
-    // Corrupted or unreadable file -> start clean
   }
-  memoryCache = emptySchema();
-  return memoryCache;
+
+  const runtime: LedgerShardRuntime = {
+    filePath,
+    ledger: loaded ?? emptySchema(),
+    lastDiskFlushMs: 0,
+    dirty: false,
+    pendingTimer: null,
+    writeSeq: 0
+  };
+  ledgerShards.set(filePath, runtime);
+  return runtime;
 }
 
 function pruneLedger(ledger: LedgerDiskSchema, nowMs: number): void {
@@ -193,42 +289,163 @@ function pruneLedger(ledger: LedgerDiskSchema, nowMs: number): void {
   }
 }
 
-function flushLedgerToDisk(force = false): void {
-  if (!memoryCache || !nodeFs || !nodePath) return;
-  const nowMs = Date.now();
-  if (!force && nowMs - lastDiskFlushMs < 15_000) return;
+function writeLedgerShardNowSync(shard: LedgerShardRuntime, nowMs = Date.now()): void {
+  if (shard.pendingTimer !== null) {
+    clearTimeout(shard.pendingTimer);
+    shard.pendingTimer = null;
+  }
+  if (!nodeFs || !nodePath) {
+    shard.dirty = false;
+    return;
+  }
 
-  pruneLedger(memoryCache, nowMs);
-  memoryCache.updatedAtMs = nowMs;
+  pruneLedger(shard.ledger, nowMs);
+  shard.ledger.updatedAtMs = nowMs;
 
-  const filePath = resolveWritableLedgerPath();
   try {
-    nodeFs!.mkdirSync(nodePath!.dirname(filePath), { recursive: true });
-    const tmpPath = `${filePath}.${process.pid}.tmp`;
-    nodeFs!.writeFileSync(tmpPath, JSON.stringify(memoryCache), "utf8");
-    nodeFs!.renameSync(tmpPath, filePath);
-    lastDiskFlushMs = nowMs;
+    nodeFs.mkdirSync(nodePath.dirname(shard.filePath), { recursive: true });
+    shard.writeSeq += 1;
+    const tmpPath = `${shard.filePath}.${process.pid}.${shard.writeSeq}.tmp`;
+    nodeFs.writeFileSync(tmpPath, JSON.stringify(shard.ledger), "utf8");
+    nodeFs.renameSync(tmpPath, shard.filePath);
+    shard.lastDiskFlushMs = nowMs;
+    shard.dirty = false;
   } catch {
     // Non-fatal in read-only sandbox; in-memory ledger continues uninterrupted
   }
 }
 
-export function resetStateLedgerForTests(): void {
-  memoryCache = emptySchema();
-  lastDiskFlushMs = 0;
-  if (process.env.ATMOS_LEDGER_PATH) {
-    try {
-      if (nodeFs!.existsSync(process.env.ATMOS_LEDGER_PATH)) {
-        nodeFs!.unlinkSync(process.env.ATMOS_LEDGER_PATH);
+function flushLedgerShardToDisk(shard: LedgerShardRuntime, force = false): void {
+  if (!nodeFs || !nodePath) return;
+  const nowMs = Date.now();
+  const elapsed = nowMs - shard.lastDiskFlushMs;
+
+  if (force || shard.lastDiskFlushMs === 0 || elapsed >= LEDGER_WRITE_THROTTLE_MS) {
+    writeLedgerShardNowSync(shard, nowMs);
+    return;
+  }
+
+  shard.dirty = true;
+  if (shard.pendingTimer === null) {
+    const remainingMs = Math.max(25, LEDGER_WRITE_THROTTLE_MS - elapsed);
+    const timer = setTimeout(() => {
+      shard.pendingTimer = null;
+      if (shard.dirty) {
+        writeLedgerShardNowSync(shard, Date.now());
       }
-    } catch {
-      // Ignore cleanup errors
+    }, remainingMs);
+    const maybeUnref = timer as unknown as { unref?: () => void };
+    if (typeof maybeUnref.unref === "function") {
+      maybeUnref.unref();
+    }
+    shard.pendingTimer = timer;
+  }
+}
+
+export function flushAllPendingLedgersSync(): void {
+  const nowMs = Date.now();
+  for (const shard of ledgerShards.values()) {
+    if (shard.dirty) {
+      writeLedgerShardNowSync(shard, nowMs);
+    } else if (shard.pendingTimer !== null) {
+      clearTimeout(shard.pendingTimer);
+      shard.pendingTimer = null;
     }
   }
 }
 
-export function makeLedgerLocationKey(lat: number, lon: number): string {
-  return `${lat.toFixed(2)},${lon.toFixed(2)}`;
+export function evictStateLedgerMemoryForTests(): void {
+  flushAllPendingLedgersSync();
+  ledgerShards.clear();
+  cachedBaseDir = null;
+}
+
+export function resetStateLedgerForTests(): void {
+  for (const shard of ledgerShards.values()) {
+    if (shard.pendingTimer !== null) {
+      clearTimeout(shard.pendingTimer);
+      shard.pendingTimer = null;
+    }
+  }
+  ledgerShards.clear();
+  cachedBaseDir = null;
+
+  if (typeof process !== "undefined" && nodeFs) {
+    if (process.env?.ATMOS_LEDGER_PATH) {
+      try {
+        if (nodeFs.existsSync(process.env.ATMOS_LEDGER_PATH)) {
+          nodeFs.unlinkSync(process.env.ATMOS_LEDGER_PATH);
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    if (process.env?.ATMOS_DATA_DIR && nodePath) {
+      try {
+        const customDir = nodePath.resolve(process.env.ATMOS_DATA_DIR);
+        if (
+          customDir.startsWith("/tmp") ||
+          customDir.includes("atmos-test") ||
+          customDir.includes("vitest")
+        ) {
+          nodeFs.rmSync(customDir, { recursive: true, force: true });
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }
+}
+
+/**
+ * Builds a ledger location key:
+ *  - Legacy 2-arg call (`opts` omitted): `${lat.toFixed(2)},${lon.toFixed(2)}` (100% backward compatible)
+ *  - Strict 3-arg call (`opts` provided): `${provinceCode}:${lat.toFixed(3)},${lon.toFixed(3)}:e${Math.round(elev)}`
+ */
+export function makeLedgerLocationKey(
+  lat: number,
+  lon: number,
+  opts?: LedgerLocationKeyOptions
+): string {
+  if (!opts) {
+    return `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  }
+  const pc = opts.provinceCode ?? "TR-16";
+  if (!isValidProvinceCode(pc)) {
+    throw new Error(`[ZeroBleed] Invalid provinceCode "${String(pc)}" in makeLedgerLocationKey`);
+  }
+  const elevInt =
+    opts.elevationM !== undefined &&
+    opts.elevationM !== null &&
+    Number.isFinite(opts.elevationM)
+      ? Math.round(opts.elevationM)
+      : 0;
+  return `${pc}:${lat.toFixed(3)},${lon.toFixed(3)}:e${elevInt}`;
+}
+
+function resolveShardProvinceForLocKey(locKey: string): ProvinceCode {
+  return parseProvinceFromCacheKey(locKey) ?? "TR-16";
+}
+
+function isStrictBursaTr16StationPoint(pt: LedgerStationPoint): boolean {
+  const idNorm = (pt.stationId ?? "").trim().toUpperCase();
+  if (!idNorm || NON_BURSA_LEDGER_STATION_IDS.has(idNorm)) {
+    return false;
+  }
+  if (idNorm.includes(PROVINCE_STATION_SEP)) {
+    return false;
+  }
+  if (!Number.isFinite(pt.lat) || !Number.isFinite(pt.lon)) {
+    return false;
+  }
+  // Exclude neighbor-province coordinates (Yalova >=40.52N, Istanbul >=40.70N, Bandirma <28.18E, Kutahya/Bilecik)
+  if (pt.lat < 39.65 || pt.lat > 40.52 || pt.lon < 28.18 || pt.lon > 29.80) {
+    return false;
+  }
+  if (pt.lat < 39.85 && pt.lon > 29.50) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -243,42 +460,61 @@ export function computeSynopticCycleId(nowMs = Date.now()): string {
 }
 
 /**
- * Records fresh QC-passed station observations (e.g. 19 MGM Bursa stations) into the rolling 96h ledger.
+ * Records fresh QC-passed Bursa (TR-16) station observations into `.data/bursa-tr16/ledger.json`.
+ * Automatically strips perimeter neighbor stations (`LTFJ`, `LTBG`, cross-border PWS) emitted by
+ * SHA-256 frozen `lib/bursa-mesh.ts`.
  */
-export function recordStationObservationsToLedger(points: LedgerStationPoint[], forceFlush = false): void {
+export function recordStationObservationsToLedger(
+  points: LedgerStationPoint[],
+  forceFlush = false
+): void {
   if (points.length === 0) return;
-  const ledger = loadLedger();
-  for (const pt of points) {
-    if (!Number.isFinite(pt.tempC)) continue;
-    const stMap = ledger.stations[pt.stationId] ?? {};
-    const existing = stMap[pt.utcHourKey];
-    if (!existing || pt.observedAtMs >= existing.observedAtMs) {
-      stMap[pt.utcHourKey] = pt;
-      ledger.stations[pt.stationId] = stMap;
+  const strictTr16Points = points.filter(
+    (pt) => Number.isFinite(pt.tempC) && isStrictBursaTr16StationPoint(pt)
+  );
+  if (strictTr16Points.length === 0) return;
+
+  const shard = loadLedgerShard("TR-16");
+  const ledger = shard.ledger;
+
+  for (const pt of strictTr16Points) {
+    const clonedPt = cloneIsolatedValue(pt);
+    const stMap = ledger.stations[clonedPt.stationId]
+      ? { ...ledger.stations[clonedPt.stationId] }
+      : {};
+    const existing = stMap[clonedPt.utcHourKey];
+    if (!existing || clonedPt.observedAtMs >= existing.observedAtMs) {
+      stMap[clonedPt.utcHourKey] = clonedPt;
+      ledger.stations[clonedPt.stationId] = stMap;
     }
   }
-  flushLedgerToDisk(forceFlush);
+
+  flushLedgerShardToDisk(shard, forceFlush);
 }
 
 /**
- * Retrieves up to `maxHours` of recorded station history for live Bursa MGM model verification.
+ * Retrieves up to `maxHours` of recorded Bursa (TR-16) station history from `.data/bursa-tr16/ledger.json`.
  */
 export function getStationHistoryFromLedger(
   stationIds?: string[],
   maxAgeHours = 72,
   nowMs = Date.now()
 ): LedgerStationPoint[] {
-  const ledger = loadLedger();
+  const shard = loadLedgerShard("TR-16");
+  const ledger = shard.ledger;
   const minMs = nowMs - maxAgeHours * 3600 * 1000;
   const out: LedgerStationPoint[] = [];
   const keys = stationIds ?? Object.keys(ledger.stations);
 
   for (const id of keys) {
+    if (id.includes(PROVINCE_STATION_SEP)) continue;
+    if (NON_BURSA_LEDGER_STATION_IDS.has(id.trim().toUpperCase())) continue;
     const stMap = ledger.stations[id];
     if (!stMap) continue;
     for (const pt of Object.values(stMap)) {
+      if (!isStrictBursaTr16StationPoint(pt)) continue;
       if (pt.observedAtMs >= minMs && pt.observedAtMs <= nowMs + 1800_000) {
-        out.push(pt);
+        out.push(cloneIsolatedValue(pt));
       }
     }
   }
@@ -286,33 +522,134 @@ export function getStationHistoryFromLedger(
 }
 
 /**
- * Records target surface truth + EMOS base residual at exact hour so tomorrow's forecast
- * can query `sameHour24hResidualC` and `daily[0]` knows today's real observed min/max.
+ * Records fresh QC-passed station observations strictly into that province's isolated shard
+ * (`.data/provinces/TR-XX/ledger.json`, `.data/bursa-tr16/ledger.json`, or `.data/global/ledger.json`).
  */
-export function recordTargetResidualToLedger(point: LedgerTargetResidualPoint, forceFlush = false): void {
-  const ledger = loadLedger();
-  const locMap = ledger.targetHistory[point.locKey] ?? {};
-  locMap[point.utcHourKey] = point;
-  ledger.targetHistory[point.locKey] = locMap;
-  flushLedgerToDisk(forceFlush);
+export function recordProvinceStationObservationsToLedger(
+  provinceCode: ProvinceCode,
+  points: LedgerStationPoint[],
+  forceFlush = false
+): void {
+  if (!isValidProvinceCode(provinceCode)) {
+    throw new Error(
+      `[ZeroBleed] Invalid provinceCode "${String(provinceCode)}" in recordProvinceStationObservationsToLedger`
+    );
+  }
+  if (provinceCode === "TR-16") {
+    recordStationObservationsToLedger(points, forceFlush);
+    return;
+  }
+  if (points.length === 0) return;
+
+  const shard = loadLedgerShard(provinceCode);
+  const ledger = shard.ledger;
+  const useSingleFilePrefix = hasExplicitLegacyLedgerPath();
+  let wroteAny = false;
+
+  for (const pt of points) {
+    if (!Number.isFinite(pt.tempC) || !pt.stationId) continue;
+    const clonedPt = cloneIsolatedValue(pt);
+    const bucketKey = useSingleFilePrefix
+      ? `${provinceCode}${PROVINCE_STATION_SEP}${clonedPt.stationId}`
+      : clonedPt.stationId;
+    const stMap = ledger.stations[bucketKey] ? { ...ledger.stations[bucketKey] } : {};
+    const existing = stMap[clonedPt.utcHourKey];
+    if (!existing || clonedPt.observedAtMs >= existing.observedAtMs) {
+      stMap[clonedPt.utcHourKey] = clonedPt;
+      ledger.stations[bucketKey] = stMap;
+      wroteAny = true;
+    }
+  }
+
+  if (wroteAny) {
+    flushLedgerShardToDisk(shard, forceFlush);
+  }
+}
+
+/**
+ * Retrieves up to `maxAgeHours` of recorded station history strictly from `provinceCode`'s isolated shard.
+ */
+export function getProvinceStationHistoryFromLedger(
+  provinceCode: ProvinceCode,
+  maxAgeHours = 72,
+  nowMs = Date.now(),
+  stationIds?: string[]
+): LedgerStationPoint[] {
+  if (!isValidProvinceCode(provinceCode)) {
+    throw new Error(
+      `[ZeroBleed] Invalid provinceCode "${String(provinceCode)}" in getProvinceStationHistoryFromLedger`
+    );
+  }
+  if (provinceCode === "TR-16") {
+    return getStationHistoryFromLedger(stationIds, maxAgeHours, nowMs);
+  }
+
+  const shard = loadLedgerShard(provinceCode);
+  const ledger = shard.ledger;
+  const minMs = nowMs - maxAgeHours * 3600 * 1000;
+  const useSingleFilePrefix = hasExplicitLegacyLedgerPath();
+  const prefix = `${provinceCode}${PROVINCE_STATION_SEP}`;
+  const requestedSet = stationIds ? new Set(stationIds) : null;
+
+  const out: LedgerStationPoint[] = [];
+  for (const [bucketKey, stMap] of Object.entries(ledger.stations)) {
+    if (!stMap) continue;
+    let rawStationId = bucketKey;
+    if (useSingleFilePrefix) {
+      if (!bucketKey.startsWith(prefix)) continue;
+      rawStationId = bucketKey.slice(prefix.length);
+    } else if (bucketKey.includes(PROVINCE_STATION_SEP)) {
+      continue;
+    }
+    if (requestedSet && !requestedSet.has(rawStationId)) continue;
+
+    for (const pt of Object.values(stMap)) {
+      if (pt.observedAtMs >= minMs && pt.observedAtMs <= nowMs + 1800_000) {
+        out.push(cloneIsolatedValue(pt));
+      }
+    }
+  }
+
+  return out.sort((a, b) => a.observedAtMs - b.observedAtMs);
+}
+
+/**
+ * Records target surface truth + EMOS base residual at exact hour into the target province's shard.
+ */
+export function recordTargetResidualToLedger(
+  point: LedgerTargetResidualPoint,
+  forceFlush = false
+): void {
+  const provinceCode = resolveShardProvinceForLocKey(point.locKey);
+  const shard = loadLedgerShard(provinceCode);
+  const ledger = shard.ledger;
+  const clonedPoint = cloneIsolatedValue(point);
+  const locMap = ledger.targetHistory[clonedPoint.locKey]
+    ? { ...ledger.targetHistory[clonedPoint.locKey] }
+    : {};
+  locMap[clonedPoint.utcHourKey] = clonedPoint;
+  ledger.targetHistory[clonedPoint.locKey] = locMap;
+  flushLedgerShardToDisk(shard, forceFlush);
 }
 
 /**
  * Looks up the verified residual (T_obs - T_emos) from ~24 hours ago (searching [t-25h, t-23h])
- * ONLY when the synoptic regime is compatible (prevents carrying pre-frontal Lodos error into post-frontal Poyraz).
+ * ONLY within the target's isolated `locKey` & synoptic regime.
  */
 export function getSameHour24hResidualFromLedger(params: {
   locKey: string;
   targetUtcMs: number;
   currentRegime: string;
 }): number | null {
-  const ledger = loadLedger();
-  const locMap = ledger.targetHistory[params.locKey];
+  const provinceCode = resolveShardProvinceForLocKey(params.locKey);
+  const shard = loadLedgerShard(provinceCode);
+  const locMap = shard.ledger.targetHistory[params.locKey];
   if (!locMap) return null;
 
   const offsetsHours = [-24, -23, -25, -48];
   for (const offH of offsetsHours) {
-    const probeKey = new Date(params.targetUtcMs + offH * 3600 * 1000).toISOString().slice(0, 13) + ":00";
+    const probeKey =
+      new Date(params.targetUtcMs + offH * 3600 * 1000).toISOString().slice(0, 13) + ":00";
     const match = locMap[probeKey];
     if (
       match &&
@@ -334,9 +671,15 @@ export function getSameHour24hResidualFromLedger(params: {
 export function getTodayObservedExtremesFromLedger(
   locKey: string,
   localDateYmd: string
-): { minTempC: number | null; maxTempC: number | null; precipSumMm: number; observedHours: number } {
-  const ledger = loadLedger();
-  const locMap = ledger.targetHistory[locKey];
+): {
+  minTempC: number | null;
+  maxTempC: number | null;
+  precipSumMm: number;
+  observedHours: number;
+} {
+  const provinceCode = resolveShardProvinceForLocKey(locKey);
+  const shard = loadLedgerShard(provinceCode);
+  const locMap = shard.ledger.targetHistory[locKey];
   if (!locMap) {
     return { minTempC: null, maxTempC: null, precipSumMm: 0, observedHours: 0 };
   }
@@ -365,35 +708,41 @@ export function getTodayObservedExtremesFromLedger(
 }
 
 /**
- * Retrieves prior calibrated forecast runs (excluding the current `activeCycleId` so intra-cycle refreshes
- * compare consistently against previous synoptic cycles R-1, R-2, R-3).
+ * Retrieves deep-cloned prior calibrated forecast runs (excluding `activeCycleId`).
  */
 export function getPriorCalibratedRunsFromLedger(
   locKey: string,
   activeCycleId: string
 ): LedgerCalibratedRun[] {
-  const ledger = loadLedger();
-  const runs = ledger.calibratedRuns[locKey] ?? [];
-  return runs.filter((r) => r.cycleId !== activeCycleId);
+  const provinceCode = resolveShardProvinceForLocKey(locKey);
+  const shard = loadLedgerShard(provinceCode);
+  const runs = shard.ledger.calibratedRuns[locKey] ?? [];
+  return cloneIsolatedValue(runs.filter((r) => r.cycleId !== activeCycleId));
 }
 
 /**
- * Saves or updates the calibrated 168-hour trajectory for `activeCycleId`.
+ * Saves or updates the calibrated 168-hour trajectory for `activeCycleId` using copy-on-write
+ * (zero in-place `.push` or `.sort` mutation on shared arrays).
  */
 export function saveCalibratedRunToLedger(
   locKey: string,
   run: LedgerCalibratedRun,
   forceFlush = false
 ): void {
-  const ledger = loadLedger();
-  const runs = ledger.calibratedRuns[locKey] ?? [];
-  const idx = runs.findIndex((r) => r.cycleId === run.cycleId);
+  const provinceCode = resolveShardProvinceForLocKey(locKey);
+  const shard = loadLedgerShard(provinceCode);
+  const existingRuns = shard.ledger.calibratedRuns[locKey] ?? [];
+  const clonedRun = cloneIsolatedValue(run);
+
+  const nextRuns = [...existingRuns];
+  const idx = nextRuns.findIndex((r) => r.cycleId === clonedRun.cycleId);
   if (idx >= 0) {
-    runs[idx] = run;
+    nextRuns[idx] = clonedRun;
   } else {
-    runs.push(run);
+    nextRuns.push(clonedRun);
   }
-  runs.sort((a, b) => a.createdAtMs - b.createdAtMs);
-  ledger.calibratedRuns[locKey] = runs.slice(-MAX_RUNS_PER_LOC);
-  flushLedgerToDisk(forceFlush);
+  nextRuns.sort((a, b) => a.createdAtMs - b.createdAtMs);
+
+  shard.ledger.calibratedRuns[locKey] = nextRuns.slice(-MAX_RUNS_PER_LOC);
+  flushLedgerShardToDisk(shard, forceFlush);
 }

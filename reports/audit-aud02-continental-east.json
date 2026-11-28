@@ -1,0 +1,2323 @@
+{
+  "auditId": "AUD-02",
+  "wave": "Wave 3D",
+  "title": "Zero-Context Independent Physical Meteorology Audit — Continental Central Anatolia, Eastern Anatolian Siberian Inversion, Lake Van 700 hPa LES & Southeastern Mesopotamian Regimes",
+  "generatedAtIso": "2026-11-28T15:15:00.000Z",
+  "writeLockRespected": true,
+  "sealedBursaUntouched": true,
+  "overallVerdict": "FAIL_CRITICAL_DEFECTS_IDENTIFIED",
+  "scope": {
+    "primaryAuditedProvincesCount": 35,
+    "primaryAuditedProvinceCodes": [
+      "TR-02",
+      "TR-04",
+      "TR-06",
+      "TR-12",
+      "TR-13",
+      "TR-21",
+      "TR-23",
+      "TR-24",
+      "TR-25",
+      "TR-26",
+      "TR-27",
+      "TR-30",
+      "TR-36",
+      "TR-38",
+      "TR-40",
+      "TR-42",
+      "TR-44",
+      "TR-47",
+      "TR-49",
+      "TR-50",
+      "TR-51",
+      "TR-56",
+      "TR-58",
+      "TR-62",
+      "TR-63",
+      "TR-65",
+      "TR-66",
+      "TR-68",
+      "TR-69",
+      "TR-71",
+      "TR-72",
+      "TR-73",
+      "TR-75",
+      "TR-76",
+      "TR-79"
+    ],
+    "nationalCrossCheckProvincesCount": 80,
+    "sealedExcludedProvince": "TR-16"
+  },
+  "criteriaSummary": {
+    "criterion1_highAltitudePressureAnd850Trap": {
+      "status": "PARTIAL_FAIL",
+      "compliantHighPlateauProvinces700Hpa": [
+        "TR-04",
+        "TR-25",
+        "TR-30",
+        "TR-36",
+        "TR-69",
+        "TR-75"
+      ],
+      "nonCompliantHighPlateauProvinces": [
+        {
+          "provinceCode": "TR-65",
+          "nameTr": "Van",
+          "centerElevationM": 1675,
+          "deltaPressureTopHpa": 780,
+          "expectedMaxHpa": 750,
+          "recommendedHpa": 700,
+          "note": "Barrier crests (700 hPa) and Lake Van LES (700 hPa) are compliant, but inversionAndWedgeSpec.deltaPressureTopHpa=780 exceeds <=750 hPa and is subterranean across Başkale (2286 m, ~767 hPa) and ground-level in Saray/Çaldıran (2050-2117 m)."
+        },
+        {
+          "provinceCode": "TR-13",
+          "nameTr": "Bitlis",
+          "centerElevationM": 1789,
+          "deltaPressureTopHpa": 820,
+          "expectedMaxHpa": 750,
+          "recommendedHpa": 700,
+          "note": "Bitlis Merkez (MGM 17208) sits at 1789 m (~816 hPa ISA, higher than Van 1675 m and Kars 1775 m), yet deltaPressureTopHpa=820 is subterranean relative to city center and coldPoolTopM (1405+340=1745 m) falls below 1789 m."
+        }
+      ],
+      "schemaDualUnitBifurcation": {
+        "deltaThicknessEncodingCount": 31,
+        "absoluteIsobaricLevelEncodingCount": 49,
+        "aud02DeltaThicknessProvinces": [
+          "TR-23",
+          "TR-24",
+          "TR-42",
+          "TR-44",
+          "TR-50",
+          "TR-51",
+          "TR-62",
+          "TR-68"
+        ],
+        "aud02AbsoluteIsobaricProvinces": [
+          "TR-02",
+          "TR-04",
+          "TR-06",
+          "TR-12",
+          "TR-13",
+          "TR-21",
+          "TR-25",
+          "TR-26",
+          "TR-27",
+          "TR-30",
+          "TR-36",
+          "TR-38",
+          "TR-40",
+          "TR-47",
+          "TR-49",
+          "TR-56",
+          "TR-58",
+          "TR-63",
+          "TR-65",
+          "TR-66",
+          "TR-69",
+          "TR-71",
+          "TR-72",
+          "TR-73",
+          "TR-75",
+          "TR-76",
+          "TR-79"
+        ],
+        "all80DeltaThicknessProvinces": [
+          "TR-05",
+          "TR-07",
+          "TR-08",
+          "TR-09",
+          "TR-10",
+          "TR-14",
+          "TR-19",
+          "TR-20",
+          "TR-23",
+          "TR-24",
+          "TR-29",
+          "TR-33",
+          "TR-34",
+          "TR-41",
+          "TR-42",
+          "TR-44",
+          "TR-48",
+          "TR-50",
+          "TR-51",
+          "TR-53",
+          "TR-55",
+          "TR-57",
+          "TR-61",
+          "TR-62",
+          "TR-64",
+          "TR-67",
+          "TR-68",
+          "TR-70",
+          "TR-74",
+          "TR-77",
+          "TR-81"
+        ]
+      },
+      "engineSubterranean850Trap": {
+        "affectedEngineFiles": [
+          "lib/provinces/types.ts",
+          "lib/provinces/engine/province-vertical-profile.ts",
+          "lib/provinces/engine/province-cressman.ts"
+        ],
+        "summary": "Engine solvers hardcode wind850DirDeg/wind850SpeedKmh for Froude Foehn, upslope, and shallowColdWedgeRule (minWindShearVs850Deg) and ignore DirectionalBarrierRule.crestPressureHpa=700, even where 850 hPa (~1457 m ISA) is 125-440 m underground across >=1500 m Eastern Anatolia."
+      }
+    },
+    "criterion2_coldBasinAirportIsolationAndExtremeBounds": {
+      "status": "PARTIAL_FAIL",
+      "spotlightAirports": {
+        "LTAC_Ankara_Esenboga": {
+          "provinceCode": "TR-06",
+          "icaoExcludeFromCenterHeadline": true,
+          "isolatedSubBasin": "cubuk_esenboga_frost_basin",
+          "couplingToUrbanCenter": 0.22,
+          "gaps": [
+            "Numeric MGM twin 17128 (Esenboğa Airport, owned by TR-06) is missing from SPEC_TR_06.stationOverrides.",
+            "coldBasinAirportIcaos=['LTAC'] was exported on detached TR_06_BESPOKE_MODIFIERS instead of SPEC_TR_06.urbanHeatIsland, disabling province-cressman airportPenalty=0.22."
+          ]
+        },
+        "LTCE_Erzurum_Karasu": {
+          "provinceCode": "TR-25",
+          "icaoExcludeFromCenterHeadline": true,
+          "mgmTwin17096ExcludeFromCenterHeadline": true,
+          "isolatedSubBasin": "KARASU_OVA_FLOOR",
+          "couplingToUrbanCenter": 0.56,
+          "urbanHeatIslandConfigured": true,
+          "gaps": []
+        },
+        "LTAR_Sivas_NuriDemirag": {
+          "provinceCode": "TR-58",
+          "icaoExcludeFromCenterHeadline": true,
+          "mgmTwin17091ExcludeFromCenterHeadline": true,
+          "isolatedSubBasin": "yildiz_kose_kizildag_alpine_ridge",
+          "deltaElevVsCenterM": 311,
+          "couplingToUrbanCenter": 0.22,
+          "gaps": []
+        },
+        "LTAZ_Nevsehir_Kapadokya": {
+          "provinceCode": "TR-50",
+          "icaoExcludeFromCenterHeadline": true,
+          "isolatedSubBasin": "kizilirmak_gulsehir_avanos_trough",
+          "deltaElevVsCenterM": -315,
+          "couplingToUrbanCenter": 0.2,
+          "gaps": [
+            "Numeric MGM twin 17194 (owned by TR-50) is missing from SPEC_TR_50.stationOverrides.",
+            "SPEC_TR_50.urbanHeatIsland is undefined."
+          ]
+        },
+        "LTCW_Hakkari_Yuksekova": {
+          "provinceCode": "TR-30",
+          "icaoExcludeFromCenterHeadline": true,
+          "mgmTwins18771And17920ExcludeFromCenterHeadline": true,
+          "isolatedSubBasin": "yuksekova_gever_frost_basin",
+          "couplingToUrbanCenter": 0.14,
+          "gaps": [
+            "SPEC_TR_30.urbanHeatIsland is undefined."
+          ]
+        },
+        "LTCR_Mardin_Kiziltepe": {
+          "provinceCode": "TR-47",
+          "icaoExcludeFromCenterHeadline": true,
+          "mgmTwins17276And18332ExcludeFromCenterHeadline": true,
+          "isolatedSubBasin": "kiziltepe_nusaybin_mesopotamian_plain",
+          "deltaElevVsCenterM": -517,
+          "couplingToUrbanCenter": 0.16,
+          "gaps": []
+        }
+      },
+      "extremeTemperatureBoundsCheck": {
+        "coldBenchmarkProvincesMinTempC": {
+          "TR-04_Agri": -46,
+          "TR-75_Ardahan": -44,
+          "TR-25_Erzurum": -42,
+          "TR-65_Van": -47,
+          "TR-36_Kars": -40,
+          "TR-58_Sivas": -38,
+          "TR-49_Mus": -42,
+          "TR-12_Bingol": -38,
+          "TR-30_Hakkari": -38,
+          "TR-13_Bitlis": -36,
+          "TR-69_Bayburt": -36,
+          "allCoreColdBenchmarksAtOrBelowMinus35C": true
+        },
+        "hotBenchmarkProvincesMaxTempC": {
+          "TR-73_Sirnak_Cizre": 51,
+          "TR-72_Batman": 50,
+          "TR-63_Sanliurfa": 49,
+          "TR-21_Diyarbakir": 49,
+          "TR-47_Mardin": 49,
+          "TR-56_Siirt": 47,
+          "TR-02_Adiyaman": 46,
+          "TR-79_Kilis": 46,
+          "allCoreHotBenchmarksAtOrAbove46C": true
+        },
+        "criticalBoundViolations": [
+          {
+            "provinceCode": "TR-26",
+            "nameTr": "Eskişehir",
+            "configuredMaxPlausibleTempC": 42,
+            "historicalObservedRecordC": 49.5,
+            "recordStation": "MGM 18091 Sarıcakaya (220 m, 2023-08-15 official national record)",
+            "recommendedMaxPlausibleTempC": 50
+          },
+          {
+            "provinceCode": "TR-27",
+            "nameTr": "Gaziantep",
+            "configuredMaxPlausibleTempC": 45,
+            "lowlandSubBasinStation": "MGM 18150 Karkamış (375 m Euphrates border floor) & 18153 Nizip (477 m)",
+            "recommendedMaxPlausibleTempC": 48
+          },
+          {
+            "provinceCode": "TR-50",
+            "nameTr": "Nevşehir",
+            "configuredMinPlausibleTempC": -29,
+            "frostHollowStation": "MGM 18121 Derinkuyu (1320 m closed frost hollow, reaches -31..-34°C)",
+            "recommendedMinPlausibleTempC": -35
+          }
+        ]
+      }
+    },
+    "criterion3_lakeVanWaterBodiesAndForbiddenStations": {
+      "status": "PARTIAL_FAIL_FALSE_RESERVOIR_LES",
+      "lakeVanValidation": {
+        "TR-65": {
+          "id": "lake_van_east_main",
+          "kind": "alkaline_lake",
+          "surfaceElevationM": 1648,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "freezingPointC": -1.8,
+          "effectiveFetchKm": 118,
+          "compliant": true
+        },
+        "TR-13": {
+          "id": "lake_van_west_tatvan",
+          "kind": "alkaline_lake",
+          "surfaceElevationM": 1648,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "freezingPointC": -1.8,
+          "effectiveFetchKm": 108,
+          "compliant": true
+        }
+      },
+      "landlockedFalseSeaEffectCount": 0,
+      "checkedLandlockedProvinces": [
+        "TR-06",
+        "TR-26",
+        "TR-40",
+        "TR-71",
+        "TR-66",
+        "TR-38",
+        "TR-58",
+        "TR-42",
+        "TR-50",
+        "TR-51",
+        "TR-68",
+        "TR-27",
+        "TR-63",
+        "TR-47",
+        "TR-79",
+        "TR-02",
+        "TR-21",
+        "TR-56",
+        "TR-72",
+        "TR-73",
+        "TR-04",
+        "TR-12",
+        "TR-23",
+        "TR-24",
+        "TR-25",
+        "TR-30",
+        "TR-36",
+        "TR-44",
+        "TR-49",
+        "TR-62",
+        "TR-69",
+        "TR-75",
+        "TR-76"
+      ],
+      "forbiddenStationAudit": {
+        "TR-76_Igdir_Foreign37787YerevanBan": {
+          "calibrationTier": "TIER_B_DONOR_KALMAN",
+          "wmoIdInSpec": null,
+          "wmoStationIdInEmosWeights": null,
+          "forbiddenTokensAbsentInActiveConfigs": [
+            "37787",
+            "37789",
+            "UDYZ",
+            "UDSG",
+            "UBBN"
+          ],
+          "explicitlyListedInForbiddenMeta": true,
+          "compliant": true
+        },
+        "TR-11_Bilecik_FakeAnkara17120ArchiveBan": {
+          "calibrationTier": "TIER_B_DONOR_KALMAN",
+          "wmoIdInSpec": null,
+          "wmoStationIdInEmosWeights": null,
+          "zero17120InEmosWeightsAndCalibrationScript": true,
+          "mgmLiveDomesticIstNo17120VerifiedAtBilecikCoords": {
+            "lat": 40.1414,
+            "lon": 29.9772,
+            "elevationM": 539,
+            "janTminNormalC": -0.4,
+            "julTmaxNormalC": 29.1
+          },
+          "compliant": true
+        }
+      },
+      "falseInlandReservoirHeavyDekBug": {
+        "affectedAud02Provinces": [
+          "TR-02",
+          "TR-42",
+          "TR-63",
+          "TR-72"
+        ],
+        "affectedNationalOtherProvinces": [
+          "TR-32"
+        ],
+        "mechanism": "TR-02 (Atatürk Dam 540 m, fetch=34 km), TR-63 (Atatürk Bozova Arm 540 m, fetch=32 km), and TR-72 (Ilısu Canyon Reservoir 525 m, fetch=28 km) erroneously set convectiveInstabilityUpperHpa=700 at ~950 hPa lowland elevation with effectiveFetchKm >= 25 km, while TR-42 Konya (Beyşehir 1123 m, fetch=26 km) set dekWatchDeltaTC=28/dekHeavyDeltaTC=32 to suppress LES. In lib/snow-and-lightning-engine.ts:853-855, Math.min(wb.dekHeavyDeltaTC, 15.0) overwrites 23.5-32°C guards down to 15.0°C against 700 hPa, causing false 'heavy_dek' alerts in Şanlıurfa, Adıyaman, Batman, Konya, and Isparta during ordinary winter fronts."
+      }
+    }
+  },
+  "defects": [
+    {
+      "id": "AUD02-DEF-00",
+      "severity": "CRITICAL",
+      "criterion": "CRITERION_3_FALSE_INLAND_RESERVOIR_DEK",
+      "affectedProvinces": [
+        "TR-02",
+        "TR-32",
+        "TR-42",
+        "TR-63",
+        "TR-72"
+      ],
+      "files": [
+        "lib/snow-and-lightning-engine.ts:842-856",
+        "lib/provinces/specs/tr-02.ts",
+        "lib/provinces/specs/tr-42.ts",
+        "lib/provinces/specs/tr-63.ts:410-441",
+        "lib/provinces/specs/tr-72.ts"
+      ],
+      "title": "False 'heavy_dek' (Heavy Sea/Lake-Effect Snow) fires in Şanlıurfa (TR-63), Adıyaman (TR-02), Batman (TR-72), Konya (TR-42), and Isparta (TR-32)",
+      "physicalMechanism": "1) Low-altitude (~525-540 m, ~950 hPa) dam reservoirs in TR-02 (ataturk_dam_reservoir, fetch=34 km), TR-63 (ataturk_reservoir_bozova_arm, fetch=32 km), and narrow canyon TR-72 (ilisu_tigris_reservoir, fetch=28 km) misconfigured convectiveInstabilityUpperHpa=700 (3010 m) and effectiveFetchKm >= 25 km. Over a 2470 m layer (540 m -> 3010 m), even a neutral winter column (T_water=+8.6°C, T700=-10°C) yields ΔT=18.6°C. 2) Worse, lib/snow-and-lightning-engine.ts:853-855 uses Math.min(wb.dekWatchDeltaTC, 10.5) and Math.min(wb.dekHeavyDeltaTC, 15.0), erasing the authors' intentional suppression thresholds (23.5-24°C on Atatürk/Ilısu; 28/32°C on Konya Beyşehir) down to 10.5/15.0°C and triggering 'heavy_dek' across hyper-arid Mesopotamian and Central Anatolian plains.",
+      "remediation": "1) In lib/snow-and-lightning-engine.ts:853-855, respect wb.dekWatchDeltaTC and wb.dekHeavyDeltaTC (do not clamp downward with Math.min) and restrict true high-altitude LES to alkaline/deep lakes with fetch >= 50 km (Lake Van). 2) In TR-02, TR-63, and TR-72 specs, change convectiveInstabilityUpperHpa from 700 to 850 and reduce narrow dendritic reservoir effectiveFetchKm below 22 km (< 25 km DEK gate)."
+    },
+    {
+      "id": "AUD02-DEF-01",
+      "severity": "HIGH",
+      "criterion": "CRITERION_2_PLAUSIBLE_BOUNDS",
+      "affectedProvinces": [
+        "TR-26"
+      ],
+      "files": [
+        "lib/provinces/specs/tr-26.ts:506"
+      ],
+      "title": "TR-26 Eskişehir maxPlausibleTempC=42°C clips Sarıcakaya (+49.5°C historical national record) by 7.5°C",
+      "physicalMechanism": "Sarıcakaya (MGM 18091, 220 m) and Mihalgazi (MGM 19372, 236 m) sit in the deep Middle Sakarya canyon inside TR-26, where +49.5°C was recorded on 2023-08-15. Because solveProvinceTopographicSurface (province-cressman.ts:838,1069) and computeProvinceLiveVerticalProfile (province-vertical-profile.ts:487) filter out any station with tempC > spec.qcAndMosBounds.maxPlausibleTempC, summer heatwave readings >42.0°C in Sarıcakaya/Mihalgazi are rejected as sensor errors and output is clamped to 42.0°C.",
+      "remediation": "Increase SPEC_TR_26.qcAndMosBounds.maxPlausibleTempC from 42 to 50 (or >=50.5°C)."
+    },
+    {
+      "id": "AUD02-DEF-02",
+      "severity": "HIGH",
+      "criterion": "CRITERION_1_HIGH_ALTITUDE_PRESSURE",
+      "affectedProvinces": [
+        "TR-65",
+        "TR-13"
+      ],
+      "files": [
+        "lib/provinces/specs/tr-65.ts:475",
+        "lib/provinces/specs/tr-13.ts:409-413"
+      ],
+      "title": "High-altitude (>=1500 m) Lake Van provinces TR-65 Van (deltaPressureTopHpa=780) and TR-13 Bitlis (deltaPressureTopHpa=820) violate <=750 hPa (700 hPa) inversion-top reference",
+      "physicalMechanism": "In TR-65 Van (center 1675 m, ~828 hPa; Çaldıran 2050 m; Saray 2117 m; Başkale 2286 m, ~767 hPa), deltaPressureTopHpa=780 exceeds <=750 hPa and lies underground at Başkale. In TR-13 Bitlis, primaryCenter (MGM 17208) is at 1789 m (~816 hPa ISA), so deltaPressureTopHpa=820 sits below surface pressure at city center and basinFloorElevationM+coldPoolMaxDepthM (1405+340=1745 m) fails to reach 1789 m.",
+      "remediation": "Set inversionAndWedgeSpec.deltaPressureTopHpa to 700 on both TR-65 and TR-13, and raise TR-13 coldPoolMaxDepthM to >=480 m (coldPoolTopM >=1885 m)."
+    },
+    {
+      "id": "AUD02-DEF-03",
+      "severity": "HIGH",
+      "criterion": "CRITERION_1_SCHEMA_PRESSURE_SEMANTICS",
+      "affectedProvinces": [
+        "TR-23",
+        "TR-24",
+        "TR-42",
+        "TR-44",
+        "TR-50",
+        "TR-51",
+        "TR-62",
+        "TR-68"
+      ],
+      "nationalAffectedProvincesCount": 31,
+      "files": [
+        "lib/provinces/types.ts:173",
+        "lib/provinces/specs/tr-23.ts",
+        "lib/provinces/specs/tr-24.ts",
+        "lib/provinces/specs/tr-42.ts",
+        "lib/provinces/specs/tr-44.ts",
+        "lib/provinces/specs/tr-50.ts",
+        "lib/provinces/specs/tr-51.ts",
+        "lib/provinces/specs/tr-62.ts",
+        "lib/provinces/specs/tr-68.ts"
+      ],
+      "title": "Dual-unit schema bifurcation on SurfaceRelativeInversionSpec.deltaPressureTopHpa across the 80 provinces (31 relative delta-hPa vs 49 absolute isobaric-top-hPa)",
+      "physicalMechanism": "31 province specs (including 8 AUD-02 specs: TR-23=36, TR-24=48, TR-42=38, TR-44=33, TR-50=34, TR-51=36, TR-62=48, TR-68=36) store pressure thickness ΔP = P_sfc - P_top in [18, 48] hPa, whereas 49 specs (including 27 AUD-02 specs) store absolute top pressure P_top in [700, 990] hPa.",
+      "remediation": "Standardize all 80 specs onto explicit upper-reference pressure topPressureHpa (700/750/800/850/925 hPa) or add a unit-safe resolver (val < 200 ? P_sfc - val : val) before wiring into upper-air profile blending."
+    },
+    {
+      "id": "AUD02-DEF-04",
+      "severity": "HIGH",
+      "criterion": "CRITERION_1_ENGINE_850HPA_TRAP",
+      "affectedProvinces": [
+        "TR-04",
+        "TR-13",
+        "TR-25",
+        "TR-30",
+        "TR-36",
+        "TR-65",
+        "TR-69",
+        "TR-75",
+        "TR-06"
+      ],
+      "files": [
+        "lib/provinces/types.ts:184",
+        "lib/provinces/engine/province-vertical-profile.ts:370-405",
+        "lib/provinces/engine/province-cressman.ts:304-335"
+      ],
+      "title": "Engine Froude Foehn, upslope, and shallowColdWedgeRule solvers hardcode subterranean 850 hPa winds instead of respecting crestPressureHpa=700",
+      "physicalMechanism": "Over >=1500 m Eastern Anatolian basins (1582-1895 m centers, ~805-837 hPa), the 850 hPa isobaric surface (~1457 m ISA) is 125-440 m underground. Yet ProvinceAmbientDrivers only accepts wind850DirDeg/wind850SpeedKmh, shallowColdWedgeRule is typed as minWindShearVs850Deg, and applyDirectionalBarrierRules ignores rule.crestPressureHpa (700 hPa).",
+      "remediation": "Add wind700DirDeg/wind700SpeedKmh to ProvinceAmbientDrivers and ComputeProvinceVerticalProfileParams, route barriers with crestPressureHpa <= 750 and high-elevation cold-wedge shear checks to 700 hPa flow."
+    },
+    {
+      "id": "AUD02-DEF-05",
+      "severity": "HIGH",
+      "criterion": "CRITERION_2_HEADLINE_QUARANTINE_WIRING",
+      "affectedProvinces": [
+        "TR-06",
+        "TR-12",
+        "TR-26",
+        "TR-27",
+        "TR-30",
+        "TR-40",
+        "TR-47",
+        "TR-50",
+        "TR-56",
+        "TR-58",
+        "TR-63",
+        "TR-71",
+        "TR-73"
+      ],
+      "files": [
+        "lib/provinces/engine/province-cressman.ts:903-1012",
+        "lib/provinces/mgm-national-live.ts:1150-1190",
+        "lib/provinces/specs/tr-06.ts:8-13",
+        "lib/provinces/specs/tr-26.ts:8-13"
+      ],
+      "title": "excludeFromCenterHeadline is unread by runtime solvers and coldBasinAirportIcaos is detached or missing in multiple specs",
+      "physicalMechanism": "1) ProvinceStationOverride.excludeFromCenterHeadline is never read in province-cressman.ts or mgm-national-live.ts. 2) TR-06 (LTAC) and TR-26 (LTBY, LTBI) placed coldBasinAirportIcaos inside detached TR_XX_BESPOKE_MODIFIERS constants rather than spec.urbanHeatIsland (alongside TR-03, TR-15, TR-20, TR-32, TR-40, TR-43, TR-71), leaving spec.urbanHeatIsland undefined so airportPenalty=0.22 never triggers.",
+      "remediation": "Enforce override.excludeFromCenterHeadline attenuation/filtering when solving center headlines in province-cressman.ts, and attach urbanHeatIsland.coldBasinAirportIcaos directly onto SPEC_TR_06, SPEC_TR_26, SPEC_TR_27, SPEC_TR_30, SPEC_TR_47, SPEC_TR_50."
+    },
+    {
+      "id": "AUD02-DEF-06",
+      "severity": "MEDIUM",
+      "criterion": "CRITERION_2_AIRPORT_TWIN_OVERRIDES",
+      "affectedProvinces": [
+        "TR-06",
+        "TR-12",
+        "TR-21",
+        "TR-26",
+        "TR-27",
+        "TR-38",
+        "TR-42",
+        "TR-49",
+        "TR-50",
+        "TR-72"
+      ],
+      "files": [
+        "lib/provinces/specs/tr-06.ts:233-327",
+        "lib/provinces/specs/tr-26.ts:205-250",
+        "lib/provinces/specs/tr-27.ts:223-245",
+        "lib/provinces/specs/tr-49.ts:180-240",
+        "lib/provinces/specs/tr-50.ts:208-316",
+        "lib/provinces/catalog-1102.ts:64"
+      ],
+      "title": "Asymmetric or missing numeric MGM twin overrides for cold-basin airports and TR-27 catalog Oğuzeli center drift",
+      "physicalMechanism": "Live MGM sondurum observations arrive keyed by numeric istNo rather than ICAO: TR-06 omits 17128 (Esenboğa), TR-50 omits 17194 (Kapadokya), TR-26 omits 17123 and leaves 17124 unexcluded while excluding LTBI/LTBY, TR-27 leaves 17260 unexcluded in the same sub-basin (coupling=1.0) while excluding LTAJ (and catalog-1102.ts:64 / mgm-national-live.ts:91 still place Gaziantep center at 700 m Oğuzeli Airport), and rural frost-bowl airports LTCU (TR-12), LTCK/17206 (TR-49), LTAU/17195 (TR-38), LTAN/17244 (TR-42), LTCC/17280 (TR-21), LTCJ/17284 (TR-72) lack excludeFromCenterHeadline.",
+      "remediation": "Add symmetric numeric MGM overrides (17128, 17194, 17123, 17206), set excludeFromCenterHeadline=true on 17260/17124 and rural frost-basin airports, isolate Oğuzeli into its own sub-basin, and align catalog-1102 TR-27 center to 854 m Şahinbey."
+    },
+    {
+      "id": "AUD02-DEF-07",
+      "severity": "MEDIUM",
+      "criterion": "CRITERION_2_SUBBASIN_EXTREME_BOUNDS",
+      "affectedProvinces": [
+        "TR-24",
+        "TR-27",
+        "TR-38",
+        "TR-40",
+        "TR-42",
+        "TR-47",
+        "TR-50",
+        "TR-51",
+        "TR-62",
+        "TR-66",
+        "TR-73",
+        "TR-76"
+      ],
+      "files": [
+        "lib/provinces/specs/tr-27.ts:579",
+        "lib/provinces/specs/tr-50.ts:500",
+        "lib/provinces/specs/tr-76.ts:461"
+      ],
+      "title": "Tight sub-basin temperature and Siberian-High reduced MSLP QC bounds risk rejecting valid extremes at Karkamış, Derinkuyu, Mount Ararat, Uzunyayla, and >=1000 m basins",
+      "physicalMechanism": "1) TR-27 maxPlausibleTempC=45°C is exceeded in 375 m Karkamış/Nizip (46-47.5°C). 2) TR-50 minPlausibleTempC=-29°C clips Derinkuyu (18121, -31..-34°C); TR-76 (-32°C vs 5137 m Ararat), TR-38 (-34°C vs Uzunyayla/Erciyes -37°C), TR-51 (-30°C vs Aladağlar), TR-73 (-28°C vs Kato/Beytüşşebap) are tight for high alpine/frost-hollow AWS stations. 3) High plateaus TR-50/51 (1046 hPa), TR-40/42 (1048 hPa), TR-24/66/73 (1050 hPa) drop valid cold-core Siberian High reduced MSLPs (1052-1058 hPa).",
+      "remediation": "Widen TR-27 maxPlausibleTempC to 48°C, TR-50 minPlausibleTempC to -35°C, TR-38/76/51/73 alpine minPlausibleTempC to <= -36..-40°C, and >=1000 m continental maxPlausibleMslpHpa to >=1056 hPa."
+    },
+    {
+      "id": "AUD02-DEF-08",
+      "severity": "LOW",
+      "criterion": "CRITERION_1_AND_3_MINOR_CONSISTENCY",
+      "affectedProvinces": [
+        "TR-13",
+        "TR-25",
+        "TR-30",
+        "TR-50",
+        "TR-51",
+        "TR-56",
+        "TR-68",
+        "TR-73",
+        "TR-79"
+      ],
+      "files": [
+        "lib/provinces/specs/tr-73.ts:68,394",
+        "lib/provinces/specs/tr-13.ts:51-52",
+        "lib/provinces/specs/tr-25.ts:53-54"
+      ],
+      "title": "Minor metadata drift: role='coast'/'marine_upwind' on landlocked provinces, TR-73 basinFloorElevationM=1450 above 400 m Cizre, and unadjusted CLIM elevation offset on TR-13/TR-25",
+      "physicalMechanism": "Landlocked provinces TR-30, TR-50, TR-51, TR-56, TR-68, TR-73 use role='coast' on low river plains and TR-79 uses role='marine_upwind' despite waterBodies=[]. TR-73 sets basinFloorElevationM=1450 above Cizre (400 m) and Şırnak Merkez (1350 m). TR-13 (+216 m vs 1573 m CLIM) and TR-25 (+137 m Yakutiye vs 1758 m LTCE CLIM) assign unadjusted monthly normals.",
+      "remediation": "Replace role='coast'/'marine_upwind' with 'plain'/'corridor' on waterBodies=[] specs, anchor TR-73 basinFloorElevationM accurately or document highland-only cold pool, and apply lapse/foothill normal offsets to TR-13 and TR-25."
+    }
+  ],
+  "provinceAuditMatrix": [
+    {
+      "provinceCode": "TR-02",
+      "nameTr": "Adıyaman",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17265",
+      "centerElevationM": 672,
+      "isaCenterPressureHpa": 935.1,
+      "basinFloorElevationM": 540,
+      "coldPoolTopElevationM": 800,
+      "isaColdPoolTopPressureHpa": 920.8,
+      "deltaPressureTopHpa": 925,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        750,
+        800
+      ],
+      "icaoWhitelist": [
+        "LTCP"
+      ],
+      "airportIsolationStatus": {
+        "LTCP": {
+          "inStationOverrides": true,
+          "demElevationM": 675,
+          "deltaElevVsCenterM": 3,
+          "subBasinId": "adiyaman_kahta_piedmont",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.56,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -24,
+        "maxPlausibleTempC": 46,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.4
+      },
+      "waterBodies": [
+        {
+          "id": "ataturk_dam_reservoir",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 540,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 34,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-00"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-04",
+      "nameTr": "Ağrı",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17099",
+      "centerElevationM": 1632,
+      "isaCenterPressureHpa": 832.0,
+      "basinFloorElevationM": 1632,
+      "coldPoolTopElevationM": 2152,
+      "isaColdPoolTopPressureHpa": 780.1,
+      "deltaPressureTopHpa": 700,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCO"
+      ],
+      "airportIsolationStatus": {
+        "LTCO": {
+          "inStationOverrides": true,
+          "demElevationM": 1632,
+          "deltaElevVsCenterM": 0,
+          "subBasinId": "TR04_AGRI_MURAT_SIBERIAN_BOWL",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.98,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -46,
+        "maxPlausibleTempC": 40,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1066,
+        "kalmanTempBiasCapC": 9
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-06",
+      "nameTr": "Ankara",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17130",
+      "centerElevationM": 891,
+      "isaCenterPressureHpa": 910.7,
+      "basinFloorElevationM": 806,
+      "coldPoolTopElevationM": 1086,
+      "isaColdPoolTopPressureHpa": 889.4,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800,
+        800,
+        800
+      ],
+      "icaoWhitelist": [
+        "LTAC",
+        "LTAB",
+        "LTAD"
+      ],
+      "airportIsolationStatus": {
+        "LTAC": {
+          "inStationOverrides": true,
+          "demElevationM": 949,
+          "deltaElevVsCenterM": 58,
+          "subBasinId": "cubuk_esenboga_frost_basin",
+          "couplingToCenter": 0.22,
+          "coldPoolSusceptibility": 0.88,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        },
+        "LTAB": {
+          "inStationOverrides": true,
+          "demElevationM": 820,
+          "deltaElevVsCenterM": -71,
+          "subBasinId": "ankara_urban_bowl",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.48,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        },
+        "LTAD": {
+          "inStationOverrides": true,
+          "demElevationM": 806,
+          "deltaElevVsCenterM": -85,
+          "subBasinId": "ankara_urban_bowl",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.56,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04",
+        "AUD02-DEF-05",
+        "AUD02-DEF-06"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-12",
+      "nameTr": "Bingöl",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17203",
+      "centerElevationM": 1139,
+      "isaCenterPressureHpa": 883.7,
+      "basinFloorElevationM": 1055,
+      "coldPoolTopElevationM": 1375,
+      "isaColdPoolTopPressureHpa": 858.6,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        750,
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCU"
+      ],
+      "airportIsolationStatus": {
+        "LTCU": {
+          "inStationOverrides": true,
+          "demElevationM": 1057,
+          "deltaElevVsCenterM": -82,
+          "subBasinId": "capakcur_bingol_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.84,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -38,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1060,
+        "kalmanTempBiasCapC": 4.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05",
+        "AUD02-DEF-06"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-13",
+      "nameTr": "Bitlis",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 1789,
+      "isaCenterPressureHpa": 816.0,
+      "basinFloorElevationM": 1405,
+      "coldPoolTopElevationM": 1745,
+      "isaColdPoolTopPressureHpa": 820.4,
+      "deltaPressureTopHpa": 820,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        750,
+        700
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -36,
+        "maxPlausibleTempC": 41,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1060,
+        "kalmanTempBiasCapC": 4.4
+      },
+      "waterBodies": [
+        {
+          "id": "lake_van_west_tatvan",
+          "kind": "alkaline_lake",
+          "surfaceElevationM": 1648,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 108,
+          "freezingPointC": -1.8
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-02",
+        "AUD02-DEF-04",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-21",
+      "nameTr": "Diyarbakır",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17280",
+      "centerElevationM": 674,
+      "isaCenterPressureHpa": 934.9,
+      "basinFloorElevationM": 545,
+      "coldPoolTopElevationM": 885,
+      "isaColdPoolTopPressureHpa": 911.4,
+      "deltaPressureTopHpa": 915,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800,
+        800
+      ],
+      "icaoWhitelist": [
+        "LTCC"
+      ],
+      "airportIsolationStatus": {
+        "LTCC": {
+          "inStationOverrides": true,
+          "demElevationM": 686,
+          "deltaElevVsCenterM": 12,
+          "subBasinId": "diyarbakir_basalt_central_bowl",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.84,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 49,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-06"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-23",
+      "nameTr": "Elazığ",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17202",
+      "centerElevationM": 989,
+      "isaCenterPressureHpa": 899.9,
+      "basinFloorElevationM": 892,
+      "coldPoolTopElevationM": 1202,
+      "isaColdPoolTopPressureHpa": 876.9,
+      "deltaPressureTopHpa": 36,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        750
+      ],
+      "icaoWhitelist": [
+        "LTCA"
+      ],
+      "airportIsolationStatus": {
+        "LTCA": {
+          "inStationOverrides": true,
+          "demElevationM": 892,
+          "deltaElevVsCenterM": -97,
+          "subBasinId": "TR23_ULUOVA_ELAZIG_DEPRESSION",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.86,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.2
+      },
+      "waterBodies": [
+        {
+          "id": "TR23_KEBAN_DAM_RESERVOIR",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 845,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 20,
+          "freezingPointC": 0
+        },
+        {
+          "id": "TR23_HAZAR_TECTONIC_LAKE",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 1248,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 18,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-24",
+      "nameTr": "Erzincan",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17092",
+      "centerElevationM": 1216,
+      "isaCenterPressureHpa": 875.4,
+      "basinFloorElevationM": 1185,
+      "coldPoolTopElevationM": 1605,
+      "isaColdPoolTopPressureHpa": 834.7,
+      "deltaPressureTopHpa": 48,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCD"
+      ],
+      "airportIsolationStatus": {
+        "LTCD": {
+          "inStationOverrides": true,
+          "demElevationM": 1156,
+          "deltaElevVsCenterM": -60,
+          "subBasinId": "TR24_ERZINCAN_KARASU_GRABEN",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.94,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -34,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 7.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-25",
+      "nameTr": "Erzurum",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17096",
+      "centerElevationM": 1895,
+      "isaCenterPressureHpa": 805.4,
+      "basinFloorElevationM": 1758,
+      "coldPoolTopElevationM": 2138,
+      "isaColdPoolTopPressureHpa": 781.4,
+      "deltaPressureTopHpa": 700,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700,
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCE"
+      ],
+      "airportIsolationStatus": {
+        "LTCE": {
+          "inStationOverrides": true,
+          "demElevationM": 1758,
+          "deltaElevVsCenterM": -137,
+          "subBasinId": "KARASU_OVA_FLOOR",
+          "couplingToCenter": 0.56,
+          "coldPoolSusceptibility": 0.96,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -42,
+        "maxPlausibleTempC": 40,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1066,
+        "kalmanTempBiasCapC": 4.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-26",
+      "nameTr": "Eskişehir",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17124",
+      "centerElevationM": 788,
+      "isaCenterPressureHpa": 922.1,
+      "basinFloorElevationM": 765,
+      "coldPoolTopElevationM": 1085,
+      "isaColdPoolTopPressureHpa": 889.5,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800,
+        800,
+        800
+      ],
+      "icaoWhitelist": [
+        "LTBY",
+        "LTBI"
+      ],
+      "airportIsolationStatus": {
+        "LTBY": {
+          "inStationOverrides": true,
+          "demElevationM": 789,
+          "deltaElevVsCenterM": 1,
+          "subBasinId": "porsuk_frost_fog_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.86,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        },
+        "LTBI": {
+          "inStationOverrides": true,
+          "demElevationM": 785,
+          "deltaElevVsCenterM": -3,
+          "subBasinId": "porsuk_frost_fog_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.84,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-01",
+        "AUD02-DEF-05",
+        "AUD02-DEF-06"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-27",
+      "nameTr": "Gaziantep",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17260",
+      "centerElevationM": 850,
+      "isaCenterPressureHpa": 915.2,
+      "basinFloorElevationM": 701,
+      "coldPoolTopElevationM": 951,
+      "isaColdPoolTopPressureHpa": 904.1,
+      "deltaPressureTopHpa": 885,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        850,
+        750,
+        850
+      ],
+      "icaoWhitelist": [
+        "LTAJ"
+      ],
+      "airportIsolationStatus": {
+        "LTAJ": {
+          "inStationOverrides": true,
+          "demElevationM": 701,
+          "deltaElevVsCenterM": -149,
+          "subBasinId": "gaziantep_central_plateau",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.74,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -22,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.6
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05",
+        "AUD02-DEF-06",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-30",
+      "nameTr": "Hakkari",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 1727,
+      "isaCenterPressureHpa": 822.3,
+      "basinFloorElevationM": 1877,
+      "coldPoolTopElevationM": 2427,
+      "isaColdPoolTopPressureHpa": 753.7,
+      "deltaPressureTopHpa": 700,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCW"
+      ],
+      "airportIsolationStatus": {
+        "LTCW": {
+          "inStationOverrides": true,
+          "demElevationM": 1950,
+          "deltaElevVsCenterM": 223,
+          "subBasinId": "yuksekova_gever_frost_basin",
+          "couplingToCenter": 0.14,
+          "coldPoolSusceptibility": 0.94,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -38,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1056,
+        "kalmanTempBiasCapC": 8.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04",
+        "AUD02-DEF-05",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-36",
+      "nameTr": "Kars",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17098",
+      "centerElevationM": 1775,
+      "isaCenterPressureHpa": 817.4,
+      "basinFloorElevationM": 1768,
+      "coldPoolTopElevationM": 2128,
+      "isaColdPoolTopPressureHpa": 782.4,
+      "deltaPressureTopHpa": 700,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        750
+      ],
+      "icaoWhitelist": [
+        "LTCF"
+      ],
+      "airportIsolationStatus": {
+        "LTCF": {
+          "inStationOverrides": true,
+          "demElevationM": 1795,
+          "deltaElevVsCenterM": 20,
+          "subBasinId": "TR36_KARS_SELIM_BASALT_PLATEAU",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.96,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -40,
+        "maxPlausibleTempC": 38,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1064,
+        "kalmanTempBiasCapC": 8.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-38",
+      "nameTr": "Kayseri",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17195",
+      "centerElevationM": 1054,
+      "isaCenterPressureHpa": 892.9,
+      "basinFloorElevationM": 1053,
+      "coldPoolTopElevationM": 1473,
+      "isaColdPoolTopPressureHpa": 848.4,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700
+      ],
+      "icaoWhitelist": [
+        "LTAU"
+      ],
+      "airportIsolationStatus": {
+        "LTAU": {
+          "inStationOverrides": true,
+          "demElevationM": 1053,
+          "deltaElevVsCenterM": -1,
+          "subBasinId": "karasazligi_kayseri_cold_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.94,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -34,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 7.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-06",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-40",
+      "nameTr": "Kırşehir",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17160",
+      "centerElevationM": 1007,
+      "isaCenterPressureHpa": 898.0,
+      "basinFloorElevationM": 985,
+      "coldPoolTopElevationM": 1275,
+      "isaColdPoolTopPressureHpa": 869.2,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-42",
+      "nameTr": "Konya",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17244",
+      "centerElevationM": 1029,
+      "isaCenterPressureHpa": 895.6,
+      "basinFloorElevationM": 1011,
+      "coldPoolTopElevationM": 1331,
+      "isaColdPoolTopPressureHpa": 863.2,
+      "deltaPressureTopHpa": 38,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        750,
+        750
+      ],
+      "icaoWhitelist": [
+        "LTAN"
+      ],
+      "airportIsolationStatus": {
+        "LTAN": {
+          "inStationOverrides": true,
+          "demElevationM": 1031,
+          "deltaElevVsCenterM": 2,
+          "subBasinId": "konya_central_closed_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.88,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "waterBodies": [
+        {
+          "id": "beysehir_fresh_lake",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 1123,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 26,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-00",
+        "AUD02-DEF-03",
+        "AUD02-DEF-06",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-44",
+      "nameTr": "Malatya",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "LTAO0",
+      "centerElevationM": 950,
+      "isaCenterPressureHpa": 904.2,
+      "basinFloorElevationM": 835,
+      "coldPoolTopElevationM": 1115,
+      "isaColdPoolTopPressureHpa": 886.3,
+      "deltaPressureTopHpa": 33,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        750,
+        750
+      ],
+      "icaoWhitelist": [
+        "LTAT"
+      ],
+      "airportIsolationStatus": {
+        "LTAT": {
+          "inStationOverrides": true,
+          "demElevationM": 862,
+          "deltaElevVsCenterM": -88,
+          "subBasinId": "TR44_ERHAC_AKCADAG_FROST_STEPPE",
+          "couplingToCenter": 0.34,
+          "coldPoolSusceptibility": 0.94,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -27,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.4
+      },
+      "waterBodies": [
+        {
+          "id": "TR44_KARAKAYA_DAM_RESERVOIR",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 693,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 19,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-47",
+      "nameTr": "Mardin",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 1040,
+      "isaCenterPressureHpa": 894.4,
+      "basinFloorElevationM": 480,
+      "coldPoolTopElevationM": 800,
+      "isaColdPoolTopPressureHpa": 920.8,
+      "deltaPressureTopHpa": 924,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        850
+      ],
+      "icaoWhitelist": [
+        "LTCR"
+      ],
+      "airportIsolationStatus": {
+        "LTCR": {
+          "inStationOverrides": true,
+          "demElevationM": 523,
+          "deltaElevVsCenterM": -517,
+          "subBasinId": "kiziltepe_nusaybin_mesopotamian_plain",
+          "couplingToCenter": 0.16,
+          "coldPoolSusceptibility": 0.84,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 49,
+        "minPlausibleMslpHpa": 985,
+        "maxPlausibleMslpHpa": 1045,
+        "kalmanTempBiasCapC": 5.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-49",
+      "nameTr": "Muş",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17204",
+      "centerElevationM": 1316,
+      "isaCenterPressureHpa": 864.8,
+      "basinFloorElevationM": 1255,
+      "coldPoolTopElevationM": 1675,
+      "isaColdPoolTopPressureHpa": 827.6,
+      "deltaPressureTopHpa": 825,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        750
+      ],
+      "icaoWhitelist": [
+        "LTCK"
+      ],
+      "airportIsolationStatus": {
+        "LTCK": {
+          "inStationOverrides": true,
+          "demElevationM": 1267,
+          "deltaElevVsCenterM": -49,
+          "subBasinId": "mus_alluvial_cold_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.96,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -42,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1064,
+        "kalmanTempBiasCapC": 4.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-06"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-50",
+      "nameTr": "Nevşehir",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17193",
+      "centerElevationM": 1260,
+      "isaCenterPressureHpa": 870.8,
+      "basinFloorElevationM": 920,
+      "coldPoolTopElevationM": 1200,
+      "isaColdPoolTopPressureHpa": 877.2,
+      "deltaPressureTopHpa": 34,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        800,
+        850
+      ],
+      "icaoWhitelist": [
+        "LTAZ"
+      ],
+      "airportIsolationStatus": {
+        "LTAZ": {
+          "inStationOverrides": true,
+          "demElevationM": 945,
+          "deltaElevVsCenterM": -315,
+          "subBasinId": "kizilirmak_gulsehir_avanos_trough",
+          "couplingToCenter": 0.2,
+          "coldPoolSusceptibility": 0.92,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -29,
+        "maxPlausibleTempC": 41,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03",
+        "AUD02-DEF-05",
+        "AUD02-DEF-06",
+        "AUD02-DEF-07",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-51",
+      "nameTr": "Niğde",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17250",
+      "centerElevationM": 1211,
+      "isaCenterPressureHpa": 876.0,
+      "basinFloorElevationM": 1085,
+      "coldPoolTopElevationM": 1395,
+      "isaColdPoolTopPressureHpa": 856.5,
+      "deltaPressureTopHpa": 36,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        750,
+        750
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03",
+        "AUD02-DEF-07",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-56",
+      "nameTr": "Siirt",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17210",
+      "centerElevationM": 895,
+      "isaCenterPressureHpa": 910.3,
+      "basinFloorElevationM": 634,
+      "coldPoolTopElevationM": 914,
+      "isaColdPoolTopPressureHpa": 908.2,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        750
+      ],
+      "icaoWhitelist": [
+        "LTCL"
+      ],
+      "airportIsolationStatus": {
+        "LTCL": {
+          "inStationOverrides": true,
+          "demElevationM": 634,
+          "deltaElevVsCenterM": -261,
+          "subBasinId": "kurtalan_baykan_low_corridor",
+          "couplingToCenter": 0.56,
+          "coldPoolSusceptibility": 0.48,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -22,
+        "maxPlausibleTempC": 47,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-58",
+      "nameTr": "Sivas",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17090",
+      "centerElevationM": 1285,
+      "isaCenterPressureHpa": 868.1,
+      "basinFloorElevationM": 1285,
+      "coldPoolTopElevationM": 1645,
+      "isaColdPoolTopPressureHpa": 830.6,
+      "deltaPressureTopHpa": 820,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        750
+      ],
+      "icaoWhitelist": [
+        "LTAR"
+      ],
+      "airportIsolationStatus": {
+        "LTAR": {
+          "inStationOverrides": true,
+          "demElevationM": 1596,
+          "deltaElevVsCenterM": 311,
+          "subBasinId": "yildiz_kose_kizildag_alpine_ridge",
+          "couplingToCenter": 0.22,
+          "coldPoolSusceptibility": 0.3,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -38,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1055,
+        "kalmanTempBiasCapC": 8.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-62",
+      "nameTr": "Tunceli",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 981,
+      "isaCenterPressureHpa": 900.8,
+      "basinFloorElevationM": 915,
+      "coldPoolTopElevationM": 1340,
+      "isaColdPoolTopPressureHpa": 862.3,
+      "deltaPressureTopHpa": 48,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        700
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -33,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 7
+      },
+      "waterBodies": [
+        {
+          "id": "TR62_KEBAN_NORTH_PERTEK_ARM",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 845,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 16,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03",
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-63",
+      "nameTr": "Şanlıurfa",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17270",
+      "centerElevationM": 550,
+      "isaCenterPressureHpa": 948.9,
+      "basinFloorElevationM": 365,
+      "coldPoolTopElevationM": 585,
+      "isaColdPoolTopPressureHpa": 944.9,
+      "deltaPressureTopHpa": 950,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800,
+        850
+      ],
+      "icaoWhitelist": [
+        "LTCS"
+      ],
+      "airportIsolationStatus": {
+        "LTCS": {
+          "inStationOverrides": true,
+          "demElevationM": 822,
+          "deltaElevVsCenterM": 272,
+          "subBasinId": "sanliurfa_piedmont_steppe",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.42,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -18,
+        "maxPlausibleTempC": 49,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 5.2
+      },
+      "waterBodies": [
+        {
+          "id": "ataturk_reservoir_bozova_arm",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 540,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 32,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-00",
+        "AUD02-DEF-05"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-65",
+      "nameTr": "Van",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17170",
+      "centerElevationM": 1675,
+      "isaCenterPressureHpa": 827.6,
+      "basinFloorElevationM": 1650,
+      "coldPoolTopElevationM": 2130,
+      "isaColdPoolTopPressureHpa": 782.2,
+      "deltaPressureTopHpa": 780,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCI"
+      ],
+      "airportIsolationStatus": {
+        "LTCI": {
+          "inStationOverrides": true,
+          "demElevationM": 1670,
+          "deltaElevVsCenterM": -5,
+          "subBasinId": "van_lake_east_shore",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.24,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -47,
+        "maxPlausibleTempC": 40,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1066,
+        "kalmanTempBiasCapC": 4.8
+      },
+      "waterBodies": [
+        {
+          "id": "lake_van_east_main",
+          "kind": "alkaline_lake",
+          "surfaceElevationM": 1648,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 118,
+          "freezingPointC": -1.8
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-02",
+        "AUD02-DEF-04"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-66",
+      "nameTr": "Yozgat",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17140",
+      "centerElevationM": 1301,
+      "isaCenterPressureHpa": 866.4,
+      "basinFloorElevationM": 806,
+      "coldPoolTopElevationM": 1046,
+      "isaColdPoolTopPressureHpa": 893.7,
+      "deltaPressureTopHpa": 890,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-68",
+      "nameTr": "Aksaray",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 965,
+      "isaCenterPressureHpa": 902.6,
+      "basinFloorElevationM": 910,
+      "coldPoolTopElevationM": 1200,
+      "isaColdPoolTopPressureHpa": 877.2,
+      "deltaPressureTopHpa": 36,
+      "deltaPressureTopUnitInterpretation": "DELTA_THICKNESS_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        750
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -29,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-03",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-69",
+      "nameTr": "Bayburt",
+      "region": "BLACK_SEA_EAST",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 1582,
+      "isaCenterPressureHpa": 837.1,
+      "basinFloorElevationM": 1550,
+      "coldPoolTopElevationM": 1890,
+      "isaColdPoolTopPressureHpa": 805.9,
+      "deltaPressureTopHpa": 700,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -36,
+        "maxPlausibleTempC": 39,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1062,
+        "kalmanTempBiasCapC": 4.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-71",
+      "nameTr": "Kırıkkale",
+      "region": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 751,
+      "isaCenterPressureHpa": 926.2,
+      "basinFloorElevationM": 680,
+      "coldPoolTopElevationM": 950,
+      "isaColdPoolTopPressureHpa": 904.2,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        800,
+        800
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.2
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-72",
+      "nameTr": "Batman",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_A_WMO",
+      "wmoStationId": "17282",
+      "centerElevationM": 563,
+      "isaCenterPressureHpa": 947.4,
+      "basinFloorElevationM": 495,
+      "coldPoolTopElevationM": 855,
+      "isaColdPoolTopPressureHpa": 914.7,
+      "deltaPressureTopHpa": 918,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700
+      ],
+      "icaoWhitelist": [
+        "LTCJ"
+      ],
+      "airportIsolationStatus": {
+        "LTCJ": {
+          "inStationOverrides": true,
+          "demElevationM": 555,
+          "deltaElevVsCenterM": -8,
+          "subBasinId": "batman_tigris_ilisu_basin",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.92,
+          "excludeFromCenterHeadline": false,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 50,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.6
+      },
+      "waterBodies": [
+        {
+          "id": "ilisu_tigris_reservoir",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 525,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 28,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-00",
+        "AUD02-DEF-06"
+      ],
+      "verdict": "FAIL_REQUIRES_REMEDIATION"
+    },
+    {
+      "provinceCode": "TR-73",
+      "nameTr": "Şırnak",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 1350,
+      "isaCenterPressureHpa": 861.2,
+      "basinFloorElevationM": 1450,
+      "coldPoolTopElevationM": 1870,
+      "isaColdPoolTopPressureHpa": 807.9,
+      "deltaPressureTopHpa": 750,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        750
+      ],
+      "icaoWhitelist": [
+        "LTCV"
+      ],
+      "airportIsolationStatus": {
+        "LTCV": {
+          "inStationOverrides": true,
+          "demElevationM": 621,
+          "deltaElevVsCenterM": -729,
+          "subBasinId": "cizre_silopi_tigris_plain",
+          "couplingToCenter": 0.11,
+          "coldPoolSusceptibility": 0.46,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": false
+        }
+      },
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 51,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 8
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-05",
+        "AUD02-DEF-07",
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-75",
+      "nameTr": "Ardahan",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 1829,
+      "isaCenterPressureHpa": 812.0,
+      "basinFloorElevationM": 1814,
+      "coldPoolTopElevationM": 2224,
+      "isaColdPoolTopPressureHpa": 773.1,
+      "deltaPressureTopHpa": 700,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        700
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -44,
+        "maxPlausibleTempC": 37,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1068,
+        "kalmanTempBiasCapC": 4.5
+      },
+      "waterBodies": [
+        {
+          "id": "CILDIR_FROZEN_HIGH_LAKE",
+          "kind": "fresh_lake",
+          "surfaceElevationM": 1959,
+          "convectiveInstabilityUpperHpa": 700,
+          "useOpenMeteoMarineApi": false,
+          "effectiveFetchKm": 18,
+          "freezingPointC": 0
+        }
+      ],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-04"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-76",
+      "nameTr": "Iğdır",
+      "region": "EASTERN_ANATOLIA",
+      "climateRegion": "DOGU_ANADOLU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 856,
+      "isaCenterPressureHpa": 914.6,
+      "basinFloorElevationM": 856,
+      "coldPoolTopElevationM": 1436,
+      "isaColdPoolTopPressureHpa": 852.2,
+      "deltaPressureTopHpa": 850,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        700,
+        750
+      ],
+      "icaoWhitelist": [
+        "LTCT"
+      ],
+      "airportIsolationStatus": {
+        "LTCT": {
+          "inStationOverrides": true,
+          "demElevationM": 945,
+          "deltaElevVsCenterM": 89,
+          "subBasinId": "TR76_IGDIR_SURMELI_MICRO_DEPRESSION",
+          "couplingToCenter": 1.0,
+          "coldPoolSusceptibility": 0.84,
+          "excludeFromCenterHeadline": true,
+          "inColdBasinAirportIcaos": true
+        }
+      },
+      "urbanHeatIslandConfigured": true,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -32,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1058,
+        "kalmanTempBiasCapC": 7.5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-07"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    },
+    {
+      "provinceCode": "TR-79",
+      "nameTr": "Kilis",
+      "region": "SOUTHEASTERN_ANATOLIA",
+      "climateRegion": "GUNEYDOGU",
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "wmoStationId": null,
+      "centerElevationM": 640,
+      "isaCenterPressureHpa": 938.7,
+      "basinFloorElevationM": 508,
+      "coldPoolTopElevationM": 698,
+      "isaColdPoolTopPressureHpa": 932.2,
+      "deltaPressureTopHpa": 935,
+      "deltaPressureTopUnitInterpretation": "ABSOLUTE_ISOBARIC_TOP_HPA",
+      "barrierCrestPressuresHpa": [
+        850
+      ],
+      "icaoWhitelist": [],
+      "airportIsolationStatus": {},
+      "urbanHeatIslandConfigured": false,
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -18,
+        "maxPlausibleTempC": 46,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 5
+      },
+      "waterBodies": [],
+      "hasOpenOrInlandSea": false,
+      "findingIds": [
+        "AUD02-DEF-08"
+      ],
+      "verdict": "PASS_WITH_ADVISORIES"
+    }
+  ]
+}

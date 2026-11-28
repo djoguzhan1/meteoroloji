@@ -11,8 +11,10 @@ import {
   LayoutList,
   LocateFixed,
   MapPin,
+  Mountain,
   Radar,
   Search,
+  Snowflake,
   Thermometer,
   Volume2,
   VolumeX,
@@ -20,14 +22,44 @@ import {
 } from "lucide-react";
 import { useWeatherData } from "@/context/WeatherContext";
 import { buildLocationHref } from "@/lib/location-url";
-import { formatElevation, GLOBE_CITIES } from "@/lib/weather-client";
+import { DEFAULT_LOCATION, formatElevation, GLOBE_CITIES } from "@/lib/weather-client";
 import { atmosUiSfx } from "@/lib/ui-sfx";
 import type { GeoLocation } from "@/lib/weather-types";
 
+type SubLocationRole = "coast" | "plain" | "foothill" | "summit";
+
+type PlateQueryInfo = {
+  plateNumber: number;
+  paddedPlate: string;
+  provinceCode: string;
+};
+
+type TerrainBadgeMeta = {
+  kind: "ski" | "summit" | "high";
+  label: string;
+};
+
 type PaletteItem =
   | { kind: "route"; id: string; label: string; sub: string; href: string }
-  | { kind: "city"; id: string; label: string; sub: string; loc: GeoLocation }
+  | {
+      kind: "city";
+      id: string;
+      label: string;
+      sub: string;
+      loc: GeoLocation;
+      trBadge?: string | null;
+      roleLabel?: string;
+      terrainBadge?: TerrainBadgeMeta | null;
+      categoryLabel?: string;
+    }
   | { kind: "action"; id: string; label: string; sub: string; action: "unit" | "audio" | "gps" };
+
+const SUBLOCATION_ROLE_LABEL_TR: Record<SubLocationRole, string> = {
+  coast: "Kıyı",
+  plain: "Ova",
+  foothill: "Yamaç",
+  summit: "Zirve"
+};
 
 const ROUTE_ITEMS: PaletteItem[] = [
   { kind: "route", id: "r-home", label: "Hava Durumu", sub: "Canlı atmosfer, saatlik akış & istasyon doğrulaması", href: "/" },
@@ -37,8 +69,230 @@ const ROUTE_ITEMS: PaletteItem[] = [
   { kind: "route", id: "r-play", label: "CUMULUS · Bulut Savaşı", sub: "3D Süper Hücre & taktik fırtına oyunu", href: "/play" }
 ];
 
+/**
+ * Lightweight 7-climate-region showcase (zero `catalog-1102` or `specs/*` client bundle import).
+ */
+const TURKEY_SEVEN_REGION_PALETTE_CITIES: readonly GeoLocation[] = [
+  {
+    ...DEFAULT_LOCATION,
+    provinceCode: "TR-16",
+    admin1: "Marmara · Osmangazi Merkez (WMO 17116)"
+  },
+  {
+    id: "istanbul-tr",
+    name: "İstanbul",
+    admin1: "Marmara · Boğaz & Karadeniz",
+    provinceCode: "TR-34",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 41.0082,
+    lon: 28.9784,
+    elevation: 40,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "ankara-tr",
+    name: "Ankara",
+    admin1: "İç Anadolu · Bozkır Çanağı",
+    provinceCode: "TR-06",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 39.9334,
+    lon: 32.8597,
+    elevation: 890,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "izmir-tr",
+    name: "İzmir",
+    admin1: "Ege · Körfez & İmbat",
+    provinceCode: "TR-35",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 38.4237,
+    lon: 27.1428,
+    elevation: 25,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "tr-07-antalya-merkez",
+    name: "Antalya",
+    admin1: "Akdeniz · Körfez & Beydağları",
+    provinceCode: "TR-07",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 36.8969,
+    lon: 30.7133,
+    elevation: 47,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "trabzon-tr",
+    name: "Trabzon",
+    admin1: "Karadeniz · Denizel Yamaç",
+    provinceCode: "TR-61",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 41.0027,
+    lon: 39.7168,
+    elevation: 39,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "tr-25-erzurum-merkez",
+    name: "Erzurum",
+    admin1: "Doğu Anadolu · Yüksek Havza",
+    provinceCode: "TR-25",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 39.9055,
+    lon: 41.2658,
+    elevation: 1890,
+    timezone: "Europe/Istanbul"
+  },
+  {
+    id: "tr-27-gaziantep-merkez",
+    name: "Gaziantep",
+    admin1: "Güneydoğu · Geçiş Platosu",
+    provinceCode: "TR-27",
+    country: "Türkiye",
+    countryCode: "TR",
+    lat: 37.0662,
+    lon: 37.3833,
+    elevation: 855,
+    timezone: "Europe/Istanbul"
+  }
+];
+
+const GLOBAL_PALETTE_CITIES: readonly GeoLocation[] = GLOBE_CITIES.filter(
+  (c) => c.countryCode !== "TR"
+)
+  .slice(0, 4)
+  .map((c) => ({
+    ...c,
+    provinceCode: "GLOBAL"
+  }));
+
 const FOCUSABLE_SELECTOR =
   'input:not([disabled]), button:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+const SKI_KEYWORD_RE = /\bkayak\b/iu;
+const SUMMIT_KEYWORD_RE = /\b(zirve|yayla|yaylası|yaylasi|oteller)\b|dağı|dagi/iu;
+
+function parseTrPlateQuery(raw: string): PlateQueryInfo | null {
+  const trimmed = raw.trim();
+  const directDigits = /^(\d{1,2})$/.exec(trimmed);
+  const prefixedDigits = /^tr[-\s]?(\d{1,2})$/i.exec(trimmed);
+  const digits = directDigits?.[1] ?? prefixedDigits?.[1];
+  if (!digits) return null;
+
+  const num = Number(digits);
+  if (!Number.isInteger(num) || num < 1 || num > 81) return null;
+
+  const paddedPlate = String(num).padStart(2, "0");
+  return {
+    plateNumber: num,
+    paddedPlate,
+    provinceCode: `TR-${paddedPlate}`
+  };
+}
+
+function resolveTrProvinceBadge(loc: GeoLocation): string | null {
+  if (loc.provinceCode && /^TR-\d{2}$/.test(loc.provinceCode)) {
+    return loc.provinceCode;
+  }
+  if (loc.id === "bursa-tr" || loc.id?.startsWith("bursa-")) {
+    return "TR-16";
+  }
+  const idMatch = /^tr-(\d{2})-/i.exec(loc.id ?? "");
+  if (idMatch) {
+    return `TR-${idMatch[1]}`;
+  }
+  return null;
+}
+
+function resolveTerrainBadge(loc: GeoLocation): TerrainBadgeMeta | null {
+  const haystack = `${loc.name} ${loc.admin1 ?? ""} ${loc.district ?? ""}`;
+  if (SKI_KEYWORD_RE.test(haystack)) {
+    return { kind: "ski", label: "Kayak" };
+  }
+  if (SUMMIT_KEYWORD_RE.test(haystack)) {
+    return { kind: "summit", label: "Zirve" };
+  }
+  if (
+    typeof loc.elevation === "number" &&
+    Number.isFinite(loc.elevation) &&
+    loc.elevation >= 1400
+  ) {
+    return { kind: "high", label: "Yüksek İrtifa" };
+  }
+  return null;
+}
+
+function normalizeSelectedGeoLocation(loc: GeoLocation): GeoLocation {
+  const trBadge = resolveTrProvinceBadge(loc);
+  const isTr =
+    Boolean(trBadge) || loc.countryCode === "TR" || loc.country === "Türkiye";
+  const resolvedProvinceCode =
+    trBadge ?? loc.provinceCode ?? (isTr ? undefined : "GLOBAL");
+
+  return {
+    id: loc.id,
+    name: loc.name,
+    ...(loc.admin1 !== undefined ? { admin1: loc.admin1 } : {}),
+    ...(loc.district !== undefined ? { district: loc.district } : {}),
+    ...(resolvedProvinceCode !== undefined
+      ? { provinceCode: resolvedProvinceCode }
+      : {}),
+    country: loc.country || (isTr ? "Türkiye" : ""),
+    ...(loc.countryCode || isTr
+      ? { countryCode: loc.countryCode ?? "TR" }
+      : {}),
+    lat: loc.lat,
+    lon: loc.lon,
+    ...(typeof loc.elevation === "number" && Number.isFinite(loc.elevation)
+      ? { elevation: loc.elevation }
+      : {}),
+    ...(loc.timezone || isTr
+      ? { timezone: loc.timezone ?? "Europe/Istanbul" }
+      : {})
+  };
+}
+
+function prioritizePlateMatches(
+  list: GeoLocation[],
+  plateInfo: PlateQueryInfo | null
+): GeoLocation[] {
+  if (!plateInfo) return list;
+
+  const exactCenters: GeoLocation[] = [];
+  const sameProvinceDistricts: GeoLocation[] = [];
+  const others: GeoLocation[] = [];
+
+  for (const rawLoc of list) {
+    const badge = resolveTrProvinceBadge(rawLoc);
+    if (badge === plateInfo.provinceCode) {
+      const stamped: GeoLocation = {
+        ...rawLoc,
+        provinceCode: plateInfo.provinceCode
+      };
+      const isProvinceCenter =
+        !stamped.district &&
+        (stamped.id === "bursa-tr" ||
+          stamped.id.endsWith("-merkez") ||
+          Boolean(stamped.admin1?.includes("Merkez")));
+      if (isProvinceCenter) {
+        exactCenters.push(stamped);
+      } else {
+        sameProvinceDistricts.push(stamped);
+      }
+    } else {
+      others.push(rawLoc);
+    }
+  }
+
+  return [...exactCenters, ...sameProvinceDistricts, ...others];
+}
 
 function RouteIcon({ href }: { href: string }) {
   if (href === "/world") return <Radar className="h-4 w-4 text-[var(--atmos-accent)]" />;
@@ -57,6 +311,7 @@ export default function CommandPalette({
 }) {
   const router = useRouter();
   const {
+    bundle,
     activeLocation,
     setActiveLocation,
     unit,
@@ -161,25 +416,32 @@ export default function CommandPalette({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, handleClosePalette]);
 
-  // Canlı şehir araması
+  const trimmedQuery = query.trim();
+  const plateQuery = useMemo(() => parseTrPlateQuery(trimmedQuery), [trimmedQuery]);
+  const isLiveSearch = Boolean(plateQuery) || trimmedQuery.length >= 2;
+  const remoteApiQuery = plateQuery ? plateQuery.paddedPlate : trimmedQuery;
+
+  // Canlı şehir / ilçe / zirve / plaka araması
   useEffect(() => {
     if (!open) return;
-    const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    if (!isLiveSearch) {
       queueMicrotask(() => setSearching(false));
       return;
     }
 
     const controller = new AbortController();
+    const delayMs = plateQuery ? 110 : 180;
     const timer = window.setTimeout(async () => {
       setSearching(true);
       try {
-        const res = await fetch(`/api/geocode?q=${encodeURIComponent(trimmed)}`, {
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(remoteApiQuery)}`, {
           signal: controller.signal
         });
         if (!res.ok) return;
         const data = await res.json();
-        setRemoteCities(Array.isArray(data.results) ? data.results.slice(0, 6) : []);
+        const rawList: GeoLocation[] = Array.isArray(data.results) ? data.results : [];
+        const ordered = prioritizePlateMatches(rawList, plateQuery).slice(0, 8);
+        setRemoteCities(ordered);
         setActiveIdx(0);
       } catch {
         // aborted
@@ -188,16 +450,18 @@ export default function CommandPalette({
           setSearching(false);
         }
       }
-    }, 180);
+    }, delayMs);
 
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [open, query]);
+  }, [open, isLiveSearch, remoteApiQuery, plateQuery]);
+
+  const provinceSummary = bundle?.provinceSummary ?? null;
 
   const items = useMemo<PaletteItem[]>(() => {
-    const q = query.trim().toLowerCase();
+    const q = trimmedQuery.toLowerCase();
     const actions: PaletteItem[] = [
       {
         kind: "action",
@@ -222,20 +486,83 @@ export default function CommandPalette({
       }
     ];
 
-    if (q.length < 2) {
-      const quickCities: PaletteItem[] = GLOBE_CITIES.slice(0, 6).map((loc) => ({
+    const toCityPaletteItem = (
+      loc: GeoLocation,
+      idPrefix: string,
+      opts?: { roleLabel?: string; categoryLabel?: string }
+    ): PaletteItem => {
+      const trBadge = resolveTrProvinceBadge(loc);
+      const terrainBadge = resolveTerrainBadge(loc);
+      return {
         kind: "city",
-        id: `c-${loc.id}`,
+        id: `${idPrefix}-${loc.id}`,
         label: loc.name,
-        sub: [
-          loc.elevation !== undefined ? formatElevation(loc.elevation, unit) : null,
-          loc.country || "İstasyon"
-        ]
-          .filter(Boolean)
-          .join(" · "),
-        loc
-      }));
-      return [...ROUTE_ITEMS, ...quickCities, ...actions];
+        sub:
+          [
+            loc.district && loc.district !== loc.name ? loc.district : null,
+            loc.admin1 && loc.admin1 !== loc.name ? loc.admin1 : null,
+            loc.elevation !== undefined && Number.isFinite(loc.elevation)
+              ? formatElevation(loc.elevation, unit)
+              : null,
+            loc.country || "İstasyon"
+          ]
+            .filter(Boolean)
+            .join(" · ") || "Konum",
+        loc,
+        trBadge,
+        roleLabel: opts?.roleLabel,
+        terrainBadge,
+        categoryLabel:
+          opts?.categoryLabel ??
+          (terrainBadge?.kind === "ski"
+            ? "Kayak"
+            : terrainBadge?.kind === "summit"
+              ? "Zirve"
+              : "Şehir")
+      };
+    };
+
+    if (!isLiveSearch) {
+      const seenIds = new Set<string>();
+      const activeSubItems: PaletteItem[] = [];
+
+      if (provinceSummary?.curatedSubLocations?.length) {
+        for (const sub of provinceSummary.curatedSubLocations) {
+          const roleLabel = SUBLOCATION_ROLE_LABEL_TR[sub.role] ?? "Alt Nokta";
+          const isBursaRoot = sub.id === "bursa-tr";
+          const subLoc: GeoLocation = {
+            id: sub.id,
+            name: sub.name,
+            admin1: isBursaRoot
+              ? DEFAULT_LOCATION.admin1
+              : `${provinceSummary.provinceName} · Aktif İl Alt Noktası (${roleLabel})`,
+            ...(isBursaRoot ? {} : { district: sub.name }),
+            provinceCode: provinceSummary.provinceCode,
+            country: "Türkiye",
+            countryCode: "TR",
+            lat: sub.lat,
+            lon: sub.lon,
+            elevation: sub.elevationM,
+            timezone: "Europe/Istanbul"
+          };
+          seenIds.add(subLoc.id);
+          activeSubItems.push(
+            toCityPaletteItem(subLoc, "sub", {
+              roleLabel,
+              categoryLabel: "Alt Nokta"
+            })
+          );
+        }
+      }
+
+      const quickCities: PaletteItem[] = [];
+      for (const loc of [...TURKEY_SEVEN_REGION_PALETTE_CITIES, ...GLOBAL_PALETTE_CITIES]) {
+        if (seenIds.has(loc.id)) continue;
+        seenIds.add(loc.id);
+        quickCities.push(toCityPaletteItem(loc, "c"));
+      }
+
+      return [...ROUTE_ITEMS, ...activeSubItems, ...quickCities, ...actions];
     }
 
     const matchedRoutes = ROUTE_ITEMS.filter(
@@ -246,22 +573,19 @@ export default function CommandPalette({
       (a) =>
         a.label.toLowerCase().includes(q) || a.sub.toLowerCase().includes(q)
     );
-    const cityItems: PaletteItem[] = remoteCities.map((loc) => ({
-      kind: "city",
-      id: `rc-${loc.id}`,
-      label: loc.name,
-      sub:
-        [
-          loc.admin1,
-          loc.elevation !== undefined ? formatElevation(loc.elevation, unit) : null,
-          loc.country
-        ]
-          .filter(Boolean)
-          .join(" · ") || "Konum",
-      loc
-    }));
+    const cityItems: PaletteItem[] = remoteCities.map((loc) =>
+      toCityPaletteItem(loc, "rc")
+    );
     return [...cityItems, ...matchedRoutes, ...matchedActions];
-  }, [query, remoteCities, unit, audioEnabled, gpsLoading]);
+  }, [
+    trimmedQuery,
+    isLiveSearch,
+    provinceSummary,
+    remoteCities,
+    unit,
+    audioEnabled,
+    gpsLoading
+  ]);
 
   const clampedIdx = Math.max(0, Math.min(items.length - 1, activeIdx));
 
@@ -279,7 +603,7 @@ export default function CommandPalette({
     }
     if (item.kind === "city") {
       atmosUiSfx.playChime(true);
-      setActiveLocation(item.loc);
+      setActiveLocation(normalizeSelectedGeoLocation(item.loc));
       handleClosePalette();
       return;
     }
@@ -342,12 +666,17 @@ export default function CommandPalette({
                 void executeItem(items[clampedIdx]);
               }
             }}
-            placeholder="Şehir ara, sekme değiştir veya komut çalıştır..."
+            placeholder="Plaka (01-81), şehir, ilçe, zirve veya komut ara..."
             aria-label="Komut ve istasyon ara"
             className="w-full bg-transparent text-sm text-ink-primary placeholder:text-ink-muted focus:outline-none"
           />
+          {plateQuery && (
+            <span className="shrink-0 rounded border border-sky-400/35 bg-sky-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-sky-300">
+              {plateQuery.provinceCode}
+            </span>
+          )}
           {searching && (
-            <span className="font-mono text-[11px] text-[var(--atmos-accent)]">
+            <span className="shrink-0 font-mono text-[11px] text-[var(--atmos-accent)]">
               Aranıyor...
             </span>
           )}
@@ -355,7 +684,7 @@ export default function CommandPalette({
             type="button"
             onClick={handleClosePalette}
             aria-label="Komut merkezini kapat"
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-muted hover:text-ink-primary"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-ink-muted hover:text-ink-primary"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -374,12 +703,19 @@ export default function CommandPalette({
         <div className="max-h-[54vh] overflow-y-auto p-2">
           {items.length === 0 ? (
             <p className="px-3 py-8 text-center text-xs text-ink-muted">
-              &ldquo;{query}&rdquo; için eşleşme bulunamadı.
+              {searching
+                ? `"${query}" aranıyor...`
+                : `“${query}” için eşleşme bulunamadı.`}
             </p>
           ) : (
             <ul className="space-y-0.5">
               {items.map((item, idx) => {
                 const active = idx === clampedIdx;
+                const isExactPlateHit =
+                  item.kind === "city" &&
+                  Boolean(plateQuery) &&
+                  item.trBadge === plateQuery?.provinceCode;
+
                 return (
                   <li key={item.id}>
                     <button
@@ -407,7 +743,13 @@ export default function CommandPalette({
                           {item.kind === "route" ? (
                             <RouteIcon href={item.href} />
                           ) : item.kind === "city" ? (
-                            <MapPin className="h-4 w-4 text-[var(--atmos-accent)]" />
+                            item.terrainBadge?.kind === "ski" ? (
+                              <Snowflake className="h-4 w-4 text-cyan-300" />
+                            ) : item.terrainBadge ? (
+                              <Mountain className="h-4 w-4 text-sky-300" />
+                            ) : (
+                              <MapPin className="h-4 w-4 text-[var(--atmos-accent)]" />
+                            )
                           ) : item.action === "gps" ? (
                             <LocateFixed
                               className={`h-4 w-4 text-signal-emerald ${
@@ -423,8 +765,35 @@ export default function CommandPalette({
                           )}
                         </span>
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium text-ink-primary">
-                            {item.label}
+                          <span className="flex items-center gap-1.5 truncate text-sm font-medium text-ink-primary">
+                            {item.kind === "city" && item.trBadge && (
+                              <span
+                                className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none ${
+                                  isExactPlateHit
+                                    ? "border-sky-300/60 bg-sky-400/20 text-sky-200"
+                                    : "border-white/14 bg-white/[0.05] text-sky-300/90"
+                                }`}
+                              >
+                                {item.trBadge}
+                              </span>
+                            )}
+                            <span className="truncate">{item.label}</span>
+                            {item.kind === "city" && item.roleLabel && (
+                              <span className="shrink-0 rounded border border-emerald-400/25 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase leading-none text-emerald-300">
+                                {item.roleLabel}
+                              </span>
+                            )}
+                            {item.kind === "city" && item.terrainBadge && (
+                              <span
+                                className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase leading-none ${
+                                  item.terrainBadge.kind === "ski"
+                                    ? "border-cyan-400/35 bg-cyan-500/15 text-cyan-200"
+                                    : "border-sky-400/30 bg-sky-500/12 text-sky-200"
+                                }`}
+                              >
+                                {item.terrainBadge.label}
+                              </span>
+                            )}
                           </span>
                           <span className="block truncate text-[11px] text-ink-muted">
                             {item.sub}
@@ -437,7 +806,7 @@ export default function CommandPalette({
                           {item.kind === "route"
                             ? "Sayfa"
                             : item.kind === "city"
-                              ? "Şehir"
+                              ? item.categoryLabel ?? "Şehir"
                               : "Komut"}
                         </span>
                         {active && (

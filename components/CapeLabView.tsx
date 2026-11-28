@@ -2,8 +2,20 @@
 
 import { useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { ChevronDown, ChevronUp, Clock, Layers, RefreshCw } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Compass,
+  Droplets,
+  Layers,
+  Mountain,
+  RefreshCw,
+  ShieldCheck
+} from "lucide-react";
 import { useWeatherData, useWeatherStatus } from "@/context/WeatherContext";
+import { areLocationsEquivalent } from "@/lib/forecast-resilience";
+import type { CalibrationTier } from "@/lib/provinces/types";
 import {
   analyzeConvectiveProfile,
   classifyCapeRisk,
@@ -17,6 +29,10 @@ import {
   formatTemperature,
   windDirectionToCompass
 } from "@/lib/weather-client";
+import type {
+  AtmosCalibrationTierLabel,
+  GeoLocation
+} from "@/lib/weather-types";
 import AnimatedNumber from "./AnimatedNumber";
 
 const ModelComparisonChart = dynamic(() => import("./ModelComparisonChart"), {
@@ -62,16 +78,147 @@ const PARCEL_MODES: ReadonlyArray<{
   }
 ];
 
+const VALID_PROVINCE_CODE_RE = /^(?:TR-(?:0[1-9]|[1-7][0-9]|8[01])|GLOBAL)$/i;
+
+function normalizeProvinceCode(raw?: string | null): string | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const trimmed = raw.trim().toUpperCase();
+  return VALID_PROVINCE_CODE_RE.test(trimmed) ? trimmed : undefined;
+}
+
+function hasProvinceConflict(
+  a?: string | null,
+  b?: string | null
+): boolean {
+  const pa = normalizeProvinceCode(a);
+  const pb = normalizeProvinceCode(b);
+  if (!pa || !pb) return false;
+  return pa !== pb;
+}
+
+function resolveLabTierBadge(params: {
+  provinceCode?: string | null;
+  summaryTier?: CalibrationTier | null;
+  engineTier?: AtmosCalibrationTierLabel | null;
+}): {
+  code: CalibrationTier | "GLOBAL";
+  detail: string;
+  className: string;
+} | null {
+  const pc = normalizeProvinceCode(params.provinceCode);
+  const { summaryTier, engineTier } = params;
+
+  if (
+    pc === "TR-16" &&
+    (summaryTier === "TIER_0_BURSA" ||
+      engineTier === "BURSA_FROZEN_V5" ||
+      (!summaryTier && !engineTier))
+  ) {
+    return {
+      code: "TIER_0_BURSA",
+      detail: "Dondurulmuş Referans v5",
+      className: "border-emerald-400/35 bg-emerald-500/12 text-emerald-200"
+    };
+  }
+
+  if (
+    summaryTier === "TIER_A_WMO" ||
+    engineTier === "TIER_A_EMPIRICAL_WMO"
+  ) {
+    return {
+      code: "TIER_A_WMO",
+      detail: "Ampirik WMO + Kalman",
+      className: "border-signal-sky/35 bg-signal-sky/12 text-sky-200"
+    };
+  }
+
+  if (
+    summaryTier === "TIER_B_DONOR_KALMAN" ||
+    engineTier === "TIER_B_DONOR_ALARO"
+  ) {
+    return {
+      code: "TIER_B_DONOR_KALMAN",
+      detail: "Donör EMOS + Kalman",
+      className: "border-indigo-400/35 bg-indigo-500/12 text-indigo-200"
+    };
+  }
+
+  if (pc === "GLOBAL" || engineTier === "GLOBAL") {
+    return {
+      code: "GLOBAL",
+      detail: "Küresel Hibrit NWP",
+      className: "border-white/15 bg-white/[0.06] text-ink-secondary"
+    };
+  }
+
+  return null;
+}
+
 export default function CapeLabView() {
-  const { bundle, activeLocation, unit } = useWeatherData();
+  const { bundle: rawBundle, activeLocation, unit } = useWeatherData();
   const { error, isStale, isOffline, loading, refreshWeather } = useWeatherStatus();
 
+  // Katı şehir ve il kodu kalkanı: eski şehrin radyosonda paketi asla yeni şehir başlığı altında gösterilmez
+  const bundle = useMemo(() => {
+    if (!rawBundle) return null;
+    const bundlePc =
+      rawBundle.location.provinceCode ??
+      rawBundle.provinceSummary?.provinceCode ??
+      rawBundle.hybrid?.engineMeta?.provinceCode;
+    if (hasProvinceConflict(bundlePc, activeLocation.provinceCode)) {
+      return null;
+    }
+    if (!areLocationsEquivalent(rawBundle.location, activeLocation)) {
+      return null;
+    }
+    return rawBundle;
+  }, [rawBundle, activeLocation]);
+
+  const resolvedProvinceCode = useMemo(
+    () =>
+      normalizeProvinceCode(
+        activeLocation.provinceCode ??
+          bundle?.location.provinceCode ??
+          bundle?.provinceSummary?.provinceCode ??
+          bundle?.hybrid?.engineMeta?.provinceCode
+      ),
+    [
+      activeLocation.provinceCode,
+      bundle?.location.provinceCode,
+      bundle?.provinceSummary?.provinceCode,
+      bundle?.hybrid?.engineMeta?.provinceCode
+    ]
+  );
+
+  const resolvedProvinceName =
+    bundle?.provinceSummary?.provinceName ??
+    bundle?.hybrid?.engineMeta?.provinceName ??
+    undefined;
+
+  const targetElevationM =
+    bundle?.location.elevation ??
+    activeLocation.elevation ??
+    bundle?.provinceSummary?.canonicalCenter.elevationM;
+
+  const enrichedLocation = useMemo<GeoLocation>(
+    () => ({
+      ...activeLocation,
+      ...(resolvedProvinceCode ? { provinceCode: resolvedProvinceCode } : {}),
+      ...(targetElevationM !== undefined && Number.isFinite(targetElevationM)
+        ? { elevation: Math.round(targetElevationM) }
+        : {})
+    }),
+    [activeLocation, resolvedProvinceCode, targetElevationM]
+  );
+
+  const locIsolationKey = `${activeLocation.id}::${resolvedProvinceCode ?? ""}`;
+
   const [labTimeState, setLabTimeState] = useState<{
-    locId: string;
+    locKey: string;
     iso: string | null;
     source: "sounding" | "chart";
   }>({
-    locId: activeLocation.id,
+    locKey: locIsolationKey,
     iso: null,
     source: "sounding"
   });
@@ -79,9 +226,9 @@ export default function CapeLabView() {
   const [showRawTable, setShowRawTable] = useState(false);
 
   const activeLabTimeIso =
-    labTimeState.locId === activeLocation.id ? labTimeState.iso : null;
+    labTimeState.locKey === locIsolationKey ? labTimeState.iso : null;
   const activeTimeSource =
-    labTimeState.locId === activeLocation.id ? labTimeState.source : "sounding";
+    labTimeState.locKey === locIsolationKey ? labTimeState.source : "sounding";
 
   // Gerçek saatlik radyosonda kapsamı (canlıda 168s, localStorage çevrimdışı yedeğinde 24s olabilir)
   const availableSoundingHours = useMemo(() => {
@@ -122,24 +269,24 @@ export default function CapeLabView() {
       const clamped = Math.max(0, Math.min(maxSoundingIdx, idx));
       const targetIso = bundle.hourly[clamped]?.time ?? null;
       setLabTimeState({
-        locId: activeLocation.id,
+        locKey: locIsolationKey,
         iso: targetIso,
         source: "sounding"
       });
     },
-    [bundle, maxSoundingIdx, activeLocation.id]
+    [bundle, maxSoundingIdx, locIsolationKey]
   );
 
   const handleChartTimeSync = useCallback(
     (iso: string | null) => {
       if (!iso) return;
       setLabTimeState({
-        locId: activeLocation.id,
+        locKey: locIsolationKey,
         iso,
         source: "chart"
       });
     },
-    [activeLocation.id]
+    [locIsolationKey]
   );
 
   const selectedLevels = useMemo(() => {
@@ -179,12 +326,12 @@ export default function CapeLabView() {
       surfaceTempC: surfaceConditions.tempC,
       surfaceHumidity: surfaceConditions.humidity,
       surfacePressureHpa: surfaceConditions.pressureHpa,
-      elevationM: bundle.location.elevation ?? activeLocation.elevation,
+      elevationM: targetElevationM,
       surfaceWindSpeedKmh: surfaceConditions.windSpeedKmh,
       surfaceWindDirection: surfaceConditions.windDirection,
       levels: selectedLevels
     });
-  }, [bundle, activeLocation.elevation, surfaceConditions, selectedLevels]);
+  }, [bundle, targetElevationM, surfaceConditions, selectedLevels]);
 
   const quickJumps = useMemo(() => {
     const base = [0, 6, 12, 24, 48, 72, 120, 167].filter(
@@ -217,25 +364,148 @@ export default function CapeLabView() {
   const showOfflinePartialSoundingBadge =
     availableSoundingHours > 0 && availableSoundingHours < 72;
 
+  const tierBadge = useMemo(
+    () =>
+      resolveLabTierBadge({
+        provinceCode: resolvedProvinceCode,
+        summaryTier: bundle?.provinceSummary?.calibrationTier ?? null,
+        engineTier: bundle?.hybrid?.engineMeta?.calibrationTier ?? null
+      }),
+    [
+      resolvedProvinceCode,
+      bundle?.provinceSummary?.calibrationTier,
+      bundle?.hybrid?.engineMeta?.calibrationTier
+    ]
+  );
+
+  const activeMicroclimateTags = useMemo(
+    () => bundle?.hybrid?.engineMeta?.activeMicroclimateTags ?? [],
+    [bundle?.hybrid?.engineMeta?.activeMicroclimateTags]
+  );
+
+  const waterTelemetry = useMemo(() => {
+    const eng = bundle?.hybrid?.engineMeta;
+    if (
+      eng?.waterBodyLabelTr &&
+      eng.seaOrLakeTempC !== null &&
+      eng.seaOrLakeTempC !== undefined &&
+      Number.isFinite(eng.seaOrLakeTempC)
+    ) {
+      return {
+        label: eng.waterBodyLabelTr,
+        tempC: eng.seaOrLakeTempC
+      };
+    }
+    const wb = bundle?.provinceSummary?.activeWaterBodies?.find(
+      (item) => item.liveTempC !== null && item.liveTempC !== undefined && Number.isFinite(item.liveTempC)
+    );
+    if (wb && wb.liveTempC !== null && wb.liveTempC !== undefined) {
+      return {
+        label: wb.labelTr,
+        tempC: wb.liveTempC
+      };
+    }
+    if (
+      resolvedProvinceCode === "TR-16" &&
+      eng?.marmaraSstC !== null &&
+      eng?.marmaraSstC !== undefined &&
+      Number.isFinite(eng.marmaraSstC)
+    ) {
+      return {
+        label: "Marmara Denizi",
+        tempC: eng.marmaraSstC
+      };
+    }
+    return null;
+  }, [bundle?.hybrid?.engineMeta, bundle?.provinceSummary?.activeWaterBodies, resolvedProvinceCode]);
+
+  const filteredSubterraneanIsobars = useMemo(() => {
+    if (!analysis) return [];
+    return [1000, 925, 850].filter((p) => p >= analysis.surfacePressureHpa);
+  }, [analysis]);
+
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
-      {/* Üst Başlık */}
-      <div>
-        <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-tight text-ink-primary">
-          Modeller &amp; Sondaj
-        </h1>
-        <p className="mt-1 text-xs sm:text-sm text-ink-secondary">
-          {activeLocation.name} · 8 küresel ve mezoskaleli model karşılaştırması ile{" "}
+      {/* Üst Başlık & Seçili İl Kalibrasyon / Mikroiklim Kimliği */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-tight text-ink-primary">
+            Modeller &amp; Sondaj
+          </h1>
+          {resolvedProvinceCode && resolvedProvinceCode !== "GLOBAL" && (
+            <span className="inline-flex items-center rounded-lg border border-white/15 bg-white/[0.05] px-2.5 py-0.5 font-mono text-xs font-medium text-ink-primary tabular">
+              {resolvedProvinceCode}
+              {resolvedProvinceName ? ` · ${resolvedProvinceName}` : ""}
+            </span>
+          )}
+          {tierBadge && (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-0.5 font-mono text-xs font-medium ${tierBadge.className}`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              <span>
+                {tierBadge.code} · {tierBadge.detail}
+              </span>
+            </span>
+          )}
+          {targetElevationM !== undefined && Number.isFinite(targetElevationM) && (
+            <span className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-obsidian-950/75 px-2.5 py-0.5 font-mono text-xs text-ink-secondary tabular">
+              <Mountain className="h-3.5 w-3.5 text-signal-sky" />
+              <span>Hedef Rakım: {formatElevation(targetElevationM, unit)}</span>
+            </span>
+          )}
+          {waterTelemetry && (
+            <span className="inline-flex items-center gap-1 rounded-lg border border-signal-sky/30 bg-signal-sky/10 px-2.5 py-0.5 font-mono text-xs text-sky-200 tabular">
+              <Droplets className="h-3.5 w-3.5 text-signal-sky" />
+              <span>
+                {waterTelemetry.label}:{" "}
+                {formatTemperature(waterTelemetry.tempC, unit, {
+                  decimals: 1,
+                  showUnit: true
+                })}
+              </span>
+            </span>
+          )}
+        </div>
+
+        <p className="text-xs sm:text-sm text-ink-secondary">
+          {activeLocation.name}
+          {targetElevationM !== undefined && Number.isFinite(targetElevationM)
+            ? ` (${formatElevation(targetElevationM, unit)})`
+            : ""}{" "}
+          · 8 küresel ve mezoskaleli model karşılaştırması ile{" "}
           {availableSoundingHours > 0 ? availableSoundingHours : 168} saatlik gerçek basınçlı Skew-T radyosonda
         </p>
+
+        {(bundle?.hybrid?.engineMeta?.activeRegimeLabel ||
+          activeMicroclimateTags.length > 0) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {bundle?.hybrid?.engineMeta?.activeRegimeLabel && (
+              <span className="inline-flex items-center gap-1 rounded-md border border-signal-sky/30 bg-signal-sky/10 px-2 py-0.5 font-mono text-[11px] text-sky-200">
+                <Compass className="h-3 w-3 text-signal-sky" />
+                <span>Rejim: {bundle.hybrid.engineMeta.activeRegimeLabel}</span>
+              </span>
+            )}
+            {activeMicroclimateTags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[11px] text-ink-secondary"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 1. Bölüm: Gerçek 8-Model Çoklu Ufuk Karşılaştırması (Çift Yönlü Zaman Senkronlu) */}
+      {/* 1. Bölüm: Gerçek 8-Model Çoklu Ufuk Karşılaştırması (Çift Yönlü Zaman Senkronlu & İl Kilitli) */}
       <ModelComparisonChart
-        location={activeLocation}
+        location={enrichedLocation}
         unit={unit}
         syncedTimeIso={syncedChartIso}
         onInspectTimeChange={handleChartTimeSync}
+        provinceSummary={bundle?.provinceSummary ?? null}
+        engineMeta={bundle?.hybrid?.engineMeta ?? null}
       />
 
       {/* 2. Bölüm: Gerçek Basınçlı Radyosonda (Psfc → 300 hPa) */}
@@ -293,6 +563,12 @@ export default function CapeLabView() {
                 {formatElevation(analysis.stationElevationM, unit)})
               </div>
             </div>
+
+            {filteredSubterraneanIsobars.length > 0 && (
+              <p className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5 font-mono text-[11px] text-emerald-200 tabular">
+                Hipsometrik İrtifa Kenetlemesi ({formatElevation(analysis.stationElevationM, unit)}): Skew-T profili doğrudan istasyon zemini Psfc {formatPressure(analysis.surfacePressureHpa, unit)} düzeyinden başlar; yeraltında kalan {filteredSubterraneanIsobars.join(" / ")} hPa standart seviyeleri süzülmüştür.
+              </p>
+            )}
 
             {isClampedToSoundingCeiling && (
               <p className="rounded-lg border border-signal-sky/25 bg-signal-sky/10 px-3 py-1.5 font-mono text-[11px] text-sky-200 tabular">
@@ -545,7 +821,9 @@ export default function CapeLabView() {
 
               <div className="rounded-lg border border-white/[0.07] bg-obsidian-950/60 px-3 py-2 font-mono text-[11px] text-ink-secondary tabular space-y-1">
                 <div>
-                  LCL {formatElevation(activeParcel.lclHeightM, unit)} (
+                  Taban Psfc {formatPressure(analysis.surfacePressureHpa, unit)} (
+                  {formatElevation(analysis.stationElevationM, unit)}) · LCL{" "}
+                  {formatElevation(activeParcel.lclHeightM, unit)} (
                   {formatPressure(activeParcel.lclPressureHpa, unit)}) · LFC{" "}
                   {activeParcel.lfcPressureHpa !== null
                     ? formatPressure(activeParcel.lfcPressureHpa, unit)
@@ -573,7 +851,8 @@ export default function CapeLabView() {
                     Skew-T Log-P Diyagramı
                   </h2>
                   <p className="text-xs text-ink-muted">
-                    Eğik izotermler · {formatPressure(analysis.surfacePressureHpa, unit)} →{" "}
+                    {activeLocation.name} ({formatElevation(analysis.stationElevationM, unit)}) · Eğik izotermler ·{" "}
+                    {formatPressure(analysis.surfacePressureHpa, unit)} →{" "}
                     {formatPressure(300, unit)} dikey sondaj &amp; WMO rüzgar barbları
                   </p>
                 </div>

@@ -1,3 +1,12 @@
+import { resolveProvinceCode } from "./provinces/geo-adm1-resolver";
+import { resolveProvinceElevationBandSpecs } from "./provinces/hypsometric-bands-tr81";
+import {
+  isTrProvinceCode,
+  isValidProvinceCode,
+  type ProvinceCode,
+  type TrProvinceCode,
+  type WaterBodySpec
+} from "./provinces/types";
 import { wetBulbStullC } from "./thermo-cape";
 import {
   type BlowingSnowRisk,
@@ -171,7 +180,7 @@ export function solveBourgouinSnowLine(
       if (input.surfaceTempC > 0.15 && zFrz <= elevM) {
         zFrz = elevM + input.surfaceTempC / lapsePerM;
       }
-    } else if (input.temp850hPa !== null && Number.isFinite(input.temp850hPa)) {
+    } else if (elevM < 1420 && input.temp850hPa !== null && Number.isFinite(input.temp850hPa)) {
       zFrz = 1460 + input.temp850hPa / lapsePerM;
       if (input.surfaceTempC > 0.15 && zFrz <= elevM) {
         zFrz = elevM + input.surfaceTempC / lapsePerM;
@@ -365,6 +374,8 @@ export interface DynamicSlrInput {
   surfaceWetBulbC: number;
   surfaceWindKmh: number;
   temp850hPa: number | null;
+  temp700hPa?: number | null;
+  elevationM?: number;
   capeJkg: number;
   isDekActive: boolean;
   precipPhase: PrecipPhase;
@@ -417,9 +428,21 @@ export function computeDynamicSnowLiquidRatio(
         );
       }
     }
+  } else if ((input.elevationM ?? 0) >= 1420) {
+    // Above 1420 m (e.g. Van/Tatvan 1655 m, Erzurum 1890 m, Kars 1775 m), 850 hPa is underground!
+    if (typeof input.temp700hPa === "number" && Number.isFinite(input.temp700hPa)) {
+      tMaxColC = Math.max(input.surfaceTempC, input.temp700hPa);
+      if (input.temp700hPa <= -10.5 && input.temp700hPa >= -19.5) {
+        hasSoundingDgz = true;
+        dgzRhIceMax = 106;
+      }
+    }
   } else if (input.temp850hPa !== null && Number.isFinite(input.temp850hPa)) {
     tMaxColC = Math.max(input.surfaceTempC, input.temp850hPa);
-    const estT700 = input.temp850hPa - 8.5;
+    const estT700 =
+      typeof input.temp700hPa === "number" && Number.isFinite(input.temp700hPa)
+        ? input.temp700hPa
+        : input.temp850hPa - 8.5;
     if (estT700 <= -10.5 && estT700 >= -19.5) {
       dgzRhIceMax = 104;
     }
@@ -491,16 +514,260 @@ export function computeDynamicSnowLiquidRatio(
 // 3. SEA-EFFECT SNOW (DEK), BLACK ICE & BLOWING SNOW DIAGNOSTICS
 // ============================================================================
 
-export function evaluateSeaEffectSnow(params: {
+function resolveEffectiveSnowProvince(
+  lat: number,
+  lon: number,
+  provinceCode?: ProvinceCode | null
+): ProvinceCode {
+  if (provinceCode && isValidProvinceCode(provinceCode)) {
+    return provinceCode;
+  }
+  return resolveProvinceCode({ lat, lon }).provinceCode;
+}
+
+export function isWindInOnshoreSector(
+  windDirDeg: number,
+  sector: { fromDeg: number; toDeg: number }
+): boolean {
+  if (sector.fromDeg === 0 && sector.toDeg === 360) return true;
+  const d = ((windDirDeg % 360) + 360) % 360;
+  const f = ((sector.fromDeg % 360) + 360) % 360;
+  const t = ((sector.toDeg % 360) + 360) % 360;
+  return f <= t ? d >= f && d <= t : d >= f || d <= t;
+}
+
+function makeDefaultWaterBody(
+  spec: Pick<
+    WaterBodySpec,
+    | "id"
+    | "labelTr"
+    | "kind"
+    | "sampleCoord"
+    | "surfaceElevationM"
+    | "freezingPointC"
+    | "monthlyWaterTempNormalsC"
+    | "onshoreWindSectorDeg"
+    | "effectiveFetchKm"
+    | "convectiveInstabilityUpperHpa"
+    | "dekWatchDeltaTC"
+    | "dekHeavyDeltaTC"
+  >
+): WaterBodySpec {
+  return {
+    ...spec,
+    mgmMarineStationIds: [],
+    useOpenMeteoMarineApi: spec.kind !== "alkaline_lake" && spec.kind !== "fresh_lake",
+    subBasinInfluenceWeights: {},
+    seaBreezeSpec: {
+      activeMonths: [5, 9],
+      sectorDeg: spec.onshoreWindSectorDeg,
+      maxInlandPenetrationKm: 25,
+      maxCoolingAmplitudeC: 2.2
+    }
+  };
+}
+
+const WB_WEST_BLACK_SEA = makeDefaultWaterBody({
+  id: "WEST_BLACK_SEA",
+  labelTr: "Batı ve Orta Karadeniz",
+  kind: "open_sea",
+  sampleCoord: { lat: 41.85, lon: 31.8 },
+  surfaceElevationM: 0,
+  freezingPointC: -1.0,
+  monthlyWaterTempNormalsC: [8.8, 7.9, 8.4, 11.2, 15.8, 21.0, 24.4, 25.2, 22.4, 18.2, 14.1, 10.8],
+  onshoreWindSectorDeg: { fromDeg: 280, toDeg: 70 },
+  effectiveFetchKm: 320,
+  convectiveInstabilityUpperHpa: 850,
+  dekWatchDeltaTC: 11.5,
+  dekHeavyDeltaTC: 16.0
+});
+
+const WB_THRACE_BLACK_SEA = makeDefaultWaterBody({
+  id: "THRACE_BLACK_SEA",
+  labelTr: "Trakya Karadeniz Kıyısı (İğneada)",
+  kind: "open_sea",
+  sampleCoord: { lat: 41.88, lon: 28.15 },
+  surfaceElevationM: 0,
+  freezingPointC: -1.0,
+  monthlyWaterTempNormalsC: [8.6, 7.8, 8.3, 11.0, 15.6, 20.8, 24.2, 25.0, 22.0, 17.8, 13.8, 10.5],
+  onshoreWindSectorDeg: { fromDeg: 350, toDeg: 115 },
+  effectiveFetchKm: 310,
+  convectiveInstabilityUpperHpa: 850,
+  dekWatchDeltaTC: 11.5,
+  dekHeavyDeltaTC: 16.0
+});
+
+const WB_EAST_BLACK_SEA = makeDefaultWaterBody({
+  id: "EAST_BLACK_SEA",
+  labelTr: "Doğu Karadeniz Havzası",
+  kind: "open_sea",
+  sampleCoord: { lat: 41.55, lon: 39.6 },
+  surfaceElevationM: 0,
+  freezingPointC: -1.0,
+  monthlyWaterTempNormalsC: [9.8, 8.9, 9.3, 11.8, 16.2, 21.4, 25.0, 26.1, 23.4, 19.4, 15.2, 11.8],
+  onshoreWindSectorDeg: { fromDeg: 280, toDeg: 60 },
+  effectiveFetchKm: 360,
+  convectiveInstabilityUpperHpa: 850,
+  dekWatchDeltaTC: 11.5,
+  dekHeavyDeltaTC: 16.0
+});
+
+const WB_SOUTH_EAST_MARMARA = makeDefaultWaterBody({
+  id: "SOUTH_EAST_MARMARA",
+  labelTr: "Marmara Denizi",
+  kind: "inland_sea",
+  sampleCoord: { lat: 40.62, lon: 28.85 },
+  surfaceElevationM: 0,
+  freezingPointC: -1.2,
+  monthlyWaterTempNormalsC: [9.6, 8.8, 9.4, 12.2, 16.8, 21.6, 24.4, 24.8, 21.8, 17.8, 14.0, 11.2],
+  onshoreWindSectorDeg: { fromDeg: 285, toDeg: 65 },
+  effectiveFetchKm: 75,
+  convectiveInstabilityUpperHpa: 850,
+  dekWatchDeltaTC: 11.5,
+  dekHeavyDeltaTC: 16.0
+});
+
+const WB_NORTH_MARMARA_TEKIRDAG = makeDefaultWaterBody({
+  id: "NORTH_MARMARA",
+  labelTr: "Kuzey Marmara & Karadeniz Koridoru",
+  kind: "inland_sea",
+  sampleCoord: { lat: 40.88, lon: 27.65 },
+  surfaceElevationM: 0,
+  freezingPointC: -1.2,
+  monthlyWaterTempNormalsC: [9.4, 8.6, 9.2, 12.0, 16.6, 21.4, 24.2, 24.6, 21.6, 17.6, 13.8, 11.0],
+  onshoreWindSectorDeg: { fromDeg: 15, toDeg: 165 },
+  effectiveFetchKm: 75,
+  convectiveInstabilityUpperHpa: 850,
+  dekWatchDeltaTC: 11.5,
+  dekHeavyDeltaTC: 16.0
+});
+
+const WB_NORTH_AEGEAN = makeDefaultWaterBody({
+  id: "NORTH_AEGEAN",
+  labelTr: "Kuzey Ege & Çanakkale Boğazı",
+  kind: "open_sea",
+  sampleCoord: { lat: 39.85, lon: 25.85 },
+  surfaceElevationM: 0,
+  freezingPointC: -1.9,
+  monthlyWaterTempNormalsC: [12.2, 11.6, 12.1, 14.2, 17.8, 21.8, 24.2, 24.6, 22.2, 18.8, 15.6, 13.4],
+  onshoreWindSectorDeg: { fromDeg: 300, toDeg: 70 },
+  effectiveFetchKm: 115,
+  convectiveInstabilityUpperHpa: 850,
+  dekWatchDeltaTC: 11.5,
+  dekHeavyDeltaTC: 16.0
+});
+
+const WB_LAKE_VAN_EAST = makeDefaultWaterBody({
+  id: "LAKE_VAN_EAST",
+  labelTr: "Van Gölü (1648 m Sodalı Su Kütlesi)",
+  kind: "alkaline_lake",
+  sampleCoord: { lat: 38.62, lon: 42.9 },
+  surfaceElevationM: 1648,
+  freezingPointC: -1.2,
+  monthlyWaterTempNormalsC: [3.8, 3.4, 4.6, 7.8, 12.6, 17.5, 21.4, 22.3, 19.2, 14.8, 9.9, 5.8],
+  onshoreWindSectorDeg: { fromDeg: 180, toDeg: 35 },
+  effectiveFetchKm: 95,
+  convectiveInstabilityUpperHpa: 700,
+  dekWatchDeltaTC: 10.5,
+  dekHeavyDeltaTC: 15.0
+});
+
+const WB_LAKE_VAN_WEST = makeDefaultWaterBody({
+  id: "LAKE_VAN_WEST",
+  labelTr: "Van Gölü Batı Havzası (Tatvan – Ahlat)",
+  kind: "alkaline_lake",
+  sampleCoord: { lat: 38.62, lon: 42.9 },
+  surfaceElevationM: 1648,
+  freezingPointC: -1.2,
+  monthlyWaterTempNormalsC: [3.8, 3.4, 4.6, 7.8, 12.6, 17.5, 21.4, 22.3, 19.2, 14.8, 9.9, 5.8],
+  onshoreWindSectorDeg: { fromDeg: 350, toDeg: 185 },
+  effectiveFetchKm: 105,
+  convectiveInstabilityUpperHpa: 700,
+  dekWatchDeltaTC: 10.5,
+  dekHeavyDeltaTC: 15.0
+});
+
+export const DEFAULT_PROVINCE_WATER_BODIES: Readonly<
+  Partial<Record<TrProvinceCode, readonly WaterBodySpec[]>>
+> = Object.freeze({
+  "TR-34": [WB_WEST_BLACK_SEA],
+  "TR-41": [WB_WEST_BLACK_SEA],
+  "TR-54": [WB_WEST_BLACK_SEA],
+  "TR-81": [WB_WEST_BLACK_SEA],
+  "TR-67": [WB_WEST_BLACK_SEA],
+  "TR-74": [WB_WEST_BLACK_SEA],
+  "TR-37": [WB_WEST_BLACK_SEA],
+  "TR-57": [WB_WEST_BLACK_SEA],
+  "TR-55": [WB_EAST_BLACK_SEA],
+  "TR-52": [WB_EAST_BLACK_SEA],
+  "TR-28": [WB_EAST_BLACK_SEA],
+  "TR-61": [WB_EAST_BLACK_SEA],
+  "TR-53": [WB_EAST_BLACK_SEA],
+  "TR-08": [WB_EAST_BLACK_SEA],
+  "TR-39": [WB_THRACE_BLACK_SEA],
+  "TR-59": [WB_NORTH_MARMARA_TEKIRDAG],
+  "TR-10": [WB_SOUTH_EAST_MARMARA, WB_NORTH_AEGEAN],
+  "TR-77": [WB_SOUTH_EAST_MARMARA],
+  "TR-17": [WB_NORTH_AEGEAN, WB_SOUTH_EAST_MARMARA],
+  "TR-65": [WB_LAKE_VAN_EAST],
+  "TR-13": [WB_LAKE_VAN_WEST]
+});
+
+export interface EvaluateSeaEffectSnowInput {
   lat: number;
   lon: number;
-  seaSurfaceTempC: number | null;
+  seaSurfaceTempC?: number | null;
   temp850hPa: number | null;
   surfaceTempC: number;
   windSpeedKmh: number;
   windDirDeg: number;
   precipMmHr: number;
-}): { status: DekSnowStatus; deltaTSst850C: number | null } {
+  provinceCode?: ProvinceCode | null;
+  waterBodies?: readonly WaterBodySpec[];
+  liveWaterTempC?: number | null;
+  /** Backward-compatible alias for Marmara / live sea-surface temperature (°C) */
+  marmaraSstC?: number | null;
+  /** Upper-level 700 hPa temperature (°C) for high-elevation lakes (`surfaceElevationM >= 1200`, e.g. Lake Van 1648 m) */
+  temp700hPa?: number | null;
+  soundingLevels?: SoundingLevel[];
+  elevationM?: number;
+  lapseRateCPerKm?: number;
+  month?: number;
+}
+
+function resolveUpper700TempC(
+  params: EvaluateSeaEffectSnowInput,
+  lakeElevationM: number
+): number {
+  if (typeof params.temp700hPa === "number" && Number.isFinite(params.temp700hPa)) {
+    return params.temp700hPa;
+  }
+  if (params.soundingLevels && params.soundingLevels.length > 0) {
+    let bestLv: SoundingLevel | null = null;
+    let bestDiff = Infinity;
+    for (const lv of params.soundingLevels) {
+      const diff = Math.abs(lv.pressure - 700);
+      if (diff <= 35 && Number.isFinite(lv.temperature) && diff < bestDiff) {
+        bestDiff = diff;
+        bestLv = lv;
+      }
+    }
+    if (bestLv !== null) {
+      return bestLv.temperature;
+    }
+  }
+  const refElevM =
+    typeof params.elevationM === "number" && Number.isFinite(params.elevationM)
+      ? params.elevationM
+      : lakeElevationM;
+  const lapsePerKm = clamp(params.lapseRateCPerKm ?? 6.4, 4.5, 9.5);
+  const dzTo700Km = Math.max(0.8, (3010 - refElevM) / 1000);
+  return params.surfaceTempC - lapsePerKm * dzTo700Km;
+}
+
+export function evaluateSeaEffectSnow(
+  params: EvaluateSeaEffectSnowInput
+): { status: DekSnowStatus; deltaTSst850C: number | null } {
   const {
     lat,
     lon,
@@ -510,42 +777,125 @@ export function evaluateSeaEffectSnow(params: {
     windSpeedKmh,
     windDirDeg
   } = params;
-  if (temp850hPa === null || !Number.isFinite(temp850hPa)) {
+
+  const resolvedProvince = resolveEffectiveSnowProvince(lat, lon, params.provinceCode);
+  const rawLiveWaterTemp =
+    params.liveWaterTempC !== undefined && params.liveWaterTempC !== null && Number.isFinite(params.liveWaterTempC)
+      ? params.liveWaterTempC
+      : seaSurfaceTempC !== undefined && seaSurfaceTempC !== null && Number.isFinite(seaSurfaceTempC)
+        ? seaSurfaceTempC
+        : params.marmaraSstC !== undefined && params.marmaraSstC !== null && Number.isFinite(params.marmaraSstC)
+          ? params.marmaraSstC
+          : null;
+
+  // Sealed bit-identical TR-16 Bursa Marmara SST / DEK path
+  if (resolvedProvince === "TR-16" && params.waterBodies === undefined) {
+    if (temp850hPa === null || !Number.isFinite(temp850hPa)) {
+      return { status: "none", deltaTSst850C: null };
+    }
+    const effSst = rawLiveWaterTemp !== null ? rawLiveWaterTemp : 10.5;
+    const deltaT = Number((effSst - temp850hPa).toFixed(1));
+    const normDir = ((windDirDeg % 360) + 360) % 360;
+    const isNortherlyFetch = normDir >= 305 || normDir <= 70;
+
+    if (!isNortherlyFetch || surfaceTempC > 4.5 || windSpeedKmh < 9 || deltaT < 11.5) {
+      return { status: "none", deltaTSst850C: deltaT };
+    }
+    if (
+      deltaT >= 16.0 &&
+      surfaceTempC <= 2.5 &&
+      (params.precipMmHr >= 0.25 || windSpeedKmh >= 18)
+    ) {
+      return { status: "heavy_dek", deltaTSst850C: deltaT };
+    }
+    if (deltaT >= 13.0 && surfaceTempC <= 3.5) {
+      return { status: "moderate_dek", deltaTSst850C: deltaT };
+    }
+    return { status: "watch", deltaTSst850C: deltaT };
+  }
+
+  // Other 80 provinces & GLOBAL: strictly gated on real waterBodies (`fetchKm >= 25` + onshore sector)
+  const rawBodies: readonly WaterBodySpec[] =
+    params.waterBodies !== undefined
+      ? params.waterBodies
+      : isTrProvinceCode(resolvedProvince)
+        ? (DEFAULT_PROVINCE_WATER_BODIES[resolvedProvince] ?? [])
+        : [];
+
+  const validBodies = rawBodies.filter((wb) =>
+    wb.kind === "fresh_lake" ? wb.effectiveFetchKm >= 45 : wb.effectiveFetchKm >= 25
+  );
+  if (validBodies.length === 0) {
     return { status: "none", deltaTSst850C: null };
   }
 
-  const isMarmaraBlackSeaBelt =
-    lat >= 39.6 && lat <= 42.6 && lon >= 26.2 && lon <= 41.8;
-  const effSst =
-    seaSurfaceTempC !== null && Number.isFinite(seaSurfaceTempC)
-      ? seaSurfaceTempC
-      : isMarmaraBlackSeaBelt
-        ? 10.5
-        : null;
-
-  if (effSst === null) {
-    return { status: "none", deltaTSst850C: null };
-  }
-
-  const deltaT = Number((effSst - temp850hPa).toFixed(1));
   const normDir = ((windDirDeg % 360) + 360) % 360;
-  const isNortherlyFetch = normDir >= 305 || normDir <= 70;
+  const monthIdx = clamp((params.month ?? 1) - 1, 0, 11);
 
-  if (!isNortherlyFetch || surfaceTempC > 4.5 || windSpeedKmh < 9 || deltaT < 11.5) {
-    return { status: "none", deltaTSst850C: deltaT };
+  let bestStatus: DekSnowStatus = "none";
+  let bestDeltaT: number | null = null;
+
+  for (const wb of validBodies) {
+    const effWaterTemp =
+      rawLiveWaterTemp !== null
+        ? rawLiveWaterTemp
+        : wb.monthlyWaterTempNormalsC[monthIdx];
+
+    const isHighAltitudeLake =
+      wb.surfaceElevationM >= 1200 ||
+      (wb.surfaceElevationM >= 1000 && wb.convectiveInstabilityUpperHpa === 700);
+
+    let upperTempC: number;
+    let watchThr: number;
+    let modThr: number;
+    let heavyThr: number;
+
+    if (isHighAltitudeLake) {
+      // High-altitude lake rule (e.g. Lake Van 1648 m where 850 hPa is underground): use LST - T700 >= 12°C
+      upperTempC = resolveUpper700TempC(params, wb.surfaceElevationM);
+      watchThr = wb.kind === "alkaline_lake" ? Math.min(wb.dekWatchDeltaTC, 10.5) : wb.dekWatchDeltaTC;
+      modThr = Math.max(12.0, watchThr + 1.5);
+      heavyThr = wb.dekHeavyDeltaTC;
+    } else {
+      if (temp850hPa === null || !Number.isFinite(temp850hPa)) {
+        continue;
+      }
+      upperTempC = temp850hPa;
+      watchThr = wb.dekWatchDeltaTC;
+      modThr = 13.0;
+      heavyThr = wb.dekHeavyDeltaTC;
+    }
+
+    const deltaT = Number((effWaterTemp - upperTempC).toFixed(1));
+    if (bestDeltaT === null || deltaT > bestDeltaT) {
+      bestDeltaT = deltaT;
+    }
+
+    const isOnshore = isWindInOnshoreSector(normDir, wb.onshoreWindSectorDeg);
+    if (!isOnshore || surfaceTempC > 4.5 || windSpeedKmh < 9 || deltaT < watchThr) {
+      continue;
+    }
+
+    let candidateStatus: DekSnowStatus;
+    if (
+      deltaT >= heavyThr &&
+      surfaceTempC <= 2.5 &&
+      (params.precipMmHr >= 0.25 || windSpeedKmh >= 18)
+    ) {
+      candidateStatus = "heavy_dek";
+    } else if (deltaT >= modThr && surfaceTempC <= 3.5) {
+      candidateStatus = "moderate_dek";
+    } else {
+      candidateStatus = "watch";
+    }
+
+    if (DEK_SEVERITY_RANK[candidateStatus] > DEK_SEVERITY_RANK[bestStatus]) {
+      bestStatus = candidateStatus;
+      bestDeltaT = deltaT;
+    }
   }
 
-  if (
-    deltaT >= 16.0 &&
-    surfaceTempC <= 2.5 &&
-    (params.precipMmHr >= 0.25 || windSpeedKmh >= 18)
-  ) {
-    return { status: "heavy_dek", deltaTSst850C: deltaT };
-  }
-  if (deltaT >= 13.0 && surfaceTempC <= 3.5) {
-    return { status: "moderate_dek", deltaTSst850C: deltaT };
-  }
-  return { status: "watch", deltaTSst850C: deltaT };
+  return { status: bestStatus, deltaTSst850C: bestDeltaT };
 }
 
 const ICING_SEVERITY_RANK: Record<RoadIcingRisk, number> = {
@@ -623,6 +973,16 @@ export interface SnowSimulationHourInput {
   temp850hPa: number | null;
   capeJkg: number;
   seaSurfaceTempC: number | null;
+  /** Optional province code (`TR-01..TR-81` or `"GLOBAL"`); auto-resolved from `lat/lon` when omitted */
+  provinceCode?: ProvinceCode | null;
+  /** Optional province water-body definitions for DEK / Lake-Effect Snow gating */
+  waterBodies?: readonly WaterBodySpec[];
+  /** Live sea or lake surface temperature (°C) */
+  liveWaterTempC?: number | null;
+  /** Backward-compatible alias for Marmara / live SST (°C) */
+  marmaraSstC?: number | null;
+  /** Optional 700 hPa temperature (°C) for high-altitude lake-effect snow (e.g. Lake Van 1648 m) */
+  temp700hPa?: number | null;
   soundingLevels?: SoundingLevel[];
   lapseRateCPerKm?: number;
   /** Optional ensemble temperature members at this hour for exact snow probability */
@@ -633,6 +993,11 @@ export interface SimulateSnowTimelineInput {
   hours: SnowSimulationHourInput[];
   antecedentHours?: AntecedentThermalHour[];
   initialSnowpackCm?: number;
+  provinceCode?: ProvinceCode | null;
+  locationName?: string;
+  waterBodies?: readonly WaterBodySpec[];
+  liveWaterTempC?: number | null;
+  marmaraSstC?: number | null;
 }
 
 export interface SimulatedSnowHourOutput {
@@ -967,7 +1332,9 @@ export interface ElevationBandSpec {
 export function buildElevationBandSpecs(
   lat: number,
   lon: number,
-  cityElevationM: number
+  cityElevationM: number,
+  provinceCode?: ProvinceCode | null,
+  locationName?: string
 ): ElevationBandSpec[] {
   const refElev = Number.isFinite(cityElevationM)
     ? Math.max(0, Math.round(cityElevationM))
@@ -978,9 +1345,8 @@ export function buildElevationBandSpecs(
       ? 1.0
       : Number(clamp(computeOrographicWeight(zBand) / wRef, 0.55, 1.75).toFixed(4));
 
-  const isBursaDomain =
-    lat >= 39.85 && lat <= 40.55 && lon >= 28.35 && lon <= 29.75;
-  if (isBursaDomain) {
+  const resolvedProvince = resolveEffectiveSnowProvince(lat, lon, provinceCode);
+  if (resolvedProvince === "TR-16") {
     const refSlot: "coast" | "center" | "foothill" | "summit" =
       refElev < 55
         ? "coast"
@@ -1039,6 +1405,14 @@ export function buildElevationBandSpecs(
         isReferenceBand: refSlot === "summit"
       }
     ];
+  }
+
+  if (isTrProvinceCode(resolvedProvince)) {
+    return resolveProvinceElevationBandSpecs({
+      provinceCode: resolvedProvince,
+      referenceElevationM: refElev,
+      locationName
+    });
   }
 
   if (refElev < 45) {
@@ -1335,10 +1709,17 @@ export function simulateCoupledSnowTimeline(
   if (hours.length === 0) return [];
 
   const first = hours[0];
+  const resolvedTimelineProvince = resolveEffectiveSnowProvince(
+    first.lat,
+    first.lon,
+    params.provinceCode ?? first.provinceCode
+  );
   const bandSpecs = buildElevationBandSpecs(
     first.lat,
     first.lon,
-    first.elevationM
+    first.elevationM,
+    resolvedTimelineProvince,
+    params.locationName
   );
 
   let initSoilT = clamp(first.temp2mC * 0.85 + 1.0, -6, 28);
@@ -1498,11 +1879,26 @@ export function simulateCoupledSnowTimeline(
       lapseRateCPerKm: h.lapseRateCPerKm
     });
 
+    const hourProvince = h.provinceCode
+      ? resolveEffectiveSnowProvince(h.lat, h.lon, h.provinceCode)
+      : resolvedTimelineProvince;
+    const parsedMonth = Number(h.dateYmd.slice(5, 7));
+    const hourMonth = Number.isFinite(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12 ? parsedMonth : 1;
+
     const dekEval = evaluateSeaEffectSnow({
       lat: h.lat,
       lon: h.lon,
+      provinceCode: hourProvince,
+      waterBodies: h.waterBodies ?? params.waterBodies,
+      liveWaterTempC: h.liveWaterTempC ?? params.liveWaterTempC,
+      marmaraSstC: h.marmaraSstC ?? params.marmaraSstC,
       seaSurfaceTempC: h.seaSurfaceTempC,
       temp850hPa: h.temp850hPa,
+      temp700hPa: h.temp700hPa,
+      soundingLevels: h.soundingLevels,
+      elevationM: h.elevationM,
+      lapseRateCPerKm: h.lapseRateCPerKm,
+      month: hourMonth,
       surfaceTempC: h.temp2mC,
       windSpeedKmh: h.windSpeedKmh,
       windDirDeg: h.windDirDeg,
@@ -1528,6 +1924,8 @@ export function simulateCoupledSnowTimeline(
       surfaceWetBulbC: h.wetBulbC,
       surfaceWindKmh: h.windSpeedKmh,
       temp850hPa: h.temp850hPa,
+      temp700hPa: h.temp700hPa,
+      elevationM: h.elevationM,
       capeJkg: h.capeJkg,
       isDekActive:
         dekEval.status === "moderate_dek" || dekEval.status === "heavy_dek",
@@ -1706,6 +2104,8 @@ export function simulateCoupledSnowTimeline(
           surfaceWetBulbC: bTw,
           surfaceWindKmh: h.windSpeedKmh * (dz > 500 ? 1.25 : 1),
           temp850hPa: h.temp850hPa,
+          temp700hPa: h.temp700hPa,
+          elevationM: spec.elevationM,
           capeJkg: h.capeJkg,
           isDekActive:
             dekEval.status === "moderate_dek" || dekEval.status === "heavy_dek",

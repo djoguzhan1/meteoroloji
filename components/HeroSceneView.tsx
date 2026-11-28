@@ -18,6 +18,8 @@ import {
   Eye,
   Gauge,
   Layers,
+  MapPin,
+  Mountain,
   Radio,
   RefreshCw,
   Share2,
@@ -27,6 +29,7 @@ import {
   Sunrise,
   Sunset,
   Thermometer,
+  Waves,
   Wind,
   Zap
 } from "lucide-react";
@@ -47,6 +50,7 @@ import { atmosUiSfx } from "@/lib/ui-sfx";
 import {
   classifyUvIndex,
   computeSynopticSignals,
+  DEFAULT_LOCATION,
   formatDistance,
   formatElevation,
   formatLapseRate,
@@ -60,7 +64,12 @@ import {
   formatWindSpeed,
   windDirectionToCompass
 } from "@/lib/weather-client";
-import type { PrecipPhase, UnitSystem } from "@/lib/weather-types";
+import type {
+  GeoLocation,
+  PrecipPhase,
+  UnitSystem,
+  WeatherBundle
+} from "@/lib/weather-types";
 import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 import ExtendedDailyForecastPanel from "./ExtendedDailyForecastPanel";
@@ -120,7 +129,21 @@ export function localizeMetricProse(text: string, unit: UnitSystem): string {
     formatDistance(Number(v), "imperial")
   );
 
-  // 6) Elevation / meter ranges & standalone m (e.g. 0–550m -> 0–1804 ft, 2m -> 6.5 ft)
+  // 6) Precipitation & snow depth (mm -> in, cm -> in)
+  out = out.replace(/(\d+(?:\.\d+)?)\s*mm\/sa\b/g, (_m, v: string) =>
+    formatPrecip(Number(v), "imperial", { per: "hour" })
+  );
+  out = out.replace(/(\d+(?:\.\d+)?)\s*mm\b/g, (_m, v: string) =>
+    formatPrecip(Number(v), "imperial")
+  );
+  out = out.replace(/(\d+(?:\.\d+)?)\s*cm\/sa\b/g, (_m, v: string) =>
+    formatSnowDepth(Number(v), "imperial", { per: "hour" })
+  );
+  out = out.replace(/(\d+(?:\.\d+)?)\s*cm\b/g, (_m, v: string) =>
+    formatSnowDepth(Number(v), "imperial")
+  );
+
+  // 7) Elevation / meter ranges & standalone m (e.g. 0–550m -> 0–1804 ft, 2m -> 6.5 ft)
   out = out.replace(
     /\b(\d+(?:\.\d+)?)\s*([–-])\s*(\d+(?:\.\d+)?)\s*m\b/g,
     (_m, a: string, sep: string, b: string) =>
@@ -136,6 +159,255 @@ export function localizeMetricProse(text: string, unit: UnitSystem): string {
   });
 
   return out;
+}
+
+type ProvinceSummaryPayload = NonNullable<WeatherBundle["provinceSummary"]>;
+type SubLocationRole = ProvinceSummaryPayload["curatedSubLocations"][number]["role"];
+type ResolvedHeroCalibrationTier = "BURSA" | "TIER_A" | "TIER_B" | "GLOBAL";
+
+const SUB_LOCATION_ROLE_LABEL_TR: Record<SubLocationRole, string> = {
+  coast: "Kıyı",
+  plain: "Ova",
+  foothill: "Yamaç",
+  summit: "Zirve"
+};
+
+interface HeroProvinceIdentity {
+  isBursaProvince: boolean;
+  isTrNonBursaProvince: boolean;
+  provinceCode: string | null;
+  provinceName: string;
+  calibrationTier: ResolvedHeroCalibrationTier;
+}
+
+function isTrPlateProvinceCode(code: unknown): code is string {
+  return typeof code === "string" && /^TR-(?:0[1-9]|[1-7][0-9]|8[01])$/.test(code);
+}
+
+function resolveHeroProvinceIdentity(
+  bundle: WeatherBundle,
+  activeLocation: GeoLocation
+): HeroProvinceIdentity {
+  const provinceSummary = bundle.provinceSummary ?? null;
+  const engineMeta = bundle.hybrid?.engineMeta;
+  const rawCode =
+    provinceSummary?.provinceCode ??
+    engineMeta?.provinceCode ??
+    bundle.location.provinceCode ??
+    activeLocation.provinceCode;
+
+  const hasTrCode = isTrPlateProvinceCode(rawCode);
+  const isExplicitGlobal =
+    rawCode === "GLOBAL" || engineMeta?.calibrationTier === "GLOBAL";
+
+  const isBursaProvince = hasTrCode
+    ? rawCode === "TR-16"
+    : isExplicitGlobal
+      ? false
+      : provinceSummary?.calibrationTier === "TIER_0_BURSA" ||
+        engineMeta?.calibrationTier === "BURSA_FROZEN_V5" ||
+        Boolean(bundle.location.id?.startsWith("bursa-")) ||
+        Boolean(bundle.location.admin1?.includes("WMO 17116")) ||
+        ((bundle.location.countryCode?.toUpperCase() === "TR" ||
+          bundle.location.country === "Türkiye") &&
+          bundle.location.name.trim().toLocaleLowerCase("tr-TR") === "bursa");
+
+  const isTrNonBursaProvince =
+    !isBursaProvince &&
+    !isExplicitGlobal &&
+    (hasTrCode ||
+      Boolean(provinceSummary) ||
+      engineMeta?.calibrationTier === "TIER_A_EMPIRICAL_WMO" ||
+      engineMeta?.calibrationTier === "TIER_B_DONOR_ALARO" ||
+      bundle.location.countryCode?.toUpperCase() === "TR" ||
+      bundle.location.country === "Türkiye");
+
+  let calibrationTier: ResolvedHeroCalibrationTier;
+  if (isBursaProvince) {
+    calibrationTier = "BURSA";
+  } else if (isExplicitGlobal || !isTrNonBursaProvince) {
+    calibrationTier = "GLOBAL";
+  } else if (
+    engineMeta?.calibrationTier === "TIER_A_EMPIRICAL_WMO" ||
+    provinceSummary?.calibrationTier === "TIER_A_WMO"
+  ) {
+    calibrationTier = "TIER_A";
+  } else if (
+    engineMeta?.calibrationTier === "TIER_B_DONOR_ALARO" ||
+    provinceSummary?.calibrationTier === "TIER_B_DONOR_KALMAN"
+  ) {
+    calibrationTier = "TIER_B";
+  } else {
+    const vMode = bundle.hybrid?.verification?.mode;
+    calibrationTier =
+      vMode === "live-mgm-mesh" ||
+      vMode === "live-station-48h" ||
+      vMode === "live-station-24h"
+        ? "TIER_A"
+        : "TIER_B";
+  }
+
+  const provinceCode = isBursaProvince
+    ? "TR-16"
+    : hasTrCode
+      ? rawCode
+      : null;
+
+  const provinceName = isBursaProvince
+    ? "Bursa"
+    : (provinceSummary?.provinceName ??
+      engineMeta?.provinceName ??
+      (bundle.location.name || activeLocation.name));
+
+  return {
+    isBursaProvince,
+    isTrNonBursaProvince,
+    provinceCode,
+    provinceName,
+    calibrationTier
+  };
+}
+
+interface WaterBodyBadgeModel {
+  shortLabelTr: string;
+  tooltipTr: string;
+  tempC: number;
+  isLake: boolean;
+}
+
+function resolveWaterBodyBadge(
+  bundle: WeatherBundle,
+  identity: HeroProvinceIdentity,
+  unit: UnitSystem
+): WaterBodyBadgeModel | null {
+  const engineMeta = bundle.hybrid?.engineMeta;
+  const activeBodies = bundle.provinceSummary?.activeWaterBodies ?? [];
+
+  let rawLabel: string | null = null;
+  let tempC: number | null = null;
+  let bodyKind: ProvinceSummaryPayload["activeWaterBodies"][number]["kind"] | undefined;
+
+  if (
+    typeof engineMeta?.seaOrLakeTempC === "number" &&
+    Number.isFinite(engineMeta.seaOrLakeTempC) &&
+    engineMeta.waterBodyLabelTr?.trim()
+  ) {
+    tempC = engineMeta.seaOrLakeTempC;
+    rawLabel = engineMeta.waterBodyLabelTr.trim();
+    const matched = activeBodies.find(
+      (wb) =>
+        wb.labelTr === rawLabel ||
+        rawLabel?.toLocaleLowerCase("tr-TR").includes(wb.labelTr.slice(0, 12).toLocaleLowerCase("tr-TR"))
+    );
+    bodyKind = (matched ?? activeBodies[0])?.kind;
+  } else if (activeBodies.length > 0) {
+    const liveWb = activeBodies.find(
+      (wb) => typeof wb.liveTempC === "number" && Number.isFinite(wb.liveTempC)
+    );
+    if (liveWb && typeof liveWb.liveTempC === "number") {
+      tempC = liveWb.liveTempC;
+      rawLabel = liveWb.labelTr;
+      bodyKind = liveWb.kind;
+    }
+  } else if (
+    identity.isBursaProvince &&
+    typeof engineMeta?.marmaraSstC === "number" &&
+    Number.isFinite(engineMeta.marmaraSstC)
+  ) {
+    tempC = engineMeta.marmaraSstC;
+    rawLabel = "Marmara Denizi";
+    bodyKind = "inland_sea";
+  }
+
+  if (tempC === null || !rawLabel) return null;
+
+  const baseName =
+    rawLabel
+      .replace(/\s*\([^)]*\)/g, "")
+      .split(/\s+—\s+/)[0]
+      .trim() || rawLabel;
+
+  const isLake =
+    bodyKind === "alkaline_lake" ||
+    bodyKind === "fresh_lake" ||
+    /göl|baraj|rezervuar/i.test(baseName);
+
+  let compactLabel = baseName;
+  if (!isLake && !/\bSST\b/i.test(compactLabel)) {
+    compactLabel = compactLabel.replace(/\s+(?:Denizi|Suları|Açık Deniz)$/i, "").trim();
+    compactLabel = `${compactLabel} SST`;
+  }
+
+  return {
+    shortLabelTr: localizeMetricProse(compactLabel, unit),
+    tooltipTr: localizeMetricProse(rawLabel, unit),
+    tempC,
+    isLake
+  };
+}
+
+interface QuickSubLocationOption {
+  id: string;
+  displayLabel: string;
+  rawName: string;
+  role: SubLocationRole;
+  lat: number;
+  lon: number;
+  elevationM: number;
+  isCanonicalCenter?: boolean;
+}
+
+function buildQuickSubLocationOptions(
+  provinceSummary: ProvinceSummaryPayload | null,
+  unit: UnitSystem
+): QuickSubLocationOption[] {
+  if (!provinceSummary || !provinceSummary.curatedSubLocations?.length) {
+    return [];
+  }
+
+  const curated = provinceSummary.curatedSubLocations;
+  const center = provinceSummary.canonicalCenter;
+  const hasCenterAlready = curated.some(
+    (item) =>
+      Math.abs(item.lat - center.lat) < 0.025 &&
+      Math.abs(item.lon - center.lon) < 0.025 &&
+      Math.abs(item.elevationM - center.elevationM) < 160
+  );
+
+  const items: QuickSubLocationOption[] = [];
+  if (!hasCenterAlready) {
+    const hasMarineCoast =
+      center.elevationM <= 45 &&
+      provinceSummary.activeWaterBodies.some(
+        (wb) => wb.kind === "open_sea" || wb.kind === "inland_sea"
+      );
+    items.push({
+      id: center.id,
+      displayLabel: `${provinceSummary.provinceName} Merkez`,
+      rawName: center.stationLabel,
+      role: hasMarineCoast ? "coast" : "plain",
+      lat: center.lat,
+      lon: center.lon,
+      elevationM: center.elevationM,
+      isCanonicalCenter: true
+    });
+  }
+
+  for (const sub of curated) {
+    const cleanName =
+      sub.name.replace(/\s*\([^)]*\)/g, "").trim() || sub.name.trim();
+    items.push({
+      id: sub.id,
+      displayLabel: localizeMetricProse(cleanName, unit),
+      rawName: localizeMetricProse(sub.name, unit),
+      role: sub.role,
+      lat: sub.lat,
+      lon: sub.lon,
+      elevationM: sub.elevationM
+    });
+  }
+
+  return items;
 }
 
 function WeatherGlyph({
@@ -405,6 +677,7 @@ export default function HeroSceneView() {
   const {
     bundle,
     activeLocation,
+    setActiveLocation,
     isFavorite,
     addFavorite,
     removeFavorite,
@@ -460,7 +733,25 @@ export default function HeroSceneView() {
     });
   }, [bundle, temporalView, unit]);
 
-  if (!bundle || !temporalView) {
+  const provinceIdentity = useMemo(
+    () => (bundle ? resolveHeroProvinceIdentity(bundle, activeLocation) : null),
+    [bundle, activeLocation]
+  );
+
+  const waterBodyBadge = useMemo(
+    () =>
+      bundle && provinceIdentity
+        ? resolveWaterBodyBadge(bundle, provinceIdentity, unit)
+        : null,
+    [bundle, provinceIdentity, unit]
+  );
+
+  const quickSubLocations = useMemo(
+    () => buildQuickSubLocationOptions(bundle?.provinceSummary ?? null, unit),
+    [bundle?.provinceSummary, unit]
+  );
+
+  if (!bundle || !temporalView || !provinceIdentity) {
     if (loading && !error) {
       return (
         <div className="mx-auto max-w-xl px-4 py-24 text-center space-y-4">
@@ -501,6 +792,7 @@ export default function HeroSceneView() {
   }
 
   const { telemetry, dayContext, stormChip } = temporalView;
+  const provinceSummary = bundle.provinceSummary ?? null;
   const engineMeta = bundle.hybrid?.engineMeta;
   const metarStation = bundle.hybrid?.verification?.station ?? null;
   const metarStations =
@@ -510,6 +802,139 @@ export default function HeroSceneView() {
   const isMgmMesh = verificationMode === "live-mgm-mesh";
   const isLiveStation =
     verificationMode === "live-station-48h" || verificationMode === "live-station-24h";
+
+  const { isBursaProvince, isTrNonBursaProvince, provinceCode, provinceName, calibrationTier } =
+    provinceIdentity;
+
+  const activeMicroclimateTags = (engineMeta?.activeMicroclimateTags ?? []).filter(
+    (tag): tag is string =>
+      typeof tag === "string" &&
+      tag.trim().length > 0 &&
+      (isBursaProvince || !/bursa|uludağ|marmara|17116|ltbr/i.test(tag))
+  );
+
+  const nonBursaMgmSensorCount =
+    engineMeta?.tier1OnlineCount ?? provinceSummary?.mgmMeshStationCount ?? 0;
+
+  const heroShieldBadgeText = (() => {
+    if (!bundle.hybrid) return "";
+    const conf = bundle.hybrid.confidencePct;
+    if (isBursaProvince) {
+      return isMgmMesh
+        ? `ATMOS v5 · MGM ${metarStation?.stationName ?? "Bursa"}${
+            metarStations.length > 1 ? ` +${metarStations.length - 1}` : ""
+          } · %${conf}`
+        : isLiveStation
+          ? `ATMOS v5 · ${metarStation?.icaoId}${
+              metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
+            } · %${conf}`
+          : `8-Model · %${conf}`;
+    }
+
+    if (isMgmMesh) {
+      const stationLabel =
+        metarStation?.stationName ??
+        engineMeta?.mgmDistrictMatched ??
+        provinceName;
+      return `ATMOS v5 · MGM ${stationLabel}${
+        metarStations.length > 1 ? ` +${metarStations.length - 1}` : ""
+      } · %${conf}`;
+    }
+
+    if (isLiveStation && metarStation?.icaoId) {
+      return `ATMOS v5 · ${metarStation.icaoId}${
+        metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
+      } · %${conf}`;
+    }
+
+    if (calibrationTier === "TIER_A") {
+      return `ATMOS v5 · WMO L1-EMOS · %${conf}`;
+    }
+    if (calibrationTier === "TIER_B") {
+      return `ATMOS v5 · ALARO + Kalman · %${conf}`;
+    }
+    return `8-Model · %${conf}`;
+  })();
+
+  const referenceStationBadgeText = (() => {
+    if (isBursaProvince) {
+      if (!bundle.location.admin1 && !engineMeta?.mgmDistrictMatched) return null;
+      return bundle.location.admin1?.includes("WMO 17116")
+        ? "Bursa Merkez (Osmangazi · WMO 17116)"
+        : engineMeta?.mgmDistrictMatched
+          ? `MGM ${engineMeta.mgmDistrictMatched}`
+          : (bundle.location.admin1 ?? null);
+    }
+
+    const codePrefix = provinceCode ? `${provinceCode} · ` : "";
+    if (engineMeta?.mgmDistrictMatched) {
+      return `${codePrefix}MGM ${engineMeta.mgmDistrictMatched}`;
+    }
+    if (provinceSummary?.canonicalCenter?.stationLabel) {
+      const cleanAdmin = bundle.location.admin1?.trim();
+      if (
+        cleanAdmin &&
+        cleanAdmin.toLocaleLowerCase("tr-TR") !==
+          provinceSummary.provinceName.toLocaleLowerCase("tr-TR") &&
+        !/bursa|17116/i.test(cleanAdmin)
+      ) {
+        return `${codePrefix}${localizeMetricProse(cleanAdmin, unit)}`;
+      }
+      return `${codePrefix}${localizeMetricProse(provinceSummary.canonicalCenter.stationLabel, unit)}`;
+    }
+    if (bundle.location.admin1 && !/bursa|17116/i.test(bundle.location.admin1)) {
+      return `${codePrefix}${localizeMetricProse(bundle.location.admin1, unit)}`;
+    }
+    return null;
+  })();
+
+  const hibritHeadingText = (() => {
+    if (calibrationTier === "BURSA") {
+      return isMgmMesh
+        ? "MGM 19-İlçe Canlı Kalibrasyonu & 8-Model Doğruluk Tablosu"
+        : isLiveStation
+          ? "Canlı İstasyon Kalibrasyonu & 8-Model Doğruluk Tablosu"
+          : "WMO Öncül Ağırlıklandırma & 8-Model Uzlaşı Tablosu";
+    }
+    if (calibrationTier === "TIER_A") {
+      return "2-Yıllık WMO SYNOP Ampirik L1-EMOS + Canlı MGM Ağı";
+    }
+    if (calibrationTier === "TIER_B") {
+      return localizeMetricProse(
+        "Fiziksel Simpleks + MGM ALARO 4.5 km + Canlı Kalman-MOS",
+        unit
+      );
+    }
+    return "8-Merkez Küresel NWP/AI Ensemble + METAR Kalman";
+  })();
+
+  const handleSelectSubLocation = (sub: QuickSubLocationOption) => {
+    atmosUiSfx.playNavTick();
+    if (
+      isBursaProvince &&
+      Math.abs(sub.lat - DEFAULT_LOCATION.lat) < 0.02 &&
+      Math.abs(sub.lon - DEFAULT_LOCATION.lon) < 0.02
+    ) {
+      setActiveLocation(DEFAULT_LOCATION);
+      return;
+    }
+
+    const nextLoc: GeoLocation = {
+      id: sub.id,
+      name: sub.isCanonicalCenter ? provinceName : sub.displayLabel,
+      provinceCode: provinceSummary?.provinceCode ?? (provinceCode as GeoLocation["provinceCode"]) ?? undefined,
+      admin1: sub.isCanonicalCenter
+        ? (provinceSummary?.canonicalCenter.stationLabel ?? provinceName)
+        : `${provinceName} · ${SUB_LOCATION_ROLE_LABEL_TR[sub.role]}`,
+      country: "Türkiye",
+      countryCode: "TR",
+      lat: sub.lat,
+      lon: sub.lon,
+      elevation: sub.elevationM,
+      timezone: bundle.timezone || "Europe/Istanbul"
+    };
+    setActiveLocation(nextLoc);
+  };
 
   const hasActiveSnow =
     telemetry.airSnowCm > 0 ||
@@ -553,13 +978,8 @@ export default function HeroSceneView() {
 
   const handleShareStation = async () => {
     try {
-      const qs = new URLSearchParams({
-        city: activeLocation.name,
-        lat: activeLocation.lat.toFixed(4),
-        lon: activeLocation.lon.toFixed(4)
-      });
-      if (activeLocation.country) qs.set("country", activeLocation.country);
-      const url = `${window.location.origin}/?${qs.toString()}`;
+      const shareHref = buildLocationHref("/", bundle.location);
+      const url = `${window.location.origin}${shareHref}`;
       await navigator.clipboard.writeText(url);
       setCopiedLink(true);
       window.setTimeout(() => setCopiedLink(false), 2000);
@@ -628,17 +1048,7 @@ export default function HeroSceneView() {
                   className="atmos-btn inline-flex items-center gap-1.5 rounded-lg border border-[rgba(var(--atmos-accent-rgb),0.36)] bg-[rgba(var(--atmos-accent-rgb),0.11)] px-2.5 py-1 font-mono text-[var(--atmos-accent)] tabular"
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  <span>
-                    {isMgmMesh
-                      ? `ATMOS v5 · MGM ${metarStation?.stationName ?? "Bursa"}${
-                          metarStations.length > 1 ? ` +${metarStations.length - 1}` : ""
-                        } · %${bundle.hybrid.confidencePct}`
-                      : isLiveStation
-                        ? `ATMOS v5 · ${metarStation?.icaoId}${
-                            metarStations.length > 1 ? `+${metarStations.length - 1}` : ""
-                          } · %${bundle.hybrid.confidencePct}`
-                        : `8-Model · %${bundle.hybrid.confidencePct}`}
-                  </span>
+                  <span>{heroShieldBadgeText}</span>
                 </a>
               )}
               <div className="flex items-center gap-1">
@@ -704,14 +1114,9 @@ export default function HeroSceneView() {
                     ? ` · ${formatElevation(bundle.location.elevation, unit)}`
                     : ""}
                 </span>
-                {(bundle.location.admin1 || engineMeta?.mgmDistrictMatched) && (
+                {referenceStationBadgeText && (
                   <span className="rounded-md border border-sky-400/25 bg-[#081120]/85 px-2 py-0.5 font-mono text-[11px] text-sky-200 tabular">
-                    Baz:{" "}
-                    {bundle.location.admin1?.includes("WMO 17116")
-                      ? "Bursa Merkez (Osmangazi · WMO 17116)"
-                      : engineMeta?.mgmDistrictMatched
-                        ? `MGM ${engineMeta.mgmDistrictMatched}`
-                        : bundle.location.admin1}
+                    Baz: {referenceStationBadgeText}
                   </span>
                 )}
               </div>
@@ -750,6 +1155,57 @@ export default function HeroSceneView() {
                   </p>
                 </div>
               </div>
+
+              {/* İl İçi İrtifa / Mikroiklim Hızlı Geçiş Çipleri (Kıyı / Ova / Yamaç / Zirve-Kayak) */}
+              {quickSubLocations.length > 0 && (
+                <div
+                  role="group"
+                  aria-label={`${provinceName} irtifa ve mikroiklim alt konumları`}
+                  className="mt-3 flex flex-wrap items-center gap-1.5"
+                >
+                  <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-muted mr-0.5">
+                    <MapPin className="h-3 w-3 text-[var(--atmos-accent)]" />
+                    <span>İrtifa Hattı:</span>
+                  </span>
+                  {quickSubLocations.map((sub) => {
+                    const isSelected =
+                      activeLocation.id === sub.id ||
+                      bundle.location.id === sub.id ||
+                      (Math.abs(bundle.location.lat - sub.lat) < 0.018 &&
+                        Math.abs(bundle.location.lon - sub.lon) < 0.018 &&
+                        Math.abs((bundle.location.elevation ?? sub.elevationM) - sub.elevationM) <
+                          180);
+
+                    return (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        aria-pressed={isSelected}
+                        title={sub.rawName}
+                        onClick={() => handleSelectSubLocation(sub)}
+                        className={`atmos-btn inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-[11px] tabular transition-colors ${
+                          isSelected
+                            ? "border-[rgba(var(--atmos-accent-rgb),0.55)] bg-[rgba(var(--atmos-accent-rgb),0.16)] text-ink-primary font-semibold"
+                            : "border-white/10 bg-[#080d18]/82 text-ink-secondary hover:border-white/25 hover:text-ink-primary"
+                        }`}
+                      >
+                        {sub.role === "summit" ? (
+                          <Mountain className="h-3 w-3 shrink-0 text-sky-300" />
+                        ) : sub.role === "coast" ? (
+                          <Waves className="h-3 w-3 shrink-0 text-cyan-300" />
+                        ) : null}
+                        <span className="truncate max-w-[168px] sm:max-w-[220px]">
+                          {sub.displayLabel}
+                        </span>
+                        <span className="text-[10px] text-ink-muted">
+                          {SUB_LOCATION_ROLE_LABEL_TR[sub.role]} ·{" "}
+                          {formatElevation(sub.elevationM, unit)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Tekil Durum Çipleri Satırı (Sıfır Tekrar & Doğru Çapalar) */}
@@ -826,6 +1282,24 @@ export default function HeroSceneView() {
                 </a>
               )}
 
+              {waterBodyBadge && (
+                <span
+                  title={waterBodyBadge.tooltipTr}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/25 bg-[#08121f]/88 px-3 py-1.5 text-cyan-100"
+                >
+                  <Waves className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+                  <span>
+                    {waterBodyBadge.shortLabelTr}:{" "}
+                    <strong className="text-white">
+                      {formatTemperature(waterBodyBadge.tempC, unit, {
+                        decimals: 1,
+                        showUnit: true
+                      })}
+                    </strong>
+                  </span>
+                </span>
+              )}
+
               <a
                 href="#hava-kalitesi"
                 onClick={(e) => handleAnchorJump(e, "hava-kalitesi")}
@@ -857,6 +1331,19 @@ export default function HeroSceneView() {
                 →
               </Link>
             </div>
+
+            {activeMicroclimateTags.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] tabular">
+                {activeMicroclimateTags.slice(0, 4).map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-md border border-sky-400/20 bg-sky-500/[0.08] px-2 py-0.5 text-sky-200"
+                  >
+                    {localizeMetricProse(tag, unit)}
+                  </span>
+                ))}
+              </div>
+            )}
 
             {/* Sinoptik Eşik Uyarıları (yalnızca aktif eşik aşıldığında) */}
             {synopticSignals.length > 0 && (
@@ -1212,13 +1699,10 @@ export default function HeroSceneView() {
                 <Layers className="h-3.5 w-3.5" />
                 {bundle.hybrid.engineVersion ?? "ATMOS-Core v5.0"}
                 {bundle.hybrid.ensembleMembers ? ` + ${bundle.hybrid.ensembleMembers} EPS` : ""}
+                {!isBursaProvince && provinceCode ? ` · ${provinceCode}` : ""}
               </p>
               <h2 className="mt-0.5 font-display text-base font-semibold text-ink-primary">
-                {isMgmMesh
-                  ? "MGM 19-İlçe Canlı Kalibrasyonu & 8-Model Doğruluk Tablosu"
-                  : isLiveStation
-                    ? "Canlı İstasyon Kalibrasyonu & 8-Model Doğruluk Tablosu"
-                    : "WMO Öncül Ağırlıklandırma & 8-Model Uzlaşı Tablosu"}
+                {hibritHeadingText}
               </h2>
             </div>
 
@@ -1240,38 +1724,70 @@ export default function HeroSceneView() {
             </div>
           </div>
 
-          {engineMeta && (
+          {(engineMeta || (!isBursaProvince && isTrNonBursaProvince && provinceSummary)) && (
             <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-signal-sky/25 bg-signal-sky/[0.06] px-4 py-2.5 font-mono text-xs tabular">
               <div className="flex flex-wrap items-center gap-2">
                 <ShieldCheck className="h-4 w-4 text-signal-sky shrink-0" />
-                <span className="font-semibold text-signal-sky">
-                  {engineMeta.activeRegimeLabel}
-                </span>
-                <span className="text-ink-secondary">
-                  · dProg/dt Kararlılık %{engineMeta.stabilityPct} ({Math.round(engineMeta.meanRunLockCount)} koşu kilitli)
-                </span>
-                {engineMeta.ltbrIsolated && (
+                {engineMeta ? (
+                  <>
+                    <span className="font-semibold text-signal-sky">
+                      {localizeMetricProse(engineMeta.activeRegimeLabel, unit)}
+                    </span>
+                    <span className="text-ink-secondary">
+                      · dProg/dt Kararlılık %{engineMeta.stabilityPct} ({Math.round(engineMeta.meanRunLockCount)} koşu kilitli)
+                    </span>
+                  </>
+                ) : (
+                  <span className="font-semibold text-signal-sky">
+                    {provinceName} Mikroiklim & Fiziksel İrtifa Ağı
+                  </span>
+                )}
+                {isBursaProvince && engineMeta?.ltbrIsolated && (
                   <span className="rounded bg-signal-emerald/15 px-1.5 py-0.5 text-[10px] text-signal-emerald">
                     {engineMeta.bursaTier1Online} Bursa MGM Sensörü Aktif · LTBR İzole
                   </span>
                 )}
+                {!isBursaProvince && isTrNonBursaProvince && (
+                  <span className="rounded bg-signal-emerald/15 px-1.5 py-0.5 text-[10px] text-signal-emerald">
+                    {nonBursaMgmSensorCount > 0
+                      ? `${nonBursaMgmSensorCount} ${provinceName} MGM Sensörü Aktif · `
+                      : ""}
+                    {calibrationTier === "TIER_A"
+                      ? "Tier-A WMO SYNOP"
+                      : "Tier-B Donör + ALARO"}
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+                {waterBodyBadge && (
+                  <span className="text-cyan-200">
+                    {waterBodyBadge.shortLabelTr}:{" "}
+                    {formatTemperature(waterBodyBadge.tempC, unit, {
+                      decimals: 1,
+                      showUnit: true
+                    })}
+                  </span>
+                )}
                 {telemetry.showSnowLine && telemetry.snowLineElevationM !== null && (
                   <span className="text-sky-200">
                     Kar Sınırı: {formatElevation(telemetry.snowLineElevationM, unit)}
                   </span>
                 )}
-                {engineMeta.nextRainOnsetMin !== null && (
+                {engineMeta && engineMeta.nextRainOnsetMin !== null && (
                   <span className="text-signal-amber font-semibold">
                     Radar Yağış Başlangıcı: +{engineMeta.nextRainOnsetMin} dk
                     {temporalView.frameIndex > 0 ? " (Şimdi)" : ""}
                   </span>
                 )}
-                {engineMeta.radarSummaryCode === "VIRGA_ALOFT" && (
+                {engineMeta?.radarSummaryCode === "VIRGA_ALOFT" && (
                   <span className="text-amber-200">Alt Seviye Virga Bastırıldı</span>
                 )}
-                {engineMeta.blockedFlipFlops > 0 && (
+                {engineMeta && (engineMeta.bimodalHoursResolved ?? 0) > 0 && (
+                  <span className="text-sky-200/90">
+                    Çift-Modlu Çözüm: {engineMeta.bimodalHoursResolved}s
+                  </span>
+                )}
+                {engineMeta && engineMeta.blockedFlipFlops > 0 && (
                   <span>Engellenen Sapma: {engineMeta.blockedFlipFlops}s</span>
                 )}
               </div>

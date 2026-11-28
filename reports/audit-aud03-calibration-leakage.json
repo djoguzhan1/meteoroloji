@@ -1,0 +1,388 @@
+{
+  "auditId": "AUD-03",
+  "wave": "Wave 3D",
+  "title": "Sıfır-Bağlam Bağımsız Kalibrasyon Dürüstlüğü, ERA5 Yasağı, METAR/İstasyon Mülkiyet Ayrıklığı ve Bursa SHA-256 Bütünlük Denetimi",
+  "auditedAtIso": "2026-11-28T17:58:00+03:00",
+  "writeLockRespected": true,
+  "modifiedProductionFiles": [],
+  "overallSummary": {
+    "era5ZeroBanStatus": "PASS",
+    "tr80SpecVsEmosTierConsistencyStatus": "PASS",
+    "convexSimplexInvariantStatus": "PASS",
+    "tierBZeroInterceptAndDriverRuleStatus": "PASS",
+    "metarTableDisjointnessStatus": "PASS",
+    "bursaSha256ImmutabilityStatus": "PASS",
+    "bursaCatalogPreservationStatus": "PASS",
+    "crossModuleDiscrepanciesDetected": 6,
+    "verdict": "CONDITIONAL_PASS_WITH_EXPLICIT_FINDINGS"
+  },
+  "criterion1_era5ZeroBan": {
+    "status": "PASS",
+    "scannedTargets": [
+      "lib/provinces/** (175 dosya)",
+      "scripts/calibrate-tr80-honest-wmo.mjs",
+      "reports/tr80-calibration-cv-audit.json",
+      "/tmp/tr80-cal-cache/nwp/** (45 dosya) & /tmp/tr80-cal-cache/wmo/** (61 dosya)"
+    ],
+    "forbiddenPatternsChecked": [
+      "archive-api.open-meteo.com",
+      "era5_land",
+      "era5",
+      "17120 (Bilecik/Ankara kalibrasyon çakışması)",
+      "37787 (Ermenistan yabancı WMO kodu)"
+    ],
+    "matchesFound": 0,
+    "reanalysisSurrogatesUsedInAuditReport": false,
+    "verifiedDataSources": {
+      "observationsEndpoint": "https://bulk.meteostat.net/v2/hourly/{2024,2025}/{fileId}.csv.gz",
+      "tierAStationCount": 60,
+      "matchedHoursRangePerStation": [17083, 17544],
+      "meanMatchedHoursPerStation": 17322,
+      "nwpForecastEndpoint": "https://historical-forecast-api.open-meteo.com/v1/forecast",
+      "concreteNwpModels": [
+        "ecmwf_ifs",
+        "ecmwf_aifs025",
+        "ecmwf_aifs025_single",
+        "icon_eu",
+        "ukmo_global_deterministic_10km",
+        "arpege_europe",
+        "meteofrance_arpege_world",
+        "gfs_global",
+        "gem_global",
+        "jma_gsm"
+      ]
+    }
+  },
+  "criterion2_tr80CalibrationAndSpecConsistency": {
+    "status": "PASS_WITH_METHODOLOGICAL_NOTES",
+    "totalNonBursaProvincesChecked": 80,
+    "bursaTr16ExcludedFromRegistryAndEmosWeights": true,
+    "provinceCodeMismatches": [],
+    "calibrationTierMismatches": [],
+    "specTierCounts": {
+      "TIER_A_WMO": 60,
+      "TIER_B_DONOR_KALMAN": 20
+    },
+    "emosBundleTierCounts": {
+      "TIER_A_WMO": 60,
+      "TIER_B_DONOR_KALMAN": 20
+    },
+    "emosWave4TierCounts": {
+      "TIER_A_EMPIRICAL_WMO": 60,
+      "TIER_B_DONOR_ALARO": 20
+    },
+    "simplexVerification": {
+      "provincesChecked": 80,
+      "vectorsPerProvince": 34,
+      "totalVectorsChecked": 2720,
+      "breakdownPerProvince": {
+        "temperatureCells_4seasons_x_3horizons": 12,
+        "precipitationCells_4seasons": 4,
+        "slicesTemp_4seasons_x_2horizons": 8,
+        "slicesPrecip_4seasons_x_2horizons": 8,
+        "windWeights": 1,
+        "pressureWeights": 1
+      },
+      "minModelWeightObserved": 0.02,
+      "maxModelWeightObserved": 0.86,
+      "maxAbsSumDeviationFromOne": 2.220446e-16,
+      "toleranceAllowed": 1e-5,
+      "violationsCount": 0
+    },
+    "tierBZeroInterceptVerification": {
+      "tierBProvincesCount": 20,
+      "tierBProvinceCodes": [
+        "TR-11", "TR-13", "TR-30", "TR-39", "TR-45",
+        "TR-47", "TR-52", "TR-62", "TR-68", "TR-69",
+        "TR-70", "TR-71", "TR-73", "TR-74", "TR-75",
+        "TR-76", "TR-78", "TR-79", "TR-80", "TR-81"
+      ],
+      "temperatureCellsChecked": 240,
+      "slicesChecked": 160,
+      "allInterceptCEqualsZero": true,
+      "allDiurnalHarmonicsCEqualsZeroTuple4": true,
+      "allDriverBetasCEqualsZeroTuple4": true,
+      "allSliceInterceptEqualsZero": true,
+      "allSliceBetaDriversEqualsZeroTuple6": true,
+      "allSliceMaxResidualShiftCEqualsZero": true,
+      "allAlaroAnchorWeight0to72hEquals024": true,
+      "allDonorsStrictlyInTierASet": true,
+      "allDonorWeightsSumToOne": true,
+      "violationsCount": 0
+    }
+  },
+  "criterion3_disjointStationMetarCatalogAndBursaIntegrity": {
+    "metarVerifyDisjointness": {
+      "status": "PASS",
+      "totalProvincesInTable": 81,
+      "provincesWithActiveIcaos": 50,
+      "provincesWithEmptyWhitelist": 31,
+      "totalUniqueLtIcaos": 67,
+      "duplicateIcaoAssignmentsAcrossProvinces": [],
+      "nonTurkishOrInvalidFormatIcaos": [],
+      "bursaTr16Whitelist": ["LTBR"],
+      "crossProvinceLeakageRatePct": 0.0
+    },
+    "specIcaoWhitelistComparison": {
+      "status": "NO_LEAKAGE_SUBSET_AND_ORDER_DIFFS_FOUND",
+      "crossProvinceOrForeignIcaosInSpecs": [],
+      "all80SpecsSubsetOfAuthoritativeMetarTable": true,
+      "subsetMismatchesCount": 4,
+      "subsetMismatches": [
+        {
+          "provinceCode": "TR-09",
+          "provinceName": "Aydın",
+          "specIcaoWhitelist": [],
+          "metarVerifyWhitelist": ["LTBD"],
+          "missingInSpec": ["LTBD"],
+          "note": "specs/tr-09.ts sivil METAR kullanmamak için [] tanımlamış ve TR_09_BESPOKE_META.forbiddenNeighborAndForeignIcaos içinde LTBD'yi yasaklı saymıştır; metar-verify.ts ise Aydın Çıldır (LTBD) meydanını TR-09'a atamaktadır."
+        },
+        {
+          "provinceCode": "TR-17",
+          "provinceName": "Çanakkale",
+          "specIcaoWhitelist": ["LTBH"],
+          "metarVerifyWhitelist": ["LTBH", "LTFK"],
+          "missingInSpec": ["LTFK"],
+          "note": "specs/tr-17.ts yalnızca Çanakkale Merkez (LTBH) içerirken metar-verify.ts Gökçeada (LTFK) meydanını da TR-17 altında barındırmaktadır."
+        },
+        {
+          "provinceCode": "TR-35",
+          "provinceName": "İzmir",
+          "specIcaoWhitelist": ["LTBJ"],
+          "metarVerifyWhitelist": ["LTBJ", "LTBL"],
+          "missingInSpec": ["LTBL"],
+          "note": "specs/tr-35.ts yalnızca Adnan Menderes (LTBJ) içerirken metar-verify.ts Çiğli (LTBL) meydanını da TR-35 altında barındırmaktadır."
+        },
+        {
+          "provinceCode": "TR-45",
+          "provinceName": "Manisa",
+          "specIcaoWhitelist": [],
+          "metarVerifyWhitelist": ["LTBT"],
+          "missingInSpec": ["LTBT"],
+          "note": "specs/tr-45.ts icaoWhitelist=[] olarak tanımlanmışken metar-verify.ts Akhisar (LTBT) meydanını TR-45 altında barındırmaktadır."
+        }
+      ],
+      "elementOrderOnlyDifferencesCount": 3,
+      "elementOrderOnlyDifferences": [
+        {
+          "provinceCode": "TR-10",
+          "provinceName": "Balıkesir",
+          "specIcaoWhitelist": ["LTBG", "LTFD", "LTBF"],
+          "metarVerifyWhitelist": ["LTBF", "LTBG", "LTFD"]
+        },
+        {
+          "provinceCode": "TR-34",
+          "provinceName": "İstanbul",
+          "specIcaoWhitelist": ["LTFM", "LTBA", "LTFJ"],
+          "metarVerifyWhitelist": ["LTFM", "LTFJ", "LTBA"]
+        },
+        {
+          "provinceCode": "TR-48",
+          "provinceName": "Muğla",
+          "specIcaoWhitelist": ["LTFE", "LTBS"],
+          "metarVerifyWhitelist": ["LTBS", "LTFE"]
+        }
+      ]
+    },
+    "wmoAndMgmStationOwnership": {
+      "uniqueTierAWmoStationsCount": 60,
+      "duplicateTierAWmoStations": [],
+      "bursaWmo17116CollisionInTr80": false,
+      "mgm81PrimaryIdsDisjoint": {
+        "primaryMerkezIdUniqueCount": 81,
+        "primarySondurumIstNoUniqueCount": 81,
+        "primarySaatlikIstNoUniqueCount": 81,
+        "primaryGunlukIstNoUniqueCount": 81
+      },
+      "staticMgmIstnoOwnerTableSize": 1907,
+      "specStationOverrideCrossProvinceLeaks": [],
+      "lockedCrossProvinceMgmProxyDistricts": [
+        { "id": "tr-28-canakci", "entryProvince": "TR-28", "mgmMerkezId": 92809, "mgmSondurumIstNo": 18223, "physicalOwner": "TR-61", "lockedInProxySet": true },
+        { "id": "tr-53-iyidere", "entryProvince": "TR-53", "mgmMerkezId": 95305, "mgmSondurumIstNo": 17775, "physicalOwner": "TR-61", "lockedInProxySet": true },
+        { "id": "tr-61-salpazari", "entryProvince": "TR-61", "mgmMerkezId": 96107, "mgmSondurumIstNo": 18559, "physicalOwner": "TR-28", "lockedInProxySet": true }
+      ]
+    },
+    "catalog1102Audit": {
+      "totalEntries": 1102,
+      "provinceCenterCount": 81,
+      "districtCount": 973,
+      "summitSkiCount": 48,
+      "all81ProvinceCentersMatchOwnPolygon": true,
+      "bursaTrPreserved": {
+        "id": "bursa-tr",
+        "provinceCode": "TR-16",
+        "plateNumber": 16,
+        "lat": 40.2308,
+        "lon": 29.0133,
+        "elevationM": 100,
+        "wmoId": "17116",
+        "mgmMerkezId": 91601,
+        "mgmSondurumIstNo": 17116,
+        "mgmSaatlikIstNo": 17116,
+        "mgmGunlukIstNo": 91601,
+        "totalTr16EntriesInCatalog": 19,
+        "all10BursaCuratedIdsPresent": true
+      },
+      "entriesResolvingToOwnProvinceWithAdmin1Hint": 1093,
+      "entriesFailingBoundaryResolutionCount": 9,
+      "entriesOutsideSpecDomainBoundsCount": 2,
+      "boundaryDiscrepancyEntries": [
+        {
+          "id": "tr-62-pulumur",
+          "name": "Pülümür",
+          "kind": "district",
+          "declaredProvince": "TR-62",
+          "lat": 39.4844,
+          "lon": 38.8914,
+          "resolvedProvinceWithAdmin1": "TR-24",
+          "resolvedMethod": "exact_polygon",
+          "rootCause": "Boylamda 1.0 derece yazım hatası (gerçek ~39.8914E yerine 38.8914E); koordinat ~86 km batıda Erzincan (TR-24) sınırları içine düşmektedir."
+        },
+        {
+          "id": "tr-76-karakoyunlu",
+          "name": "Karakoyunlu",
+          "kind": "district",
+          "declaredProvince": "TR-76",
+          "lat": 39.593,
+          "lon": 44.0843,
+          "resolvedProvinceWithAdmin1": "TR-04",
+          "resolvedMethod": "exact_polygon",
+          "rootCause": "Enlem hatası (gerçek ~39.97N yerine 39.593N); koordinat hem TR-76 domainBounds (minLat=39.6272) dışına hem de Ağrı (TR-04) poligonu içine düşmektedir."
+        },
+        {
+          "id": "tr-54-akyazi",
+          "name": "Akyazı",
+          "kind": "district",
+          "declaredProvince": "TR-54",
+          "lat": 40.3664,
+          "lon": 30.6258,
+          "resolvedProvinceWithAdmin1": "TR-14",
+          "resolvedMethod": "exact_polygon",
+          "rootCause": "Enlem sapması (gerçek ~40.685N yerine 40.3664N); koordinat güneyde Bolu (TR-14) poligonu içine düşmektedir."
+        },
+        {
+          "id": "tr-66-yerkoy",
+          "name": "Yerköy",
+          "kind": "district",
+          "declaredProvince": "TR-66",
+          "lat": 39.6575,
+          "lon": 34.4078,
+          "resolvedProvinceWithAdmin1": "TR-40",
+          "resolvedMethod": "exact_polygon",
+          "rootCause": "İl sınır hattının >1.5 km batısında kaldığı için Kırşehir (TR-40) poligonuna düşmektedir."
+        },
+        {
+          "id": "tr-08-kemalpasa",
+          "name": "Kemalpaşa",
+          "kind": "district",
+          "declaredProvince": "TR-08",
+          "lat": 41.5288,
+          "lon": 41.4811,
+          "resolvedProvinceWithAdmin1": "GLOBAL",
+          "resolvedMethod": "global_outside",
+          "rootCause": "Koordinat TR-08 domainBounds (maxLat=41.5245) kuzeyinde Karadeniz/Sarp açıklarında kaldığından yabancı kıyı yakınlık vetosu ile GLOBAL dönmektedir."
+        },
+        {
+          "id": "tr-31-arsuz",
+          "name": "Arsuz",
+          "kind": "district",
+          "declaredProvince": "TR-31",
+          "lat": 36.24,
+          "lon": 35.7833,
+          "resolvedProvinceWithAdmin1": "GLOBAL",
+          "resolvedMethod": "global_outside",
+          "rootCause": "Koordinat İskenderun Körfezi/Akdeniz açığında (>2.5 km coastal_snap mesafesi dışında) kaldığından GLOBAL dönmektedir."
+        },
+        {
+          "id": "tr-34-adalar",
+          "name": "Adalar",
+          "kind": "district",
+          "declaredProvince": "TR-34",
+          "lat": 40.9328,
+          "lon": 28.9489,
+          "resolvedProvinceWithAdmin1": "GLOBAL",
+          "resolvedMethod": "global_outside",
+          "rootCause": "Koordinat Prens Adaları (~40.87N, 29.09E) yerine Marmara Denizi açığında (>6.0 km iç deniz yakalama yarıçapı dışında) kaldığından GLOBAL dönmektedir."
+        },
+        {
+          "id": "tr-53-kackar-zirve",
+          "name": "Kaçkar Dağı Zirve (Çamlıhemşin)",
+          "kind": "summit_ski",
+          "declaredProvince": "TR-53",
+          "lat": 40.8358,
+          "lon": 41.1597,
+          "resolvedProvinceWithAdmin1": "TR-08",
+          "resolvedMethod": "exact_polygon",
+          "rootCause": "Rize–Artvin il sınırı sırtındaki basitleştirilmiş topoloji halkasında >1.5 km Artvin (TR-08) tarafında kalmaktadır."
+        },
+        {
+          "id": "tr-04-agri-dagi-zirve",
+          "name": "Ağrı Dağı Zirve",
+          "kind": "summit_ski",
+          "declaredProvince": "TR-04",
+          "lat": 39.7025,
+          "lon": 44.298,
+          "resolvedProvinceWithAdmin1": "TR-76",
+          "resolvedMethod": "exact_polygon",
+          "rootCause": "Ağrı–Iğdır sınır konisindeki basitleştirilmiş topoloji halkasında >1.5 km Iğdır (TR-76) tarafında kalmaktadır."
+        }
+      ]
+    },
+    "bursaImmutabilitySha256": {
+      "status": "PASS",
+      "checkedFileCount": 11,
+      "violations": [],
+      "verifiedHashes": {
+        "lib/bursa-mesh.ts": "6e5dea3778c95da396a60e95dcd904318fa83b33c93c169ee35e884475afb5f8",
+        "lib/bursa-trained-emos.ts": "57674e2e66eead29f588eccd69b53d474e025976db3c3a2ea750a3ec199461b1",
+        "lib/topographic-cressman.ts": "51717eb74db45e7786b9c24ac3d8e49120b6f8becb90a1c80bad0270fb6d068c",
+        "lib/vertical-physics.ts": "42e329ec7be2d662a9bff967d5cca7d7baccea0c344a42981817e6446c21ec21",
+        "lib/emos-precip-fusion.ts": "94ac02f84e5fa37335786e2d6a3f75b60d366e38d97aab03eec4e895fcac8243",
+        "lib/precip-engine.ts": "18f80f171ac6474e7fa1f764bd6dc81444975c61684dfccf74781b4e200fa431",
+        "lib/radar-nowcast.ts": "f9db5ced2fb95e0e51eb4e9710e3bd32172900d95e1922c29cae749f12649c6e",
+        "scripts/benchmark-bursa-365d.mjs": "75ca1d78cdd2ac5ed455e392d044e35f44f77a4dae39d3d82fb4ef298268b224",
+        "reports/bursa-365d-benchmark.json": "88681c094bdcb6174c08f9ad55696d815271a30cd5ce2b313c40514300917651",
+        "tests/bursa-mesh-cressman.test.ts": "96f4f126955005d756801319601c3dda3ee4eac8e9346acc079bcb9eedad69fd",
+        "tests/atmos-v5-zero-drift.test.ts": "85bf13a552a02ad3f909ba68850533664752e373ffd85e427ed84c2b37bc110c"
+      }
+    }
+  },
+  "explicitDiscrepancyFindings": [
+    {
+      "id": "AUD03-CAT-01",
+      "severity": "HIGH",
+      "category": "CATALOG_COORDINATE_BOUNDARY_MISMATCH",
+      "summary": "lib/provinces/catalog-1102.ts içindeki 1.102 kaydın 9'u (tr-62-pulumur, tr-76-karakoyunlu, tr-54-akyazi, tr-66-yerkoy, tr-08-kemalpasa, tr-31-arsuz, tr-34-adalar, tr-53-kackar-zirve, tr-04-agri-dagi-zirve) resolveProvinceCode altında beyan edilen il koduna çözülmemektedir; /api/weather ve /api/models rotalarında koordinat-il uyuşmazlığına (pc verilirse HTTP 400, verilmezse komşu il veya GLOBAL yönlendirmesine) yol açar."
+    },
+    {
+      "id": "AUD03-METAR-01",
+      "severity": "MEDIUM",
+      "category": "SPEC_VS_METAR_VERIFY_WHITELIST_SUBSET_DRIFT",
+      "summary": "Hiçbir ProvinceSpec.icaoWhitelist il-dışı veya yabancı ICAO sızdırmamakla birlikte, 4 ilde (TR-09 Aydın [] vs [LTBD], TR-17 Çanakkale [LTBH] vs [LTBH,LTFK], TR-35 İzmir [LTBJ] vs [LTBJ,LTBL], TR-45 Manisa [] vs [LTBT]) spec dizisi metar-verify.ts tablosunun daraltılmış alt-kümesidir (özellikle TR-09 tr-09.ts LTBD'yi yasaklı sayarken metar-verify.ts izin vermektedir); 3 ilde (TR-10, TR-34, TR-48) ise yalnızca dizi eleman sırası farklıdır."
+    },
+    {
+      "id": "AUD03-METAR-02",
+      "severity": "HIGH",
+      "category": "RUNTIME_METAR_PROVINCE_FIREWALL_UNWIRED_IN_WEATHER_TS",
+      "summary": "lib/metar-verify.ts içinde opts.provinceCode güvenlik duvarı eksiksiz kodlanmış olmasına rağmen, lib/weather.ts:1158 çağrısı fetchMetarNetworkHistory(location.lat, location.lon, 4, 85) şeklinde opts.provinceCode geçirmeden yapıldığı için çalışma zamanında GLOBAL bbox moduna düşmektedir."
+    },
+    {
+      "id": "AUD03-CAL-01",
+      "severity": "LOW",
+      "category": "CALIBRATION_CV_PRE_FOLD_PRIOR_AND_BRIER_CLAMP",
+      "summary": "scripts/calibrate-tr80-honest-wmo.mjs içinde medium_73_240h önsel varyans ağırlıkları (satır 737-755) ve yağış model ağırlıkları wPrecip (satır 979-996) 5-katlı blok CV döngüsünden önce tam mevsim örneklemi üzerinde hesaplanmakta; büzülme katsayıları (ifsBlendAlpha, bestAlphaInt, bestAlphaDrv) havuzlanmış 168s-purged OOF tahminleri üzerinde seçilmekte; ayrıca 480 Tier-A diliminin 33'ünde calibratedBrier > rawBrier olduğunda raporlanan Brier değeri rawBrier'a klemplenirken tam-örneklem lojistik katsayıları dışa aktarılmaktadır."
+    },
+    {
+      "id": "AUD03-CAL-02",
+      "severity": "INFO",
+      "category": "WMO_STATION_ID_NOMENCLATURE_SPLIT",
+      "summary": "3 Tier-A ilde (TR-31 Hatay: spec 17372 vs bundle LTDA0; TR-41 Kocaeli: spec 17066 vs bundle LTBQ0; TR-77 Yalova: spec 17119 vs bundle LTBP0) spec MGM/WMO merkez kodunu, emos-weights ise Meteostat meydan/istasyon kimliğini tutmaktadır; 7 Tier-B ilde (TR-39, TR-62, TR-68, TR-70, TR-74, TR-78, TR-81) spec.primaryCenter.wmoId tanımlı iken 2024-2025 saatlik SYNOP serisi bulunmadığından bundle.wmoStationId dürüstçe null bırakılmıştır."
+    },
+    {
+      "id": "AUD03-CAL-03",
+      "severity": "LOW",
+      "category": "TIER_B_D2_4_SPREAD_COPY_ASYMMETRY",
+      "summary": "scripts/calibrate-tr80-honest-wmo.mjs:1549 satırında Tier-B temperature[season].d2_4 hücresi ağırlıkları 0.5*(short+med) ile karıştırırken spreadBaseC2 ve spreadScale alanlarını ortalama yerine doğrudan short_0_72h diliminden kopyalamaktadır."
+    }
+  ]
+}

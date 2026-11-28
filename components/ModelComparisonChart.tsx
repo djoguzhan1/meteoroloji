@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Clock, RefreshCw } from "lucide-react";
+import { Clock, Compass, Mountain, RefreshCw, ShieldCheck } from "lucide-react";
 import { useWeatherStatus } from "@/context/WeatherContext";
 import {
   readCachedModelsBundleAsync,
@@ -15,16 +15,20 @@ import {
   reanchorMultiModelBundleToNow
 } from "@/lib/forecast-resilience";
 import { CORE_MODEL_KEYS, CORE_MODEL_META } from "@/lib/model-registry";
+import type { CalibrationTier, ProvinceClientSummary } from "@/lib/provinces/types";
 import {
   ATMOS_REFRESH_ALL_EVENT,
   convertPrecipMm,
   convertTempValue,
   convertWindSpeed,
+  formatElevation,
   formatPrecip,
   formatTempDelta,
   formatTemperature
 } from "@/lib/weather-client";
 import type {
+  AtmosCalibrationTierLabel,
+  AtmosEngineMeta,
   CoreModelKey,
   GeoLocation,
   ModelSeriesPoint,
@@ -40,6 +44,8 @@ export interface ModelComparisonChartProps {
   unit: UnitSystem;
   syncedTimeIso?: string | null;
   onInspectTimeChange?: (iso: string | null) => void;
+  provinceSummary?: ProvinceClientSummary | null;
+  engineMeta?: AtmosEngineMeta | null;
 }
 
 export interface HorizonModelItemSummary {
@@ -59,6 +65,117 @@ export interface HorizonModelSummaryResult {
   maxSpreadFormatted: string;
   maxSpreadTimeIso: string | null;
   maxSpreadTimeLabel: string | null;
+}
+
+type CanonicalTierBadgeCode =
+  | CalibrationTier
+  | "GLOBAL";
+
+interface ResolvedTierBadge {
+  code: CanonicalTierBadgeCode;
+  detail: string;
+  className: string;
+}
+
+const VALID_PROVINCE_CODE_RE = /^(?:TR-(?:0[1-9]|[1-7][0-9]|8[01])|GLOBAL)$/i;
+
+function normalizeProvinceCode(raw?: string | null): string | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const trimmed = raw.trim().toUpperCase();
+  return VALID_PROVINCE_CODE_RE.test(trimmed) ? trimmed : undefined;
+}
+
+function hasProvinceConflict(
+  a?: string | null,
+  b?: string | null
+): boolean {
+  const pa = normalizeProvinceCode(a);
+  const pb = normalizeProvinceCode(b);
+  if (!pa || !pb) return false;
+  return pa !== pb;
+}
+
+function isSameModelTarget(
+  candidate:
+    | {
+        lat: number;
+        lon: number;
+        elevation?: number;
+        id?: string;
+        provinceCode?: string | null;
+      }
+    | null
+    | undefined,
+  target: GeoLocation
+): boolean {
+  if (!candidate) return false;
+  if (hasProvinceConflict(candidate.provinceCode, target.provinceCode)) {
+    return false;
+  }
+  return areLocationsEquivalent(
+    {
+      id: candidate.id,
+      lat: candidate.lat,
+      lon: candidate.lon,
+      elevation: candidate.elevation
+    },
+    target
+  );
+}
+
+function resolveCalibrationTierBadge(params: {
+  provinceCode?: string | null;
+  summaryTier?: CalibrationTier | null;
+  engineTier?: AtmosCalibrationTierLabel | null;
+}): ResolvedTierBadge | null {
+  const pc = normalizeProvinceCode(params.provinceCode);
+  const { summaryTier, engineTier } = params;
+
+  if (
+    pc === "TR-16" &&
+    (summaryTier === "TIER_0_BURSA" ||
+      engineTier === "BURSA_FROZEN_V5" ||
+      (!summaryTier && !engineTier))
+  ) {
+    return {
+      code: "TIER_0_BURSA",
+      detail: "Dondurulmuş Referans v5",
+      className:
+        "border-emerald-400/35 bg-emerald-500/12 text-emerald-200"
+    };
+  }
+
+  if (
+    summaryTier === "TIER_A_WMO" ||
+    engineTier === "TIER_A_EMPIRICAL_WMO"
+  ) {
+    return {
+      code: "TIER_A_WMO",
+      detail: "Ampirik WMO + Kalman",
+      className: "border-signal-sky/35 bg-signal-sky/12 text-sky-200"
+    };
+  }
+
+  if (
+    summaryTier === "TIER_B_DONOR_KALMAN" ||
+    engineTier === "TIER_B_DONOR_ALARO"
+  ) {
+    return {
+      code: "TIER_B_DONOR_KALMAN",
+      detail: "Donör EMOS + Kalman",
+      className: "border-indigo-400/35 bg-indigo-500/12 text-indigo-200"
+    };
+  }
+
+  if (pc === "GLOBAL" || engineTier === "GLOBAL") {
+    return {
+      code: "GLOBAL",
+      detail: "Küresel Hibrit NWP",
+      className: "border-white/15 bg-white/[0.06] text-ink-secondary"
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -251,7 +368,7 @@ function buildLinePath(points: Array<{ x: number; y: number | null }>): string {
   return d.trim();
 }
 
-function buildModelsApiQuery(location: GeoLocation): URLSearchParams {
+function buildModelsApiUrl(location: GeoLocation): string {
   const qs = new URLSearchParams({
     lat: String(location.lat),
     lon: String(location.lon)
@@ -265,20 +382,29 @@ function buildModelsApiQuery(location: GeoLocation): URLSearchParams {
   if (location.country?.trim()) {
     qs.set("country", location.country.trim());
   }
+  if (location.countryCode?.trim()) {
+    qs.set("cc", location.countryCode.trim().toUpperCase());
+  }
   if (location.id?.trim()) {
     qs.set("id", location.id.trim());
   }
   if (location.elevation !== undefined && Number.isFinite(location.elevation)) {
     qs.set("elevation", String(Math.round(location.elevation)));
   }
-  return qs;
+  const normalizedPc = normalizeProvinceCode(location.provinceCode);
+  const pcSuffix = normalizedPc
+    ? `&pc=${encodeURIComponent(normalizedPc)}`
+    : "";
+  return `/api/models?${qs.toString()}${pcSuffix}`;
 }
 
 function ModelComparisonChartBase({
   location,
   unit,
   syncedTimeIso,
-  onInspectTimeChange
+  onInspectTimeChange,
+  provinceSummary,
+  engineMeta
 }: ModelComparisonChartProps) {
   const { recoveryCount, isOffline } = useWeatherStatus();
 
@@ -311,6 +437,7 @@ function ModelComparisonChartBase({
 
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const reqSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
   const modelsRef = useRef<MultiModelBundle | null>(null);
   const locRef = useRef<GeoLocation>(location);
   const lastEmittedIsoRef = useRef<string | null>(null);
@@ -323,31 +450,36 @@ function ModelComparisonChartBase({
     locRef.current = location;
   }, [location]);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, []);
+
   const loadModels = useCallback(
     async (opts?: { background?: boolean; forceNoStore?: boolean }) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       const seq = ++reqSeqRef.current;
       const targetLoc: GeoLocation = {
         id: location.id,
         name: location.name,
         admin1: location.admin1,
+        district: location.district,
+        provinceCode: normalizeProvinceCode(location.provinceCode),
         country: location.country,
+        countryCode: location.countryCode,
         lat: location.lat,
         lon: location.lon,
         elevation: location.elevation,
         timezone: location.timezone
       };
 
-      const hasMatching =
-        modelsRef.current !== null &&
-        areLocationsEquivalent(
-          {
-            lat: modelsRef.current.lat,
-            lon: modelsRef.current.lon,
-            elevation: modelsRef.current.elevation
-          },
-          targetLoc
-        );
-      const isBg = Boolean(opts?.background || hasMatching);
+      const hasMatching = isSameModelTarget(modelsRef.current, targetLoc);
+      const isBg = Boolean((opts?.background ?? false) && hasMatching) || hasMatching;
 
       if (isBg) {
         setRevalidating(true);
@@ -357,48 +489,52 @@ function ModelComparisonChartBase({
       }
 
       try {
-        const qs = buildModelsApiQuery(targetLoc);
+        const apiUrl = buildModelsApiUrl(targetLoc);
         const bypassCache =
           Boolean(opts?.forceNoStore) ||
           isBg ||
           modelsRef.current?.freshness?.status !== "live";
-        const res = await fetch(`/api/models?${qs.toString()}`, {
-          cache: bypassCache ? "no-store" : "default"
+        const res = await fetch(apiUrl, {
+          cache: bypassCache ? "no-store" : "default",
+          signal: controller.signal
         });
+        if (controller.signal.aborted || seq !== reqSeqRef.current) return;
+
         if (!res.ok) {
           const body = await res.json().catch(() => null);
           throw new Error(body?.error ?? `HTTP ${res.status}`);
         }
         const data: MultiModelBundle = await res.json();
-        if (seq !== reqSeqRef.current) return;
-        if (!areLocationsEquivalent(locRef.current, targetLoc)) {
+        if (controller.signal.aborted || seq !== reqSeqRef.current) return;
+        if (
+          !isSameModelTarget(locRef.current, targetLoc) ||
+          !isSameModelTarget(data, targetLoc) ||
+          !isSameModelTarget(data, locRef.current)
+        ) {
           return;
         }
 
         if ((data.freshness?.status ?? "live") === "live") {
           writeCachedModelsBundle(data);
         }
+        modelsRef.current = data;
         setModels(data);
         setError(null);
         if (!isBg && !syncedTimeIso) setHoverIdx(0);
       } catch (e) {
-        if (seq !== reqSeqRef.current) return;
+        if (
+          controller.signal.aborted ||
+          (e instanceof Error && e.name === "AbortError") ||
+          seq !== reqSeqRef.current
+        ) {
+          return;
+        }
         const msg =
           e instanceof Error
             ? e.message
             : "8-Model sayısal tahmin verileri alınamadı.";
 
-        if (
-          modelsRef.current &&
-          areLocationsEquivalent(
-            {
-              lat: modelsRef.current.lat,
-              lon: modelsRef.current.lon,
-              elevation: modelsRef.current.elevation
-            },
-            targetLoc
-          )
-        ) {
+        if (modelsRef.current && isSameModelTarget(modelsRef.current, targetLoc)) {
           const reanchored = reanchorMultiModelBundleToNow(
             modelsRef.current,
             Date.now(),
@@ -416,6 +552,7 @@ function ModelComparisonChartBase({
                 modelsRef.current.freshness?.modelsRespondedCount
             }
           );
+          modelsRef.current = reanchored;
           setModels(reanchored);
           setError(null);
         } else {
@@ -425,17 +562,24 @@ function ModelComparisonChartBase({
             Date.now(),
             { forceStale: true, staleReason: msg }
           );
-          if (seq !== reqSeqRef.current) return;
-          if (cached) {
+          if (controller.signal.aborted || seq !== reqSeqRef.current) return;
+          if (!isSameModelTarget(locRef.current, targetLoc)) return;
+
+          if (cached && isSameModelTarget(cached, targetLoc)) {
+            modelsRef.current = cached;
             setModels(cached);
             setError(null);
             if (!syncedTimeIso) setHoverIdx(0);
           } else {
+            modelsRef.current = null;
             setModels(null);
             setError(msg);
           }
         }
       } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
         if (seq === reqSeqRef.current) {
           setLoading(false);
           setRevalidating(false);
@@ -448,25 +592,23 @@ function ModelComparisonChartBase({
       location.id,
       location.name,
       location.admin1,
+      location.district,
+      location.provinceCode,
       location.country,
+      location.countryCode,
       location.elevation,
       location.timezone,
       syncedTimeIso
     ]
   );
 
-  // Hydrate city-isolated cache immediately on location change, then fetch live
+  // Hydrate city-isolated cache immediately on location/province change, then fetch live
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
       const cur = modelsRef.current;
-      const sameLoc =
-        cur !== null &&
-        areLocationsEquivalent(
-          { lat: cur.lat, lon: cur.lon, elevation: cur.elevation },
-          location
-        );
+      const sameLoc = isSameModelTarget(cur, location);
 
       if (!sameLoc) {
         const syncHit = readCachedModelsBundleSync(
@@ -475,13 +617,7 @@ function ModelComparisonChartBase({
           Date.now(),
           { forceStale: isOffline }
         );
-        if (
-          syncHit &&
-          areLocationsEquivalent(
-            { lat: syncHit.lat, lon: syncHit.lon, elevation: syncHit.elevation },
-            location
-          )
-        ) {
+        if (syncHit && isSameModelTarget(syncHit, location)) {
           modelsRef.current = syncHit;
           setModels(syncHit);
           setError(null);
@@ -496,12 +632,14 @@ function ModelComparisonChartBase({
     });
     return () => {
       active = false;
+      abortRef.current?.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     location.lat,
     location.lon,
     location.id,
+    location.provinceCode,
     location.elevation,
     loadModels
   ]);
@@ -525,10 +663,16 @@ function ModelComparisonChartBase({
     };
   }, [loadModels]);
 
+  // Zero-frame cross-city shield: never expose an older city's series under a newly selected location
+  const activeModels = useMemo(
+    () => (models && isSameModelTarget(models, location) ? models : null),
+    [models, location]
+  );
+
   // Self-healing retry loop if models chart is stale or failed while online
   const isModelsStale =
-    models?.freshness?.status === "stale" ||
-    models?.freshness?.status === "degraded";
+    activeModels?.freshness?.status === "stale" ||
+    activeModels?.freshness?.status === "degraded";
   useEffect(() => {
     if (isOffline || (!isModelsStale && !error) || loading || revalidating) {
       return;
@@ -541,8 +685,8 @@ function ModelComparisonChartBase({
 
   // Sync external `syncedTimeIso` onto chart cursor (and expand horizon if needed)
   useEffect(() => {
-    if (!syncedTimeIso || !models) return;
-    const fullSeries = models[tab] ?? [];
+    if (!syncedTimeIso || !activeModels) return;
+    const fullSeries = activeModels[tab] ?? [];
     if (fullSeries.length === 0) return;
 
     let matchIdx = fullSeries.findIndex((pt) => pt.time === syncedTimeIso);
@@ -564,14 +708,14 @@ function ModelComparisonChartBase({
       setHoverIdx(matchIdx);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncedTimeIso, models, tab]);
+  }, [syncedTimeIso, activeModels, tab]);
 
   const activeSeries: ModelSeriesPoint[] = useMemo(() => {
-    if (!models) return [];
-    return (models[tab] ?? []).slice(0, horizonHours);
-  }, [models, tab, horizonHours]);
+    if (!activeModels) return [];
+    return (activeModels[tab] ?? []).slice(0, horizonHours);
+  }, [activeModels, tab, horizonHours]);
 
-  const hasChartDom = Boolean(models && activeSeries.length > 0);
+  const hasChartDom = Boolean(activeModels && activeSeries.length > 0);
 
   // Measure real CSS pixel width via ResizeObserver so 360px mobile renders 1:1 native text
   useEffect(() => {
@@ -768,24 +912,84 @@ function ModelComparisonChartBase({
   }, [inspected, tab, unit, visibleModels]);
 
   const horizonSummary = useMemo(() => {
-    if (!models) return null;
+    if (!activeModels) return null;
     return computeHorizonModelSummary({
-      temp2m: models.temp2m ?? [],
-      temp850: models.temp850 ?? [],
-      precip: models.precip ?? [],
+      temp2m: activeModels.temp2m ?? [],
+      temp850: activeModels.temp850 ?? [],
+      precip: activeModels.precip ?? [],
       horizonHours,
       visibleModels,
       unit
     });
-  }, [models, horizonHours, visibleModels, unit]);
+  }, [activeModels, horizonHours, visibleModels, unit]);
+
+  const resolvedProvinceCode = useMemo(
+    () =>
+      normalizeProvinceCode(
+        activeModels?.provinceCode ??
+          location.provinceCode ??
+          provinceSummary?.provinceCode ??
+          engineMeta?.provinceCode
+      ),
+    [
+      activeModels?.provinceCode,
+      location.provinceCode,
+      provinceSummary?.provinceCode,
+      engineMeta?.provinceCode
+    ]
+  );
+
+  const summaryMatchesLocation =
+    !provinceSummary ||
+    !hasProvinceConflict(provinceSummary.provinceCode, resolvedProvinceCode);
+  const engineMatchesLocation =
+    !engineMeta ||
+    !hasProvinceConflict(engineMeta.provinceCode, resolvedProvinceCode);
+
+  const safeSummary = summaryMatchesLocation ? provinceSummary : null;
+  const safeEngineMeta = engineMatchesLocation ? engineMeta : null;
+
+  const tierBadge = useMemo(
+    () =>
+      resolveCalibrationTierBadge({
+        provinceCode: resolvedProvinceCode,
+        summaryTier: safeSummary?.calibrationTier ?? null,
+        engineTier: safeEngineMeta?.calibrationTier ?? null
+      }),
+    [
+      resolvedProvinceCode,
+      safeSummary?.calibrationTier,
+      safeEngineMeta?.calibrationTier
+    ]
+  );
+
+  const targetElevationM =
+    location.elevation ??
+    activeModels?.elevation ??
+    safeSummary?.canonicalCenter.elevationM;
+
+  const microclimateTags = useMemo(
+    () => (safeEngineMeta?.activeMicroclimateTags ?? []).slice(0, 4),
+    [safeEngineMeta?.activeMicroclimateTags]
+  );
 
   const rawUnitSuffix =
     unit === "imperial" ? TAB_CONFIG[tab].unitImperial : TAB_CONFIG[tab].unitMetric;
   const unitSuffix = rawUnitSuffix.startsWith("°") ? rawUnitSuffix : ` ${rawUnitSuffix}`;
-  const activeSubtitle =
-    unit === "imperial" && TAB_CONFIG[tab].subtitleImperial
+
+  const activeSubtitle = useMemo(() => {
+    if (
+      tab === "temp850" &&
+      targetElevationM !== undefined &&
+      Number.isFinite(targetElevationM) &&
+      targetElevationM >= 1450
+    ) {
+      return `Yüksek irtifa hedefi (${formatElevation(targetElevationM, unit)}): 850 hPa düzeyi istasyon sınır tabakası / zemin seviyesiyle kesişir`;
+    }
+    return unit === "imperial" && TAB_CONFIG[tab].subtitleImperial
       ? TAB_CONFIG[tab].subtitleImperial
       : TAB_CONFIG[tab].subtitle;
+  }, [tab, targetElevationM, unit]);
 
   const emitInspectTime = useCallback(
     (nextIdx: number, series: ModelSeriesPoint[]) => {
@@ -810,37 +1014,83 @@ function ModelComparisonChartBase({
     emitInspectTime(nextIdx, activeSeries);
   };
 
-  const showArchiveBadge = Boolean(models && (isModelsStale || isOffline));
+  const showArchiveBadge = Boolean(activeModels && (isModelsStale || isOffline));
   const axisFontSize = chartWidth < 480 ? 10.5 : 11;
 
   return (
     <section className="surface-panel p-5 sm:p-6 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
+        <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-display text-lg font-semibold text-ink-primary">
               {horizonHours === 360 ? "15 Günlük (360s)" : `${horizonHours} Saatlik`} 8-Model Karşılaştırma
             </h2>
-            {showArchiveBadge && models && (
+            {resolvedProvinceCode && resolvedProvinceCode !== "GLOBAL" && (
+              <span className="inline-flex items-center rounded-md border border-white/15 bg-white/[0.05] px-2 py-0.5 font-mono text-[11px] font-medium text-ink-primary tabular">
+                {resolvedProvinceCode}
+                {safeSummary?.provinceName ? ` · ${safeSummary.provinceName}` : ""}
+              </span>
+            )}
+            {tierBadge && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${tierBadge.className}`}
+              >
+                <ShieldCheck className="h-3 w-3" />
+                <span>
+                  {tierBadge.code} · {tierBadge.detail}
+                </span>
+              </span>
+            )}
+            {targetElevationM !== undefined && Number.isFinite(targetElevationM) && (
+              <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-obsidian-950/70 px-2 py-0.5 font-mono text-[11px] text-ink-secondary tabular">
+                <Mountain className="h-3 w-3 text-signal-sky" />
+                <span>Hedef {formatElevation(targetElevationM, unit)}</span>
+              </span>
+            )}
+            {showArchiveBadge && activeModels && (
               <span className="inline-flex items-center gap-1.5 rounded-lg border border-signal-amber/35 bg-signal-amber/12 px-2.5 py-0.5 font-mono text-[11px] text-amber-200 tabular">
                 <Clock className="h-3 w-3 text-signal-amber" />
                 <span>
-                  Arşiv · {formatFreshnessAgeTr(models.fetchedAt)} (
-                  {formatClockTr(models.fetchedAt, location.timezone)})
+                  Arşiv · {formatFreshnessAgeTr(activeModels.fetchedAt)} (
+                  {formatClockTr(activeModels.fetchedAt, location.timezone)})
                 </span>
               </span>
             )}
           </div>
-          <p className="mt-0.5 text-xs text-ink-muted">
-            {location.name} · {activeSubtitle}
+
+          <p className="text-xs text-ink-muted">
+            {location.name}
+            {targetElevationM !== undefined && Number.isFinite(targetElevationM)
+              ? ` (${formatElevation(targetElevationM, unit)})`
+              : ""}{" "}
+            · {activeSubtitle}
           </p>
+
+          {(safeEngineMeta?.activeRegimeLabel || microclimateTags.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              {safeEngineMeta?.activeRegimeLabel && (
+                <span className="inline-flex items-center gap-1 rounded-md border border-signal-sky/25 bg-signal-sky/10 px-2 py-0.5 font-mono text-[10px] text-sky-200">
+                  <Compass className="h-2.5 w-2.5 text-signal-sky" />
+                  <span>{safeEngineMeta.activeRegimeLabel}</span>
+                </span>
+              )}
+              {microclimateTags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-ink-secondary"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() =>
-              void loadModels({ background: Boolean(models), forceNoStore: true })
+              void loadModels({ background: Boolean(activeModels), forceNoStore: true })
             }
             disabled={loading || revalidating}
             title="8-Model serisini yenile"
@@ -861,8 +1111,8 @@ function ModelComparisonChartBase({
                   setHorizonHours(h);
                   setHoverIdx((prev) => {
                     const nextIdx = Math.min(prev, h - 1);
-                    if (models) {
-                      const nextSeries = (models[tab] ?? []).slice(0, h);
+                    if (activeModels) {
+                      const nextSeries = (activeModels[tab] ?? []).slice(0, h);
                       emitInspectTime(nextIdx, nextSeries);
                     }
                     return nextIdx;
@@ -898,7 +1148,7 @@ function ModelComparisonChartBase({
         </div>
       </div>
 
-      {error && !models && (
+      {error && !activeModels && (
         <div className="rounded-xl border border-signal-rose/35 bg-signal-rose/10 p-4 flex items-center justify-between gap-3 text-xs text-ink-primary">
           <span>
             {error} · Bağlantı sağlandığında otomatik olarak yüklenecek.
@@ -913,13 +1163,13 @@ function ModelComparisonChartBase({
         </div>
       )}
 
-      {loading && !models && !error && (
+      {loading && !activeModels && !error && (
         <div className="h-[248px] rounded-xl border border-white/[0.06] bg-obsidian-950/60 flex items-center justify-center font-mono text-xs text-ink-muted">
-          8 küresel ve mezoskaleli model verisi çekiliyor...
+          {location.name} için 8 küresel ve mezoskaleli model verisi çekiliyor...
         </div>
       )}
 
-      {models && activeSeries.length > 0 && (
+      {activeModels && activeSeries.length > 0 && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.07] bg-obsidian-950/60 px-3.5 py-2.5 text-xs font-mono tabular">
             <span className="text-ink-secondary">
@@ -976,7 +1226,7 @@ function ModelComparisonChartBase({
                 onPointerDown={handlePointer}
                 className="block w-full cursor-crosshair select-none touch-pan-y"
                 role="img"
-                aria-label={`8 meteoroloji modeli ${horizonHours} saatlik karşılaştırma grafiği`}
+                aria-label={`${location.name} 8 meteoroloji modeli ${horizonHours} saatlik karşılaştırma grafiği`}
               >
                 {chart.yTicks.map((tick) => (
                   <g key={tick.id}>
@@ -1045,7 +1295,7 @@ function ModelComparisonChartBase({
                   />
                 )}
 
-                <g key={`${tab}-${horizonHours}-${unit}`}>
+                <g key={`${location.id}-${resolvedProvinceCode ?? "loc"}-${tab}-${horizonHours}-${unit}`}>
                   {CORE_MODEL_KEYS.map((k) => {
                     if (!visibleModels[k] || !chart.paths[k]) return null;
                     return (

@@ -1,0 +1,4931 @@
+{
+  "auditMetadata": {
+    "auditId": "AUD-01",
+    "wave": "Wave 3D",
+    "title": "Zero-Context Independent Coastal, Strait, Sea-Effect (DEK) & Orographic Microclimate Audit",
+    "auditedAtIso": "2026-11-28T18:00:00+03:00",
+    "writeLockEnforced": true,
+    "modifiedSourceFilesInLibOrComponents": 0,
+    "scopeNote": "Prompt header says '41 İL DOSYASI' with '(kontrol et: kıyı + geçiş kuşağı illeri!)'; the explicit backticked target list contains 45 coastal + transition province specs (27 marine-coastal + 18 inland/pass transition provinces across Marmara [excl. sovereign TR-16 Bursa], Aegean, Mediterranean, Black Sea, plus TR-18 Çankırı and TR-70 Karaman). All 45/45 files were audited and cross-fingerprinted against all 80 non-Bursa specs.",
+    "targetProvinceCodes": [
+      "TR-01",
+      "TR-03",
+      "TR-05",
+      "TR-07",
+      "TR-08",
+      "TR-09",
+      "TR-10",
+      "TR-11",
+      "TR-14",
+      "TR-15",
+      "TR-17",
+      "TR-18",
+      "TR-19",
+      "TR-20",
+      "TR-22",
+      "TR-28",
+      "TR-29",
+      "TR-31",
+      "TR-32",
+      "TR-33",
+      "TR-34",
+      "TR-35",
+      "TR-37",
+      "TR-39",
+      "TR-41",
+      "TR-43",
+      "TR-45",
+      "TR-46",
+      "TR-48",
+      "TR-52",
+      "TR-53",
+      "TR-54",
+      "TR-55",
+      "TR-57",
+      "TR-59",
+      "TR-60",
+      "TR-61",
+      "TR-64",
+      "TR-67",
+      "TR-70",
+      "TR-74",
+      "TR-77",
+      "TR-78",
+      "TR-80",
+      "TR-81"
+    ],
+    "overallVerdict": "DEFECTS_FOUND_REQUIRING_ORCHESTRATOR_FIX"
+  },
+  "summaryMetrics": {
+    "auditedProvinceCount": 45,
+    "coastalMarineProvinceCount": 27,
+    "landlockedTransitionProvinceCount": 18,
+    "copyPasteAndCloneHunt": {
+      "duplicateStencilOffsetGridsAcross80Specs": 0,
+      "duplicateStencilElevationVectorsAcross80Specs": 0,
+      "nearCloneStencilOffsetPairsGte6Of9": 0,
+      "duplicateSubBasinIdTuplesAcross80Specs": 0,
+      "duplicateSubBasinElevationTuplesAcross80Specs": 0,
+      "duplicateBarrierCouplingOffDiagonalVectorsAcross80Specs": 0,
+      "duplicateDirectionalBarrierParameterTuplesAcross80Specs": 0,
+      "duplicateVenturiCorridorParameterTuplesAcross80Specs": 0,
+      "duplicateWaterBodySstNormalVectorsIn45": 0,
+      "distinctQcAndMosBoundsTuplesIn45": 45,
+      "verdict": "ZERO_COPY_PASTE_100_PERCENT_BESPOKE_TOPOGRAPHY"
+    },
+    "structuralTotalsAcross45": {
+      "totalSubBasins": 203,
+      "totalBarrierCouplingCells": 949,
+      "totalWaterBodies": 38,
+      "waterBodiesByKind": {
+        "open_sea": 23,
+        "inland_sea": 10,
+        "fresh_lake": 3,
+        "alkaline_lake": 2
+      },
+      "totalDirectionalBarriers": 80,
+      "totalVenturiCorridors": 71,
+      "totalStationOverrides": 409,
+      "totalStencilPoints": 405,
+      "totalCuratedSubLocations": 221
+    },
+    "invariantScorecard": {
+      "primaryCenterInsideDomainBounds": "45/45",
+      "primaryCenterResolvesToOwnTrCode": "45/45 (43 exact_polygon + 2 harbour pier coastal_snap: TR-17 0.66km, TR-53 0.036km)",
+      "primaryCenterInsideDeclaredSubBasinBboxAndElev": "45/45",
+      "curatedSubLocationsResolveToOwnTrCodeNoHint": "213/215 (FAIL: TR-17 tr-17-kazdaglari-zirve -> TR-10; TR-33 tr-33-sertavul-gecidi -> TR-70)",
+      "curatedSubLocationsPassApiWeatherProvinceFirewall": "214/215 (FAIL HTTP 400: TR-17 tr-17-kazdaglari-zirve -> TR-10)",
+      "snowElevationBandsStrictlyIncreasing": "45/45",
+      "piecewiseKnotsMStrictlyIncreasing": "45/45",
+      "snowElevationBandsExactMatchTr81Hypso": "45/45",
+      "climatologyNormalsExactMatch1991_2020": "45/45",
+      "calibrationTierExactMatchEmosWeights": "45/45",
+      "barrierCouplingMatrixFullSubBasinCoverage": "45/45",
+      "barrierCouplingMatrixDiagonalsEqualOne": "205/205",
+      "barrierCouplingMatrixValuesInZeroToOne": "949/949",
+      "icaoWhitelistZeroNeighborOrForeignLeakage": "45/45",
+      "icaoWhitelistExactSetMatchMetarVerify": "41/45 (4 subset omissions: TR-09 LTBD, TR-17 LTFK, TR-35 LTBL, TR-45 LTBT)",
+      "landlockedProvincesZeroOpenOrInlandSeaDek": "18/18",
+      "landlockedProvincesZeroMarineApi": "18/18",
+      "cressmanAutoSubBasinResolutionUnhinted": "26/45 (FAIL 19/45 due to province-cressman.ts:169-171 loop-latch bug)",
+      "windwardBarriersFreeOfSelfRainShadowing": "41/45 (FAIL: TR-34 aydos_north_ridge_dek_barrier, TR-43 DOMANIC_KOCAYAYLA_NORTH_SHIELD, TR-11 TR11_BOZUYUK_ANATOLIAN_ESCARPMENT, TR-08 kackar_karcal_coruh_rain_shadow_wall at 25°..30°)",
+      "marineSampleCoordsOffLandmass": "32/33 marine bodies (FAIL: TR-10 south_marmara_bandirma_sea on Kapıdağ landmass)"
+    }
+  },
+  "actionableDefects": [
+    {
+      "defectId": "AUD01-DEFECT-01",
+      "severity": "CRITICAL",
+      "category": "ENGINE_SUBBASIN_RESOLUTION_BUG",
+      "file": "lib/provinces/engine/province-cressman.ts",
+      "lines": "147-174",
+      "affectedProvincesInScope": [
+        "TR-01",
+        "TR-08",
+        "TR-09",
+        "TR-10",
+        "TR-11",
+        "TR-20",
+        "TR-29",
+        "TR-31",
+        "TR-33",
+        "TR-34",
+        "TR-37",
+        "TR-39",
+        "TR-48",
+        "TR-54",
+        "TR-60",
+        "TR-61",
+        "TR-64",
+        "TR-74",
+        "TR-81"
+      ],
+      "summary": "resolveProvinceTargetMetadata() mutates matchedSubBasinId, matchedZone, and matchedUrban on iteration i=0 (spec.subBasins[0]) inside `if (!matchedSubBasinId) matchedSubBasinId = sb.id`. On subsequent iterations with a better (lower) score, `!matchedSubBasinId` is false so `spec.subBasins[0]` stays permanently latched!",
+      "synopticImpact": "Any live coordinate query that omits explicit `subBasinId` collapses onto `subBasins[0]` (almost always the coastal strip). For example: Artvin Merkez (613 m) & Yusufeli canyon collapse onto `hopa_arhavi_kemalpasa_coast` (bypassing the <=0.15 Hopa-Yusufeli barrier matrix); Kastamonu Merkez (800 m) collapses onto `kure_black_sea_littoral` (bypassing the 0.06 Küre wall); İstanbul Bakırköy/Şişli (`marmara_urban_core`, uFrac=0.95) collapses onto `black_sea_north_belt` (uFrac=0.24); Hatay Antakya (`amik_asi_reyhanli_basin`) collapses onto `iskenderun_dortyol_coastal_strip` across the Amanos Mountains.",
+      "orchestratorFix": "In `lib/provinces/engine/province-cressman.ts:147`, hoist `const needSubBasin = !matchedSubBasinId; const needZone = !matchedZone; const needUrban = matchedUrban === undefined;` BEFORE `for (const sb of spec.subBasins)` and guard updates inside `if (score < bestScore)` using `needSubBasin`, `needZone`, and `needUrban`."
+    },
+    {
+      "defectId": "AUD01-DEFECT-02",
+      "severity": "HIGH",
+      "category": "CROSS_PROVINCE_POLYGON_AND_API_400_CRASH",
+      "files": [
+        "lib/provinces/specs/tr-17.ts:93-99",
+        "lib/provinces/specs/tr-33.ts:138-144"
+      ],
+      "affectedProvincesInScope": [
+        "TR-17",
+        "TR-33"
+      ],
+      "summary": "Two curatedSubLocations sit inside neighboring provinces' ADM1 polygons: (1) TR-17 `tr-17-kazdaglari-zirve` (39.7083, 26.8364, Sarıkız) resolves to `TR-10` Balıkesir (`exact_polygon`) even WITH `admin1='Çanakkale'` and `explicitProvinceCode='TR-17'` (>1.5 km inside TR-10), causing `/api/weather?lat=39.7083&lon=26.8364&pc=TR-17` and `/api/models` (`app/api/weather/route.ts:96`) to reject clicks on that sub-location with HTTP 400! (2) TR-33 `tr-33-sertavul-gecidi` (36.9153, 33.2694) resolves to `TR-70` Karaman (`exact_polygon`) whenever called without an `admin1` hint.",
+      "orchestratorFix": "Move `tr-17-kazdaglari-zirve` north onto Çanakkale's northern Kazdağları crest in Bayramiç (e.g. `lat: 39.755, lon: 26.835`, inside TR-17 polygon), and nudge `tr-33-sertavul-gecidi` ~1 km south onto Mersin's southern Sertavul portal in Mut (e.g. `lat: 36.904, lon: 33.269`, inside TR-33 polygon)."
+    },
+    {
+      "defectId": "AUD01-DEFECT-03",
+      "severity": "HIGH",
+      "category": "WINDWARD_BARRIER_SELF_RAIN_SHADOWING",
+      "files": [
+        "lib/provinces/specs/tr-34.ts:404-438",
+        "lib/provinces/specs/tr-43.ts:310-345",
+        "lib/provinces/specs/tr-11.ts:242-271",
+        "lib/provinces/specs/tr-08.ts:352-382"
+      ],
+      "affectedProvincesInScope": [
+        "TR-08",
+        "TR-11",
+        "TR-34",
+        "TR-43"
+      ],
+      "summary": "Windward barrier rules declare `rainShadowSpec.shadowedWindFromSectorDeg` overlapping the SAME northerly windward sector as `upslopeSpec.windFromSectorDeg` on windward sub-basins: (1) TR-34 `aydos_north_ridge_dek_barrier` applies to `black_sea_north_belt` with `upslope: 345°..60° (min 5.5 m/s)` and `shadow: 350°..40° (0.86x)`. Under moderate 15–19 km/h (4.2–5.4 m/s) 10° Poyraz/Yıldız DEK winds, Şile/Kilyos (`black_sea_north_belt`) receives `activeRegime: 'RAIN_SHADOW'` (`0.867x`), suppressing Black Sea DEK snow on the Black Sea coast while `marmara_urban_core` is omitted from `applicableSubBasins`! (2) TR-43 `DOMANIC_KOCAYAYLA_NORTH_SHIELD` overlaps `upslope: 340°..50° (min 5.0 m/s)` with `shadow: 345°..35°` on `DOMANIC_NORTH_BARRIER_SLOPE`. (3) TR-11 `TR11_BOZUYUK_ANATOLIAN_ESCARPMENT` overlaps `upslope: 325°..45°` with `shadow: 290°..335°` across 325°..335°. (4) TR-08 `kackar_karcal_coruh_rain_shadow_wall` sets `foehn: 295°..20°`, `upslope: 315°..45°`, and `shadow: 290°..30°` across both `savsat_karcal_mersivan_alpine` and `yusufeli_inner_coruh_micro_med`; at 25°..30° `bothSectorsOverlap` is false so `savsat_karcal_mersivan_alpine` gets rain-shadowed at 4..6 m/s.",
+      "orchestratorFix": "In `tr-34.ts`, either move northerly lee rain-shadow (`350°..40°`) into a separate barrier rule targeting `['marmara_urban_core']` (or set `aydos_north_ridge_dek_barrier` rainShadow to southerly `185°..235°` Lodos lee shadow for `black_sea_north_belt`). In `tr-43.ts`, move northerly lee shadow onto a separate rule for `KUTAHYA_CENTRAL_PLAIN` (excluding `DOMANIC_NORTH_BARRIER_SLOPE`). In `tr-11.ts`, trim `shadowedWindFromSectorDeg` to `275°..320°` so it does not overlap `325°..45°`. In `tr-08.ts`, split `savsat_karcal_mersivan_alpine` upslope into its own windward rule (or align `foehnSpec.toDeg: 45` / `shadowedWindFromSectorDeg.toDeg: 20`)."
+    },
+    {
+      "defectId": "AUD01-DEFECT-04",
+      "severity": "MEDIUM",
+      "category": "MARINE_SAMPLE_COORD_ON_PENINSULA_LANDMASS",
+      "file": "lib/provinces/specs/tr-10.ts",
+      "lines": "330-338",
+      "affectedProvincesInScope": [
+        "TR-10"
+      ],
+      "summary": "TR-10 `south_marmara_bandirma_sea` (`useOpenMeteoMarineApi: true`) places `sampleCoord: { lat: 40.48, lon: 27.84 }` directly on dry land in the mountainous interior of Kapıdağ Peninsula (`pointInProvincePolygon(40.48, 27.84, 'TR-10') === true`) rather than over the Sea of Marmara / Bandırma-Erdek Gulf.",
+      "orchestratorFix": "Move `south_marmara_bandirma_sea.sampleCoord` offshore into the southern Sea of Marmara / Bandırma Bay (e.g. `{ lat: 40.56, lon: 27.84 }` or `{ lat: 40.40, lon: 27.96 }`, where `pointInProvincePolygon === false`)."
+    },
+    {
+      "defectId": "AUD01-DEFECT-05",
+      "severity": "MEDIUM",
+      "category": "WATERBODY_KIND_TAXONOMY_MISMATCH",
+      "files": [
+        "lib/provinces/specs/tr-08.ts:291",
+        "lib/provinces/specs/tr-53.ts:296",
+        "lib/provinces/specs/tr-61.ts:325"
+      ],
+      "affectedProvincesInScope": [
+        "TR-08",
+        "TR-53",
+        "TR-61"
+      ],
+      "summary": "Eastern Black Sea coastal specs (`TR-08` Artvin, `TR-53` Rize, `TR-61` Trabzon) classify the open Eastern Black Sea (`effectiveFetchKm = 560..650 km`) as `kind: 'inland_sea'`, whereas all other 12 Black Sea coastal provinces (`TR-28, TR-34, TR-37, TR-39, TR-41, TR-52, TR-54, TR-55, TR-57, TR-67, TR-74, TR-81`) use `kind: 'open_sea'` and reserve `'inland_sea'` strictly for the Sea of Marmara and Turkish Straits.",
+      "orchestratorFix": "Change `kind: 'inland_sea'` to `kind: 'open_sea'` in `tr-08.ts`, `tr-53.ts`, and `tr-61.ts`."
+    }
+  ],
+  "advisories": [
+    {
+      "advisoryId": "AUD01-ADVISORY-01",
+      "category": "ICAO_WHITELIST_SUBSET_VS_METAR_VERIFY_TABLE",
+      "affectedProvincesInScope": [
+        "TR-09",
+        "TR-17",
+        "TR-35",
+        "TR-45",
+        "TR-10",
+        "TR-34",
+        "TR-48"
+      ],
+      "details": "Zero neighbor-province or foreign airport leakage exists in any `spec.icaoWhitelist` (45/45 strict subset compliance). However, 4 specs intentionally omit secondary/military/island aerodromes listed in `TURKEY_ICAO_WHITELIST_BY_PROVINCE` (`lib/metar-verify.ts`): TR-09 `[]` vs `['LTBD']` (note: `tr-09.ts:24` also lists `'LTBD'` inside `forbiddenNeighborAndForeignIcaos` even though LTBD is Aydın Çıldır inside TR-09!), TR-17 `['LTBH']` vs `['LTBH', 'LTFK']` (omits civilian Gökçeada Airport `LTFK`), TR-35 `['LTBJ']` vs `['LTBJ', 'LTBL']`, TR-45 `[]` vs `['LTBT']`. Existing regional tests (`reg-01`, `reg-03`, `reg-04`) assert these subset arrays; if Orchestrator aligns `LTFK` in `tr-17.ts`, update `reg-01-trakya.test.ts:82` accordingly. Order-only permutations exist in TR-10, TR-34, and TR-48."
+    },
+    {
+      "advisoryId": "AUD01-ADVISORY-02",
+      "category": "DELTA_PRESSURE_TOP_HPA_BIMODAL_UNIT_CONVENTION",
+      "details": "Across the 45 specs, `inversionAndWedgeSpec.deltaPressureTopHpa` exhibits a bimodal convention split: 23 specs encode relative pressure thickness ΔP in [18, 45] hPa, while 22 specs encode absolute isobaric top pressure P_top in [850, 990] hPa. Currently unread by `province-vertical-profile.ts` (which uses `basinFloorElevationM + coldPoolMaxDepthM`), but any future consumer must normalize values >= 500 hPa as P_top vs < 200 hPa as ΔP."
+    },
+    {
+      "advisoryId": "AUD01-ADVISORY-03",
+      "category": "SIMPLIFIED_TOPOJSON_CAPE_STATION_OFFSET",
+      "affectedProvincesInScope": [
+        "TR-31"
+      ],
+      "details": "TR-31 Hatay `stationOverrides['18858']` (Arsuz, `36.24, 35.7833`, matching `catalog-1102.ts`) sits on Akıncı Burnu >2.5 km seaward of the generalized ADM1 TopoJSON shoreline so `resolveProvinceCode({ lat: 36.24, lon: 35.7833 })` returns `GLOBAL`, while `mgm-dem-repair.ts` explicitly binds station `18858 -> 'TR-31'`."
+    }
+  ],
+  "synopticBenchmarkSpotChecks": {
+    "dardanellesAndBosphorusVenturi": {
+      "provinces": [
+        "TR-17",
+        "TR-34"
+      ],
+      "verified": true,
+      "notes": "TR-17 `dardanelles_ne_sw_venturi` (42.5° bidirectional, 1.34x/1.42x) + `bozcaada_strait_exit_jet` (44°); TR-34 `istanbul_bosphorus_venturi` (30° bidirectional, 1.34x/1.48x, suppressesNocturnalInversion=true) + `TR_34_UHI_CANOPY_SPEC` (3.1°C)."
+    },
+    "iskenderunYarikBelenAndAmanos": {
+      "provinces": [
+        "TR-31",
+        "TR-80",
+        "TR-46"
+      ],
+      "verified": true,
+      "notes": "TR-31 `amanos_west_face_yarikkaya_wall` (60°..135° Yarık Foehn 5.2°C, SW upslope 1.58x) + `belen_yarikkaya_katabatic_chute` (105°, 1.42x/1.55x); TR-80 `gavurdagi_nurdagi_bahce_pass` (78°, 1.36x/1.48x); TR-46 `ahir_engizek_berit_3014m_divide` (3014m, 700 hPa) decoupling Maraş foothill from Elbistan frost basin (coupling 0.05)."
+    },
+    "gulekSertavulAndCubukTaurusFoehn": {
+      "provinces": [
+        "TR-01",
+        "TR-33",
+        "TR-70",
+        "TR-07"
+      ],
+      "verified": true,
+      "notes": "TR-01 `gulek_bogazi_poyraz_chute` (22°, 1.38x/1.52x, Foehn 5.8°C); TR-33 `sertavul_goksu_venturi` (325°, 1.46x/1.62x) paired with TR-70 `sertavul_yellibel_blizzard_gate` (335°, 1.44x/1.60x); TR-07 `cubuk_bogazi_poyraz_chute` (355°, 1.32x/1.44x) + `beydaglari_geyik_amphitheater` (N Foehn 4.5°C vs S flood upslope 1.62x)."
+    },
+    "eastBlackSeaKackarAndHopaYusufeliSplit": {
+      "provinces": [
+        "TR-53",
+        "TR-08",
+        "TR-61",
+        "TR-28",
+        "TR-52",
+        "TR-29"
+      ],
+      "verified": true,
+      "notes": "TR-53 `kackar_north_wall_max_orographic_convergence` (3937m, 700 hPa, Lodos Foehn 10.5°C, NW convergence 1.85x); TR-08 Hopa coastal wall (1.75x upslope) sharply decoupled from Yusufeli Çoruh canyon (`barrierCouplingMatrix` = 0.05 <= 0.15, rain-shadow 0.34x); TR-61 Yoroz Cape shadow vs Of/Beşikdüzü + Değirmendere Foehn (9.2°C); TR-29 Zigana lee continental isolation (`waterBodies: []`)."
+    },
+    "westBlackSeaKureDekAndInteriorBowls": {
+      "provinces": [
+        "TR-67",
+        "TR-74",
+        "TR-37",
+        "TR-57",
+        "TR-78",
+        "TR-14",
+        "TR-81",
+        "TR-18"
+      ],
+      "verified": true,
+      "notes": "TR-67/TR-74/TR-37 steep coastal DEK walls (fetch 480–490 km, DEK watch 11.0–11.5°C, Küre upslope up to 1.95x); TR-37 İnebolu coast vs Gökırmak/LTAL interior bowl coupling 0.06; TR-14 Bolu (enclosure 0.90) & TR-81 Düzce (enclosure 0.94) stratus-locked bowls; TR-18 Çankırı Ilgaz rain-shadow steppe (0.56x, `waterBodies: []`)."
+    },
+    "aegeanImbatAndMenteseUpslope": {
+      "provinces": [
+        "TR-35",
+        "TR-09",
+        "TR-45",
+        "TR-48",
+        "TR-20"
+      ],
+      "verified": true,
+      "notes": "TR-35 İmbat (`275°..315°`, -3.4°C) + Çeşme Etesian jet (1.38x) + Cumaovası/Kemalpaşa cold-pool decoupling (0.14); TR-09 Büyük Menderes 62 km İmbat penetration; TR-45 Spil/Sabuncubeli İmbat block (`waterBodies: []`); TR-48 `mentese_gokova_sw_orographic_deluge_wall` (SW upslope 1.55x) + Bodrum-Datça Etesian corridor."
+    }
+  },
+  "perProvinceAuditLedger": {
+    "TR-01": {
+      "provinceName": "Adana",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 36.9838,
+        "lon": 35.298,
+        "elevationM": 23,
+        "subBasinId": "cukurova_delta_plain",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-01",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          20,
+          450,
+          1400,
+          3200
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          5,
+          25,
+          850,
+          2200
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3756,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "karatas_yumurtalik_coast",
+          "cukurova_delta_plain",
+          "gulek_pozanti_corridor",
+          "aladaglar_tufanbeyli_highlands"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.04,
+        "offDiagonalMax": 0.84
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAF",
+          "LTAG"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAF",
+          "LTAG"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "east_med_karatas_basin"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "orta_toros_aladaglar_gulek_wall"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "gulek_bogazi_poyraz_chute"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 20,
+        "coldPoolMaxDepthM": 180,
+        "topographicEnclosureIndex": 0.44,
+        "deltaPressureTopHpa": 990,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 48,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-03": {
+      "provinceName": "Afyonkarahisar",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 38.738,
+        "lon": 30.5604,
+        "elevationM": 1034,
+        "subBasinId": "AFYON_AKARCAY_SNOW_BASIN",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-03",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          960,
+          1034,
+          1450,
+          2100
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          960,
+          1020,
+          1450,
+          2100
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2519,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "AFYON_AKARCAY_SNOW_BASIN",
+          "EBER_AKSEHIR_FOG_BASIN",
+          "DINAR_SANDIKLI_WEST_STEP",
+          "SINANPASA_KOCATEPE_PASS",
+          "EMIRDAG_NORTH_STEPPE",
+          "SULTANDAGLARI_ALPINE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.16,
+        "offDiagonalMax": 0.74
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAH"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAH"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "SULTANDAGLARI_FRONTAL_CONVERGENCE_WALL",
+          "EMIRDAG_KOCATEPE_COLD_WEDGE_BARRIER"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "KOROGLU_KOCATEPE_BLIZZARD_GAP",
+          "DINAR_DOMBAYOVA_THRESHOLD"
+        ],
+        "stationOverridesCount": 5,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 1005,
+        "coldPoolMaxDepthM": 360,
+        "topographicEnclosureIndex": 0.88,
+        "deltaPressureTopHpa": 850,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -32,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-05": {
+      "provinceName": "Amasya",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 40.6668,
+        "lon": 35.8353,
+        "elevationM": 412,
+        "subBasinId": "yesilirmak_harsena_canyon",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-05",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          240,
+          412,
+          950,
+          1850
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          240,
+          412,
+          950,
+          1850
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2062,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "yesilirmak_harsena_canyon",
+          "merzifon_suluova_open_plain",
+          "goynucek_cekerek_valley",
+          "akdag_tavsandagi_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.26,
+        "offDiagonalMax": 0.58
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAP"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAP"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "canik_lee_canyon_foehn",
+          "akdag_2062m_massif_barrier"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "merzifon_suluova_wind_corridor"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 409,
+        "coldPoolMaxDepthM": 320,
+        "topographicEnclosureIndex": 0.68,
+        "deltaPressureTopHpa": 38,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -24,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 5.4
+      },
+      "flags": []
+    },
+    "TR-07": {
+      "provinceName": "Antalya",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 36.8851,
+        "lon": 30.6828,
+        "elevationM": 47,
+        "subBasinId": "antalya_gulf_travertine",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-07",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          45,
+          950,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          45,
+          950,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3070,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "antalya_gulf_travertine",
+          "pamphylia_alanya_coast",
+          "lycian_west_coast",
+          "beydaglari_geyik_windward",
+          "elmali_korkuteli_basin",
+          "taurus_alpine_crest"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.08,
+        "offDiagonalMax": 0.84
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAI",
+          "LTFG"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAI",
+          "LTFG"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "mediterranean_antalya_gulf"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "beydaglari_geyik_amphitheater",
+          "beydaglari_lee_elmali_korkuteli"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "cubuk_bogazi_poyraz_chute"
+        ],
+        "stationOverridesCount": 11,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 11
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 1020,
+        "coldPoolMaxDepthM": 280,
+        "topographicEnclosureIndex": 0.78,
+        "deltaPressureTopHpa": 35,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -22,
+        "maxPlausibleTempC": 48,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1040,
+        "kalmanTempBiasCapC": 5
+      },
+      "flags": []
+    },
+    "TR-08": {
+      "provinceName": "Artvin",
+      "synopticRegion": "BLACK_SEA_EAST",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "EAST_BLACK_SEA_STEEP_OROG",
+      "primaryCenter": {
+        "lat": 41.1752,
+        "lon": 41.8187,
+        "elevationM": 613,
+        "subBasinId": "artvin_merkez_coruh_slope",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-08",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          15,
+          550,
+          1450,
+          2450
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          15,
+          550,
+          1450,
+          2450
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3932,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "hopa_arhavi_kemalpasa_coast",
+          "borcka_murgul_lower_coruh_gate",
+          "artvin_merkez_coruh_slope",
+          "yusufeli_inner_coruh_micro_med",
+          "savsat_karcal_mersivan_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.05,
+        "offDiagonalMax": 0.62
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "east_black_sea_hopa_batumi_gyre"
+        ],
+        "waterBodyKinds": [
+          "inland_sea"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "cankurtaran_sultan_selim_coastal_wall",
+          "kackar_karcal_coruh_rain_shadow_wall"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "cankurtaran_hopa_downslope_chute",
+          "coruh_yusufeli_borcka_gorge_jet"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 550,
+        "coldPoolMaxDepthM": 340,
+        "topographicEnclosureIndex": 0.84,
+        "deltaPressureTopHpa": 38,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -26,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-DEFECT-05:eastern_black_sea_classified_as_inland_sea",
+        "AUD01-DEFECT-03:windward_upslope_and_rainShadow_sector_overlap"
+      ]
+    },
+    "TR-09": {
+      "provinceName": "Aydın",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "AEGEAN_COASTAL_GRABEN",
+      "primaryCenter": {
+        "lat": 37.8402,
+        "lon": 27.8379,
+        "elevationM": 56,
+        "subBasinId": "buyuk_menderes_central_graben",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-09",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          65,
+          650,
+          1480
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          65,
+          650,
+          1480
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1831,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "kusadasi_didim_coast",
+          "soke_germencik_lower_graben",
+          "buyuk_menderes_central_graben",
+          "nazilli_buharkent_inner_graben",
+          "cine_bozdogan_madran_south",
+          "aydin_mountains_north_wall"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.14,
+        "offDiagonalMax": 0.84
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [
+          "LTBD"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": false
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "aegean_kusadasi_didim_shelf"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "aydin_daglari_north_wall",
+          "mentese_madranbaba_south_wall"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "soke_ortaklar_imbat_gate",
+          "dilek_strait_kusadasi_jet"
+        ],
+        "stationOverridesCount": 6,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 55,
+        "coldPoolMaxDepthM": 180,
+        "topographicEnclosureIndex": 0.62,
+        "deltaPressureTopHpa": 28,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -14,
+        "maxPlausibleTempC": 48.5,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1040,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-01:icaoWhitelist_omits_LTBD_and_lists_LTBD_in_forbidden"
+      ]
+    },
+    "TR-10": {
+      "provinceName": "Balıkesir",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 39.6504,
+        "lon": 27.886,
+        "elevationM": 110,
+        "subBasinId": "balikesir_susurluk_basin",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-10",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          12,
+          145,
+          680,
+          1620
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          145,
+          680,
+          1620
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1774,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "bandirma_erdek_marmara_coast",
+          "edremit_ayvalik_aegean_bay",
+          "kazdaglari_south_wall",
+          "balikesir_susurluk_basin",
+          "dursunbey_east_highlands"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.16,
+        "offDiagonalMax": 0.64
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBG",
+          "LTFD",
+          "LTBF"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBF",
+          "LTBG",
+          "LTFD"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "south_marmara_bandirma_sea",
+          "north_aegean_edremit_gulf"
+        ],
+        "waterBodyKinds": [
+          "inland_sea",
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "kazdaglari_1774m_aegean_orog_north_foehn",
+          "susurluk_madra_basin_rim"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "bandirma_susurluk_poyraz_corridor",
+          "edremit_gulf_imbat_funnel"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 95,
+        "coldPoolMaxDepthM": 420,
+        "topographicEnclosureIndex": 0.76,
+        "deltaPressureTopHpa": 45,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 46,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 4.8
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-DEFECT-04:south_marmara_bandirma_sea_sampleCoord_on_kapidag_landmass",
+        "AUD01-ADVISORY-01:icaoWhitelist_order_diff_vs_metar_verify"
+      ]
+    },
+    "TR-11": {
+      "provinceName": "Bilecik",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 40.1414,
+        "lon": 29.9772,
+        "elevationM": 539,
+        "subBasinId": "TR11_BILECIK_MID_BENCH",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-11",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          100,
+          540,
+          880,
+          1520
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          115,
+          525,
+          860,
+          1520
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1906,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR11_OSMANELI_SAKARYA_GORGE",
+          "TR11_BILECIK_MID_BENCH",
+          "TR11_BOZUYUK_PAZARYERI_PLATEAU",
+          "TR11_KOMURSU_METRISTEPE_RIDGE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.08,
+        "offDiagonalMax": 0.54
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "TR11_BOZUYUK_ANATOLIAN_ESCARPMENT"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR11_KARASU_VALLEY_PASS"
+        ],
+        "stationOverridesCount": 6,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 96,
+        "coldPoolMaxDepthM": 260,
+        "topographicEnclosureIndex": 0.76,
+        "deltaPressureTopHpa": 925,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -26,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 972,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-DEFECT-03:windward_upslope_and_rainShadow_sector_overlap",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-14": {
+      "provinceName": "Bolu",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 40.7329,
+        "lon": 31.6022,
+        "elevationM": 743,
+        "subBasinId": "TR14_BOLU_OVA_SNOW_BOWL",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-14",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          742,
+          1122,
+          1650,
+          2320
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          450,
+          740,
+          1350,
+          2000
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2400,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "TR14_BOLU_OVA_SNOW_BOWL",
+          "TR14_GEREDE_YENICAGA_FROST_CORRIDOR",
+          "TR14_ABANT_YEDIGOLLER_PINE_BELT",
+          "TR14_MUDURNU_GOYNUK_MENGEN_VALLEYS",
+          "TR14_KARTALKAYA_KOROGLU_ALPINE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.2,
+        "offDiagonalMax": 0.52
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "TR14_BOLUDAGI_YEDIGOLLER_SNOW_SPILLOVER",
+          "TR14_KOROGLU_SOUTH_LEE_SHADOW"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR14_GEREDE_CANKURTARAN_HIGHWAY_GAP"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 742,
+        "coldPoolMaxDepthM": 380,
+        "topographicEnclosureIndex": 0.9,
+        "deltaPressureTopHpa": 44,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -34,
+        "maxPlausibleTempC": 41,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 7.5
+      },
+      "flags": []
+    },
+    "TR-15": {
+      "provinceName": "Burdur",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 37.722,
+        "lon": 30.294,
+        "elevationM": 950,
+        "subBasinId": "BURDUR_TECTONIC_LAKE_BASIN",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-15",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          450,
+          950,
+          1380,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          450,
+          950,
+          1380,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2598,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "BURDUR_TECTONIC_LAKE_BASIN",
+          "BUCAK_CELTIKCI_CORRIDOR",
+          "TEFENNI_YESILOVA_HIGH_PLATEAU",
+          "GOLHISAR_ALTINYAYLA_BASIN",
+          "ESELER_SOGUT_ALPINE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.18,
+        "offDiagonalMax": 0.62
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "BURDUR_SALINE_TECTONIC_LAKE",
+          "SALDA_ALKALINE_LAKE"
+        ],
+        "waterBodyKinds": [
+          "alkaline_lake",
+          "alkaline_lake"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "WESTERN_TAURUS_KATRANCIK_LEE_SHADOW",
+          "ESELER_SALDA_HIGHLAND_WALL"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "CUBUK_BOGAZI_PASS",
+          "CELTIKCI_BELI_FUNNEL"
+        ],
+        "stationOverridesCount": 5,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 845,
+        "coldPoolMaxDepthM": 260,
+        "topographicEnclosureIndex": 0.74,
+        "deltaPressureTopHpa": 850,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -24,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-17": {
+      "provinceName": "Çanakkale",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 40.141,
+        "lon": 26.3993,
+        "elevationM": 6,
+        "subBasinId": "dardanelles_strait",
+        "inDomainBounds": true,
+        "exactPointInPolygon": false,
+        "resolvedProvinceCode": "TR-17",
+        "resolutionMethod": "coastal_snap",
+        "coastalSnapDistanceKm": 0.66
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          8,
+          180,
+          720,
+          1774
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          8,
+          35,
+          520,
+          1450
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1774,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "dardanelles_strait",
+          "north_aegean_islands",
+          "saros_gelibolu",
+          "biga_can_interior",
+          "kazdaglari_massif"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.14,
+        "offDiagonalMax": 0.76
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBH"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBH",
+          "LTFK"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": false
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 3,
+        "waterBodyIds": [
+          "north_aegean_open",
+          "dardanelles_strait_water",
+          "southwest_marmara_gate"
+        ],
+        "waterBodyKinds": [
+          "open_sea",
+          "inland_sea",
+          "inland_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "kazdaglari_south_windward_ayvacik",
+          "kazdaglari_north_lee_bayramic_can"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "dardanelles_ne_sw_venturi",
+          "bozcaada_strait_exit_jet"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 92,
+        "coldPoolMaxDepthM": 240,
+        "topographicEnclosureIndex": 0.44,
+        "deltaPressureTopHpa": 975,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -18,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 3.2
+      },
+      "flags": [
+        "AUD01-DEFECT-02:curatedSubLocation_tr-17-kazdaglari-zirve_in_TR-10_HTTP400",
+        "AUD01-ADVISORY-01:icaoWhitelist_omits_LTFK_gokceada",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-18": {
+      "provinceName": "Çankırı",
+      "synopticRegion": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "CENTRAL_ANATOLIA_BASIN",
+      "primaryCenter": {
+        "lat": 40.6082,
+        "lon": 33.6102,
+        "elevationM": 751,
+        "subBasinId": "acicay_kizilirmak_salt_trough",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-18",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          560,
+          751,
+          1350,
+          2587
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          560,
+          730,
+          1350,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2587,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "acicay_kizilirmak_salt_trough",
+          "cerkes_kursunlu_devrez_corridor",
+          "orta_sabanozu_eldivan_plateau",
+          "ilgaz_south_alpine_wall"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.18,
+        "offDiagonalMax": 0.62
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "ilgaz_south_rain_shadow_steppe",
+          "ilgaz_yildiztepe_alpine_snow_wall"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "devrez_cerkes_ilgaz_tectonic_channel"
+        ],
+        "stationOverridesCount": 13,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 5
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 730,
+        "coldPoolMaxDepthM": 340,
+        "topographicEnclosureIndex": 0.78,
+        "deltaPressureTopHpa": 915,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -32,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 4.2
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-19": {
+      "provinceName": "Çorum",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "CENTRAL_ANATOLIA_BASIN",
+      "primaryCenter": {
+        "lat": 40.5461,
+        "lon": 34.9362,
+        "elevationM": 776,
+        "subBasinId": "corum_alaca_sungurlu_frost_steppe",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-19",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          420,
+          776,
+          1280,
+          1880
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          420,
+          800,
+          1280,
+          1880
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2097,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "corum_alaca_sungurlu_frost_steppe",
+          "osmancik_kargi_kizilirmak_trench",
+          "iskilip_bayat_foothill",
+          "kosedagi_kargi_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.22,
+        "offDiagonalMax": 0.56
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "kosedagi_ilgaz_alpine_upslope",
+          "ilgaz_kure_lee_kizilirmak_steppe_shadow"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "kirkdilim_kizilirmak_gorge_corridor"
+        ],
+        "stationOverridesCount": 9,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 771,
+        "coldPoolMaxDepthM": 360,
+        "topographicEnclosureIndex": 0.82,
+        "deltaPressureTopHpa": 44,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1054,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "flags": []
+    },
+    "TR-20": {
+      "provinceName": "Denizli",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "AEGEAN_COASTAL_GRABEN",
+      "primaryCenter": {
+        "lat": 37.762,
+        "lon": 29.0921,
+        "elevationM": 425,
+        "subBasinId": "curuksu_pamukkale_basin",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-20",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          170,
+          390,
+          1250,
+          2150
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          170,
+          390,
+          1250,
+          2150
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2571,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "saraykoy_lower_menderes",
+          "curuksu_pamukkale_basin",
+          "cal_civril_bekilli_north_plateau",
+          "cardak_acipayam_tavas_plateau",
+          "kale_cameli_south_highlands",
+          "honaz_nikfer_bozdag_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.18,
+        "offDiagonalMax": 0.84
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAY"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAY"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "honaz_karci_kazikbeli_south_wall",
+          "nikfer_bozdag_cameli_orographic_ridge"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "kazikbeli_pass_jet",
+          "cardak_bozkurt_trough_corridor"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 390,
+        "coldPoolMaxDepthM": 260,
+        "topographicEnclosureIndex": 0.72,
+        "deltaPressureTopHpa": 34,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -24,
+        "maxPlausibleTempC": 46.5,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0"
+      ]
+    },
+    "TR-22": {
+      "provinceName": "Edirne",
+      "synopticRegion": "THRACE",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "THRACE_CONTINENTAL_GATE",
+      "primaryCenter": {
+        "lat": 41.6767,
+        "lon": 26.5508,
+        "elevationM": 51,
+        "subBasinId": "meric_tunca_confluence",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-22",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          18,
+          95,
+          280,
+          678
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          18,
+          42,
+          240,
+          610
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 678,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "meric_tunca_confluence",
+          "lalapasa_suloglu_gate",
+          "ipsala_enez_delta",
+          "kesan_koru_ridge"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.25,
+        "offDiagonalMax": 0.72
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "saros_gulf_enez"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "koru_dagi_north_ergene_lee",
+          "koru_dagi_south_saros_windward"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "maritsa_balkan_cold_gate",
+          "lower_meric_ipsala_corridor"
+        ],
+        "stationOverridesCount": 9,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 41,
+        "coldPoolMaxDepthM": 220,
+        "topographicEnclosureIndex": 0.68,
+        "deltaPressureTopHpa": 985,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -24,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 3.6
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-28": {
+      "provinceName": "Giresun",
+      "synopticRegion": "BLACK_SEA_EAST",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "EAST_BLACK_SEA_STEEP_OROG",
+      "primaryCenter": {
+        "lat": 40.9227,
+        "lon": 38.3878,
+        "elevationM": 38,
+        "subBasinId": "TR28_GIRESUN_COASTAL_STRIP",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-28",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          38,
+          480,
+          1380,
+          2250
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          45,
+          1250,
+          2250
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3331,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR28_GIRESUN_COASTAL_STRIP",
+          "TR28_AKSU_HARSIT_WINDWARD_SLOPE",
+          "TR28_KUMBET_EGRIBEL_ALPINE_WALL",
+          "TR28_KELKIT_SEBINKARAHISAR_INTERIOR"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.06,
+        "offDiagonalMax": 0.56
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "TR28_EASTERN_BLACK_SEA"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "TR28_GIRESUN_MOUNTAINS_COASTAL_WALL",
+          "TR28_EGRIBEL_KELKIT_RAIN_SHADOW"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR28_AKSU_DERELI_FOEHN_CHUTE"
+        ],
+        "stationOverridesCount": 10,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 38,
+        "coldPoolMaxDepthM": 240,
+        "topographicEnclosureIndex": 0.68,
+        "deltaPressureTopHpa": 925,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -32,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1054,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-29": {
+      "provinceName": "Gümüşhane",
+      "synopticRegion": "BLACK_SEA_EAST",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 40.4598,
+        "lon": 39.4653,
+        "elevationM": 1216,
+        "subBasinId": "gumushane_harsit_orchard_valley",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-29",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          760,
+          1225,
+          1850,
+          2550
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          760,
+          1225,
+          1850,
+          2550
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3331,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "kurtun_torul_lower_harsit",
+          "gumushane_harsit_orchard_valley",
+          "kelkit_siran_kose_dry_plateau",
+          "zigana_soganli_abdalmusa_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.24,
+        "offDiagonalMax": 0.72
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "zigana_soganli_north_rain_shadow_wall",
+          "zigana_ski_crest_snow_convergence"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "zigana_torul_pass_jet",
+          "harsit_gorge_drainage_flow"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 1216,
+        "coldPoolMaxDepthM": 360,
+        "topographicEnclosureIndex": 0.82,
+        "deltaPressureTopHpa": 36,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -32,
+        "maxPlausibleTempC": 40.5,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 7.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0"
+      ]
+    },
+    "TR-31": {
+      "provinceName": "Hatay",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 36.2048,
+        "lon": 36.1513,
+        "elevationM": 85,
+        "subBasinId": "amik_asi_reyhanli_basin",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-31",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          350,
+          950,
+          2100
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          95,
+          760,
+          1820
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2240,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "iskenderun_dortyol_coastal_strip",
+          "samandag_orontes_mouth",
+          "amanos_belen_crest",
+          "amik_asi_reyhanli_basin"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.14,
+        "offDiagonalMax": 0.68
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTDA"
+        ],
+        "metarVerifyWhitelist": [
+          "LTDA"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "iskenderun_gulf_samandag_sea"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "amanos_west_face_yarikkaya_wall",
+          "amanos_east_face_amik_asi_wall"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "belen_yarikkaya_katabatic_chute",
+          "samandag_asi_valley_breeze_jet"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 82,
+        "coldPoolMaxDepthM": 280,
+        "topographicEnclosureIndex": 0.68,
+        "deltaPressureTopHpa": 982,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -16,
+        "maxPlausibleTempC": 47,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1042,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top",
+        "AUD01-ADVISORY-03:stationOverride_18858_arsuz_cape_outside_simplified_topojson"
+      ]
+    },
+    "TR-32": {
+      "provinceName": "Isparta",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 37.7848,
+        "lon": 30.5679,
+        "elevationM": 1050,
+        "subBasinId": "ISPARTA_CENTRAL_PLATEAU",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-32",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          380,
+          1050,
+          1520,
+          2250
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          380,
+          1050,
+          1520,
+          2250
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2992,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "ISPARTA_CENTRAL_PLATEAU",
+          "KECIBORLU_AIRPORT_FROST_BASIN",
+          "EGIRDIR_GELENDOST_ORCHARD_SHORE",
+          "SUTCULER_AKSU_OROG_POCKET",
+          "YALVAC_SARKIKARAAGAC_BASIN",
+          "DAVRAZ_DEDEGOL_ALPINE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.12,
+        "offDiagonalMax": 0.58
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTFC"
+        ],
+        "metarVerifyWhitelist": [
+          "LTFC"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "EGIRDIR_LAKE",
+          "BEYSEHIR_LAKE_WEST_SHORE"
+        ],
+        "waterBodyKinds": [
+          "fresh_lake",
+          "fresh_lake"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "WESTERN_TAURUS_DAVRAZ_SOUTHERLY_UPSLOPE",
+          "DEDEGOL_ANAMAS_OROG_WALL"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "KOPRUCAY_AKSU_SOUTHERLY_CHUTE",
+          "ULUBORLU_SENIRKENT_GRABEN_GAP"
+        ],
+        "stationOverridesCount": 6,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 864,
+        "coldPoolMaxDepthM": 290,
+        "topographicEnclosureIndex": 0.78,
+        "deltaPressureTopHpa": 850,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -26,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-33": {
+      "provinceName": "Mersin",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 36.812,
+        "lon": 34.6411,
+        "elevationM": 11,
+        "subBasinId": "mersin_tarsus_coastal_plain",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-33",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          35,
+          1080,
+          2350
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          35,
+          1080,
+          2350
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3524,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "anamur_silifke_subtropical_coast",
+          "mersin_tarsus_coastal_plain",
+          "mut_goksu_depression",
+          "bolkar_central_taurus_slope",
+          "sertavul_bolkar_crest"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.12,
+        "offDiagonalMax": 0.82
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTDB"
+        ],
+        "metarVerifyWhitelist": [
+          "LTDB"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "eastern_mediterranean_mersin"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "bolkar_central_taurus_wall",
+          "mut_goksu_subsidence_foehn"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "sertavul_goksu_venturi",
+          "gulek_tarsus_north_channel"
+        ],
+        "stationOverridesCount": 9,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 11
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 290,
+        "coldPoolMaxDepthM": 220,
+        "topographicEnclosureIndex": 0.56,
+        "deltaPressureTopHpa": 28,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 48,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1040,
+        "kalmanTempBiasCapC": 4.8
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-DEFECT-02:curatedSubLocation_tr-33-sertavul-gecidi_in_TR-70_without_admin1_hint"
+      ]
+    },
+    "TR-34": {
+      "provinceName": "İstanbul",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 40.9669,
+        "lon": 28.8156,
+        "elevationM": 33,
+        "subBasinId": "marmara_urban_core",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-34",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          12,
+          55,
+          195,
+          537
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          55,
+          195,
+          480
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 537,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "black_sea_north_belt",
+          "bosphorus_strait",
+          "marmara_urban_core",
+          "aydos_camlica_highlands",
+          "catalca_silivri_rural"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.44,
+        "offDiagonalMax": 0.82
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTFM",
+          "LTBA",
+          "LTFJ"
+        ],
+        "metarVerifyWhitelist": [
+          "LTFM",
+          "LTFJ",
+          "LTBA"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "sw_black_sea_istanbul",
+          "sea_of_marmara_istanbul"
+        ],
+        "waterBodyKinds": [
+          "open_sea",
+          "inland_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "aydos_north_ridge_dek_barrier"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "istanbul_bosphorus_venturi"
+        ],
+        "stationOverridesCount": 13,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 35,
+        "coldPoolMaxDepthM": 220,
+        "topographicEnclosureIndex": 0.32,
+        "deltaPressureTopHpa": 28,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -18,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 972,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 4.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-DEFECT-03:windward_upslope_and_rainShadow_sector_overlap",
+        "AUD01-ADVISORY-01:icaoWhitelist_order_diff_vs_metar_verify"
+      ]
+    },
+    "TR-35": {
+      "provinceName": "İzmir",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "AEGEAN_COASTAL_GRABEN",
+      "primaryCenter": {
+        "lat": 38.4049,
+        "lon": 27.1895,
+        "elevationM": 29,
+        "subBasinId": "TR35_INNER_BAY_URBAN_CORE",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-35",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          25,
+          420,
+          1120,
+          1680
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          45,
+          680,
+          1680
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2159,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "TR35_INNER_BAY_URBAN_CORE",
+          "TR35_CESME_KARABURUN_PENINSULA",
+          "TR35_CUMAOVASI_MENDERES_BASIN",
+          "TR35_BORNOVA_KEMALPASA_GAP",
+          "TR35_KUCUK_MENDERES_BAKIRCA_VALLEY",
+          "TR35_YAMANLAR_NIF_BOZDAG_MASSIF"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.14,
+        "offDiagonalMax": 0.64
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBJ"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBJ",
+          "LTBL"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": false
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "TR35_IZMIR_GULF_AEGEAN"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "TR35_YAMANLAR_NIF_BOZDAG_CONVECTIVE_WALL"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "TR35_CESME_KARABURUN_ETESIAN_JET",
+          "TR35_INNER_GULF_IMBAT_FUNNEL"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 5
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 25,
+        "coldPoolMaxDepthM": 190,
+        "topographicEnclosureIndex": 0.62,
+        "deltaPressureTopHpa": 975,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -14,
+        "maxPlausibleTempC": 47,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 4.8
+      },
+      "flags": [
+        "AUD01-ADVISORY-01:icaoWhitelist_omits_LTBL",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-37": {
+      "provinceName": "Kastamonu",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "WEST_MID_BLACK_SEA_DEK",
+      "primaryCenter": {
+        "lat": 41.371,
+        "lon": 33.7756,
+        "elevationM": 800,
+        "subBasinId": "gokirmak_kastamonu_bowl",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-37",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          15,
+          800,
+          1380,
+          2587
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          15,
+          780,
+          1380,
+          2100
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2587,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "kure_black_sea_littoral",
+          "kure_karst_highland_wall",
+          "gokirmak_kastamonu_bowl",
+          "ilgaz_north_alpine_ski"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.06,
+        "offDiagonalMax": 0.54
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAL"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAL"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "west_central_black_sea_inebolu"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 3,
+        "directionalBarrierIds": [
+          "kure_coastal_dek_wall_and_lodos_foehn",
+          "kure_inland_gokirmak_rain_shadow",
+          "ilgaz_north_face_alpine_snow_trap"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "ecevit_kure_pass_funnel",
+          "gokirmak_taskopru_valley_drainage"
+        ],
+        "stationOverridesCount": 16,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 775,
+        "coldPoolMaxDepthM": 360,
+        "topographicEnclosureIndex": 0.82,
+        "deltaPressureTopHpa": 910,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -34,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 4.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-39": {
+      "provinceName": "Kırklareli",
+      "synopticRegion": "THRACE",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "THRACE_CONTINENTAL_GATE",
+      "primaryCenter": {
+        "lat": 41.7382,
+        "lon": 27.2178,
+        "elevationM": 232,
+        "subBasinId": "kirklareli_piedmont",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-39",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          12,
+          205,
+          540,
+          1031
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          205,
+          540,
+          960
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1031,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "igneada_kiyikoy_coast",
+          "demirkoy_istranca_forest",
+          "kirklareli_piedmont",
+          "luleburgaz_ergene_trough"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.1,
+        "offDiagonalMax": 0.72
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "west_black_sea_igneada"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "istranca_black_sea_windward",
+          "istranca_ergene_lee_shadow"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "derekoey_balkan_ridge_gap"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 5
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 46,
+        "coldPoolMaxDepthM": 260,
+        "topographicEnclosureIndex": 0.72,
+        "deltaPressureTopHpa": 982,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -24,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 3.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-41": {
+      "provinceName": "Kocaeli",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 40.7663,
+        "lon": 29.9173,
+        "elevationM": 74,
+        "subBasinId": "izmit_sapanca_trench",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-41",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          12,
+          75,
+          650,
+          1602
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          75,
+          650,
+          1600
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1699,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "izmit_sapanca_trench",
+          "kandira_black_sea_shelf",
+          "gebze_dilovasi_plateau",
+          "samanli_kartepe_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.22,
+        "offDiagonalMax": 0.74
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBQ"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBQ"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "black_sea_kandira_kefken",
+          "izmit_gulf_marmara"
+        ],
+        "waterBodyKinds": [
+          "open_sea",
+          "inland_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "samanli_kartepe_orographic_wall"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "izmit_sapanca_tectonic_channel"
+        ],
+        "stationOverridesCount": 9,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 35,
+        "coldPoolMaxDepthM": 380,
+        "topographicEnclosureIndex": 0.72,
+        "deltaPressureTopHpa": 42,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 972,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 4.8
+      },
+      "flags": []
+    },
+    "TR-43": {
+      "provinceName": "Kütahya",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INNER_AEGEAN_STEPPE",
+      "primaryCenter": {
+        "lat": 39.4171,
+        "lon": 29.9891,
+        "elevationM": 969,
+        "subBasinId": "KUTAHYA_CENTRAL_PLAIN",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-43",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          780,
+          969,
+          1420,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          780,
+          970,
+          1420,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2309,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "KUTAHYA_CENTRAL_PLAIN",
+          "ALTINTAS_ZAFER_FROST_BASIN",
+          "SIMAV_GEDIZ_WARM_GRABEN",
+          "TAVSANLI_EMET_WEST_PLATEAU",
+          "DOMANIC_NORTH_BARRIER_SLOPE",
+          "MURAT_AKDAG_ALPINE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.1,
+        "offDiagonalMax": 0.52
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBZ",
+          "LTBN"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBZ",
+          "LTBN"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "DOMANIC_KOCAYAYLA_NORTH_SHIELD",
+          "MURAT_AKDAG_SW_OROG_WALL"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "SIMAV_FAULT_GRABEN_FLOW",
+          "DUMLUPINAR_ALTINTAS_STEPPE_PASS"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 969,
+        "coldPoolMaxDepthM": 280,
+        "topographicEnclosureIndex": 0.76,
+        "deltaPressureTopHpa": 850,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 6
+      },
+      "flags": [
+        "AUD01-DEFECT-03:windward_upslope_and_rainShadow_sector_overlap",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-45": {
+      "provinceName": "Manisa",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "AEGEAN_COASTAL_GRABEN",
+      "primaryCenter": {
+        "lat": 38.6153,
+        "lon": 27.4049,
+        "elevationM": 71,
+        "subBasinId": "TR45_GEDIZ_GRABEN_FLOOR",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-45",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          71,
+          460,
+          1180,
+          1650
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          42,
+          75,
+          720,
+          1480
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2070,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR45_GEDIZ_GRABEN_FLOOR",
+          "TR45_AKHISAR_SOMA_NORTH_CORRIDOR",
+          "TR45_KULA_DEMIRCI_INNER_PLATEAU",
+          "TR45_SPIL_BOZDAG_CREST"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.16,
+        "offDiagonalMax": 0.56
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [
+          "LTBT"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": false
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "TR45_SPIL_YAMANLAR_IMBAT_BLOCK_AND_FOEHN"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "TR45_SABUNCUBELI_PASS_VENTURI",
+          "TR45_AKHISAR_GELENBE_POYRAZ_GATE"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 71,
+        "coldPoolMaxDepthM": 260,
+        "topographicEnclosureIndex": 0.84,
+        "deltaPressureTopHpa": 950,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -18,
+        "maxPlausibleTempC": 48,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-ADVISORY-01:icaoWhitelist_omits_LTBT",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-46": {
+      "provinceName": "Kahramanmaraş",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 37.576,
+        "lon": 36.915,
+        "elevationM": 568,
+        "subBasinId": "maras_aksu_southern_foothill",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-46",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          460,
+          950,
+          1550,
+          2800
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          460,
+          570,
+          1380,
+          2200
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3054,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "maras_aksu_southern_foothill",
+          "andirin_caglayancerit_transition",
+          "ahir_engizek_berit_alpine_wall",
+          "elbistan_afsin_goksun_frost_basin"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.05,
+        "offDiagonalMax": 0.48
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTCN"
+        ],
+        "metarVerifyWhitelist": [
+          "LTCN"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "ahir_engizek_berit_3014m_divide",
+          "elbistan_goksun_lee_shield_wall"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "turkoglu_islahiye_rift_corridor",
+          "tekkiraz_goksun_pass_chute"
+        ],
+        "stationOverridesCount": 10,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 1137,
+        "coldPoolMaxDepthM": 480,
+        "topographicEnclosureIndex": 0.92,
+        "deltaPressureTopHpa": 850,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -34,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 8
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-48": {
+      "provinceName": "Muğla",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 37.2095,
+        "lon": 28.3668,
+        "elevationM": 646,
+        "subBasinId": "mentese_ula_karst_plateau",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-48",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          12,
+          660,
+          1250,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          660,
+          1250,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2915,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 6,
+        "subBasinIds": [
+          "bodrum_datca_peninsulas",
+          "marmaris_koycegiz_dalaman_coast",
+          "mentese_ula_karst_plateau",
+          "kavaklidere_yatagan_inland",
+          "fethiye_seydikemer_basin",
+          "babadag_sandras_akdag_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.14,
+        "offDiagonalMax": 0.76
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTFE",
+          "LTBS"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBS",
+          "LTFE"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "sw_mediterranean_marmaris_fethiye",
+          "se_aegean_bodrum_gokova"
+        ],
+        "waterBodyKinds": [
+          "open_sea",
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "mentese_gokova_sw_orographic_deluge_wall",
+          "babadag_sandras_akdag_alpine_barrier"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "bodrum_datca_etesian_corridor",
+          "gokova_sakartepe_inflow_chute"
+        ],
+        "stationOverridesCount": 9,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 646,
+        "coldPoolMaxDepthM": 190,
+        "topographicEnclosureIndex": 0.68,
+        "deltaPressureTopHpa": 26,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -16,
+        "maxPlausibleTempC": 46,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1038,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-01:icaoWhitelist_order_diff_vs_metar_verify"
+      ]
+    },
+    "TR-52": {
+      "provinceName": "Ordu",
+      "synopticRegion": "BLACK_SEA_EAST",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "EAST_BLACK_SEA_STEEP_OROG",
+      "primaryCenter": {
+        "lat": 40.9838,
+        "lon": 37.8858,
+        "elevationM": 5,
+        "subBasinId": "TR52_UNYE_FATSA_ALTINORDU_COAST",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-52",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          5,
+          450,
+          1250,
+          1991
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          35,
+          950,
+          2000
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3107,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR52_UNYE_FATSA_ALTINORDU_COAST",
+          "TR52_BOZTEPE_ULUBEY_MID_RAMP",
+          "TR52_AKKUS_MESUDIYE_INTERIOR_PLATEAU",
+          "TR52_CAMBASI_KARAGOL_ALPINE"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.12,
+        "offDiagonalMax": 0.58
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTCB"
+        ],
+        "metarVerifyWhitelist": [
+          "LTCB"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "TR52_CENTRAL_EAST_BLACK_SEA"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "TR52_CANIK_CAMBASI_OROG_AND_FOEHN",
+          "TR52_MESUDIYE_LEE_SHADOW"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "TR52_YASON_CAPE_MARINE_JET",
+          "TR52_MELET_VALLEY_FOEHN_JET"
+        ],
+        "stationOverridesCount": 11,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 5,
+        "coldPoolMaxDepthM": 220,
+        "topographicEnclosureIndex": 0.58,
+        "deltaPressureTopHpa": 950,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -28,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1052,
+        "kalmanTempBiasCapC": 5.5
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-53": {
+      "provinceName": "Rize",
+      "synopticRegion": "BLACK_SEA_EAST",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "EAST_BLACK_SEA_STEEP_OROG",
+      "primaryCenter": {
+        "lat": 41.04,
+        "lon": 40.5013,
+        "elevationM": 3,
+        "subBasinId": "rize_cayeli_pazar_ardesen_coast",
+        "inDomainBounds": true,
+        "exactPointInPolygon": false,
+        "resolvedProvinceCode": "TR-53",
+        "resolutionMethod": "coastal_snap",
+        "coastalSnapDistanceKm": 0.036
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          40,
+          1350,
+          2650
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          40,
+          1350,
+          2650
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3937,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "rize_cayeli_pazar_ardesen_coast",
+          "guneysu_kalkandere_hemsin_foothill",
+          "ikizdere_firtina_ayder_valleys",
+          "ovit_kackar_avalanche_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.24,
+        "offDiagonalMax": 0.84
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTFO"
+        ],
+        "metarVerifyWhitelist": [
+          "LTFO"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "east_black_sea_rize_warm_pool"
+        ],
+        "waterBodyKinds": [
+          "inland_sea"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "kackar_north_wall_max_orographic_convergence",
+          "ovit_ayder_kackar_avalanche_crest"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "ikizdere_ovit_foehn_chute",
+          "firtina_valley_ayder_chute"
+        ],
+        "stationOverridesCount": 9,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 10,
+        "coldPoolMaxDepthM": 120,
+        "topographicEnclosureIndex": 0.36,
+        "deltaPressureTopHpa": 18,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -22,
+        "maxPlausibleTempC": 41.5,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": [
+        "AUD01-DEFECT-05:eastern_black_sea_classified_as_inland_sea"
+      ]
+    },
+    "TR-54": {
+      "provinceName": "Sakarya",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 40.7676,
+        "lon": 30.3934,
+        "elevationM": 31,
+        "subBasinId": "TR54_ADAPAZARI_ALLUVIAL_PLAIN",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-54",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          31,
+          430,
+          1080,
+          1650
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          35,
+          680,
+          1580
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1725,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "TR54_KARASU_BLACKSEA_COAST",
+          "TR54_ADAPAZARI_ALLUVIAL_PLAIN",
+          "TR54_SAPANCA_LACUSTRINE_CORRIDOR",
+          "TR54_GEYVE_PAMUKOVA_GORGE",
+          "TR54_DIKMEN_CAMDAGI_HIGHLANDS"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.12,
+        "offDiagonalMax": 0.68
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 2,
+        "waterBodyIds": [
+          "TR54_WESTERN_BLACK_SEA",
+          "TR54_SAPANCA_LAKE"
+        ],
+        "waterBodyKinds": [
+          "open_sea",
+          "fresh_lake"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "TR54_SAMANLI_CAMDAGI_BARRIER",
+          "TR54_GEYVE_SOUTH_SHADOW"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR54_GEYVE_STRAIT_VENTURI"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 31,
+        "coldPoolMaxDepthM": 210,
+        "topographicEnclosureIndex": 0.72,
+        "deltaPressureTopHpa": 975,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 975,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 5.2
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-55": {
+      "provinceName": "Samsun",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "WEST_MID_BLACK_SEA_DEK",
+      "primaryCenter": {
+        "lat": 41.3441,
+        "lon": 36.2564,
+        "elevationM": 4,
+        "subBasinId": "samsun_coastal_core",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-55",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          35,
+          720,
+          1850
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          35,
+          720,
+          1680
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2062,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "samsun_coastal_core",
+          "bafra_carsamba_alluvial_deltas",
+          "kavak_havza_vezirkopru_inland",
+          "ladik_akdag_snow_basin"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.2,
+        "offDiagonalMax": 0.86
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTFH"
+        ],
+        "metarVerifyWhitelist": [
+          "LTFH"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "central_black_sea_samsun"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "canik_moderate_orog_strong_south_foehn",
+          "ladik_akdag_1900m_snow_wall"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "bafra_cape_karayel_jet",
+          "kavak_cakalli_foehn_chute"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 8,
+        "coldPoolMaxDepthM": 220,
+        "topographicEnclosureIndex": 0.36,
+        "deltaPressureTopHpa": 26,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 5.6
+      },
+      "flags": []
+    },
+    "TR-57": {
+      "provinceName": "Sinop",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "WEST_MID_BLACK_SEA_DEK",
+      "primaryCenter": {
+        "lat": 42.0299,
+        "lon": 35.1545,
+        "elevationM": 32,
+        "subBasinId": "inceburun_boztepe_peninsula",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-57",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          32,
+          820,
+          1620
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          32,
+          820,
+          1620
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1812,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "inceburun_boztepe_peninsula",
+          "ayancik_turkeli_windward_coast",
+          "kure_dranaz_cangal_crest",
+          "boyabat_duragan_gokirmak_shadow"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.16,
+        "offDiagonalMax": 0.82
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTCM"
+        ],
+        "metarVerifyWhitelist": [
+          "LTCM"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "central_black_sea_sinop_cape"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "kure_dranaz_north_windward_wall",
+          "kure_south_lee_gokirmak_rain_shadow"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "inceburun_boztepe_karayel_yildiz_venturi"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 310,
+        "coldPoolMaxDepthM": 280,
+        "topographicEnclosureIndex": 0.56,
+        "deltaPressureTopHpa": 32,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -16,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 5.2
+      },
+      "flags": []
+    },
+    "TR-59": {
+      "provinceName": "Tekirdağ",
+      "synopticRegion": "THRACE",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 40.9585,
+        "lon": 27.4965,
+        "elevationM": 4,
+        "subBasinId": "suleymanpasa_marmara_coast",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-59",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          10,
+          145,
+          380,
+          945
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          45,
+          240,
+          820
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 945,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "suleymanpasa_marmara_coast",
+          "sarkoy_murefte_coast",
+          "corlu_cerkezkoy_plateau",
+          "malkara_hayrabolu_basin",
+          "ganos_mountain_ridge"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.18,
+        "offDiagonalMax": 0.74
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBU"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBU"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "northwest_marmara_tekirdag_basin"
+        ],
+        "waterBodyKinds": [
+          "inland_sea"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "ganos_coastal_south_escarpment",
+          "ganos_inland_malkara_lee"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "sarkoy_ganos_headland_refraction",
+          "corlu_cerkezkoy_ridge_sweep"
+        ],
+        "stationOverridesCount": 12,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 5
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 95,
+        "coldPoolMaxDepthM": 210,
+        "topographicEnclosureIndex": 0.52,
+        "deltaPressureTopHpa": 980,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 42,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1045,
+        "kalmanTempBiasCapC": 3.4
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-60": {
+      "provinceName": "Tokat",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 40.3312,
+        "lon": 36.5577,
+        "elevationM": 611,
+        "subBasinId": "TR60_KAZOVA_YESILIRMAK_BASIN",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-60",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          220,
+          620,
+          1220,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          240,
+          625,
+          1380,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2416,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR60_ERBAA_NIKSAR_KELKIT_TROUGH",
+          "TR60_KAZOVA_YESILIRMAK_BASIN",
+          "TR60_ZILE_ARTOVA_CAMLIBEL_PLATEAU",
+          "TR60_BASCIFTLIK_CANIK_CREST"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.1,
+        "offDiagonalMax": 0.48
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAW"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAW"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "TR60_CANIK_DONEK_KELKIT_FOEHN_AND_SHADOW",
+          "TR60_CAMLIBEL_BASCIFTLIK_OROG_SNOW_WALL"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "TR60_KELKIT_ERBAA_NIKSAR_CHANNEL",
+          "TR60_CAMLIBEL_PASS_GAP_JET"
+        ],
+        "stationOverridesCount": 10,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 528,
+        "coldPoolMaxDepthM": 280,
+        "topographicEnclosureIndex": 0.82,
+        "deltaPressureTopHpa": 900,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -32,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 970,
+        "maxPlausibleMslpHpa": 1056,
+        "kalmanTempBiasCapC": 6.2
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-61": {
+      "provinceName": "Trabzon",
+      "synopticRegion": "BLACK_SEA_EAST",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "EAST_BLACK_SEA_STEEP_OROG",
+      "primaryCenter": {
+        "lat": 40.9985,
+        "lon": 39.7649,
+        "elevationM": 39,
+        "subBasinId": "yoroz_lee_akcaabat_ortahisar_bay",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-61",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          12,
+          45,
+          1050,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          45,
+          1050,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 3376,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 5,
+        "subBasinIds": [
+          "besikduzu_vakfikebir_west_yoroz",
+          "yoroz_lee_akcaabat_ortahisar_bay",
+          "surmene_of_hayrat_east_coast",
+          "macka_duzkoy_tonya_mid_valleys",
+          "uzungol_zigana_haldizen_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.24,
+        "offDiagonalMax": 0.66
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTCG"
+        ],
+        "metarVerifyWhitelist": [
+          "LTCG"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "east_black_sea_trabzon_shelf"
+        ],
+        "waterBodyKinds": [
+          "inland_sea"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "yoroz_cape_shadow_and_degirmendere_foehn_barrier",
+          "west_yoroz_and_east_of_exposed_orographic_wall"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "degirmendere_macka_foehn_chute",
+          "yoroz_cape_coastal_deflection_jet"
+        ],
+        "stationOverridesCount": 10,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 6
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 25,
+        "coldPoolMaxDepthM": 140,
+        "topographicEnclosureIndex": 0.4,
+        "deltaPressureTopHpa": 20,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -21,
+        "maxPlausibleTempC": 41.5,
+        "minPlausibleMslpHpa": 980,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0",
+        "AUD01-DEFECT-05:eastern_black_sea_classified_as_inland_sea"
+      ]
+    },
+    "TR-64": {
+      "provinceName": "Uşak",
+      "synopticRegion": "AEGEAN",
+      "climateRegion": "EGE",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "INNER_AEGEAN_STEPPE",
+      "primaryCenter": {
+        "lat": 38.6712,
+        "lon": 29.404,
+        "elevationM": 919,
+        "subBasinId": "usak_central_plateau",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-64",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          620,
+          915,
+          1350,
+          2050
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          620,
+          915,
+          1350,
+          2050
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2309,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "esme_ulubey_western_step",
+          "usak_central_plateau",
+          "banaz_sivasli_eastern_threshold",
+          "murat_dagi_bulkaz_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.3,
+        "offDiagonalMax": 0.8
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTBO"
+        ],
+        "metarVerifyWhitelist": [
+          "LTBO"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "gediz_headwall_usak_ramp",
+          "murat_dagi_bulkaz_alpine_barrier"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "banaz_dumlupinar_continental_gate",
+          "gure_gediz_ascent_channel"
+        ],
+        "stationOverridesCount": 6,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 5
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 880,
+        "coldPoolMaxDepthM": 280,
+        "topographicEnclosureIndex": 0.58,
+        "deltaPressureTopHpa": 32,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -25,
+        "maxPlausibleTempC": 42.5,
+        "minPlausibleMslpHpa": 982,
+        "maxPlausibleMslpHpa": 1045,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0"
+      ]
+    },
+    "TR-67": {
+      "provinceName": "Zonguldak",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "WEST_MID_BLACK_SEA_DEK",
+      "primaryCenter": {
+        "lat": 41.4492,
+        "lon": 31.7779,
+        "elevationM": 135,
+        "subBasinId": "TR67_ZONGULDAK_STEEP_DEK_COAST",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-67",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          15,
+          260,
+          820,
+          1580
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          45,
+          650,
+          1520
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1637,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR67_ZONGULDAK_STEEP_DEK_COAST",
+          "TR67_EREGLI_ALAPLI_WEST_COAST",
+          "TR67_FILYOS_DEVREK_VALLEY",
+          "TR67_BACAKLIYAYLA_OROG_WALL"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.28,
+        "offDiagonalMax": 0.78
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [
+          "LTAS"
+        ],
+        "metarVerifyWhitelist": [
+          "LTAS"
+        ],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "TR67_WEST_BLACK_SEA_DEK_CORE"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "TR67_STEEP_COASTAL_DEK_AND_LODOS_FOEHN_WALL"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR67_FILYOS_MOUTH_GORGE"
+        ],
+        "stationOverridesCount": 11,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 20,
+        "coldPoolMaxDepthM": 220,
+        "topographicEnclosureIndex": 0.58,
+        "deltaPressureTopHpa": 28,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -18,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.6
+      },
+      "flags": []
+    },
+    "TR-70": {
+      "provinceName": "Karaman",
+      "synopticRegion": "CENTRAL_ANATOLIA",
+      "climateRegion": "IC_ANADOLU",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "CENTRAL_ANATOLIA_BASIN",
+      "primaryCenter": {
+        "lat": 37.1932,
+        "lon": 33.2202,
+        "elevationM": 1033,
+        "subBasinId": "karaman_closed_plain",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-70",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          420,
+          1035,
+          1620,
+          2280
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          420,
+          1035,
+          1620,
+          2280
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2877,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 3,
+        "subBasinIds": [
+          "karaman_closed_plain",
+          "ermenek_goksu_canyon",
+          "sertavul_yellibel_taurus_ridge"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.16,
+        "offDiagonalMax": 0.42
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "central_taurus_lee_rain_shadow"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "sertavul_yellibel_blizzard_gate"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 9
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 1033,
+        "coldPoolMaxDepthM": 340,
+        "topographicEnclosureIndex": 0.84,
+        "deltaPressureTopHpa": 40,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -30,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 6.5
+      },
+      "flags": []
+    },
+    "TR-74": {
+      "provinceName": "Bartın",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "WEST_MID_BLACK_SEA_DEK",
+      "primaryCenter": {
+        "lat": 41.6248,
+        "lon": 32.3569,
+        "elevationM": 33,
+        "subBasinId": "TR74_BARTIN_RIVER_BOWL",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-74",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          30,
+          265,
+          820,
+          1560
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          10,
+          25,
+          620,
+          1480
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1685,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR74_AMASRA_KURUCASILE_CLIFF_COAST",
+          "TR74_BARTIN_RIVER_BOWL",
+          "TR74_ULUS_KUMLUCA_FOOTHILLS",
+          "TR74_KURE_ARIT_OROG_SUMMIT"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.22,
+        "offDiagonalMax": 0.54
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "TR74_WEST_BLACK_SEA_AMASRA"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "TR74_KURE_AMASRA_DEK_AND_FOEHN_BARRIER"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR74_AMASRA_HEADLAND_JET"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 30,
+        "coldPoolMaxDepthM": 235,
+        "topographicEnclosureIndex": 0.78,
+        "deltaPressureTopHpa": 30,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 43,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0"
+      ]
+    },
+    "TR-77": {
+      "provinceName": "Yalova",
+      "synopticRegion": "MARMARA",
+      "climateRegion": "MARMARA",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_A_WMO",
+      "donorCluster": "MARMARA_COASTAL_TRANSITION",
+      "primaryCenter": {
+        "lat": 40.6604,
+        "lon": 29.2867,
+        "elevationM": 4,
+        "subBasinId": "yalova_cinarcik_north_coast",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-77",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          8,
+          30,
+          390,
+          926
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          8,
+          30,
+          390,
+          840
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 926,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 3,
+        "subBasinIds": [
+          "yalova_cinarcik_north_coast",
+          "armutlu_headland",
+          "termal_samanli_bespinar_ridge"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.44,
+        "offDiagonalMax": 0.72
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "eastern_marmara_yalova_coast"
+        ],
+        "waterBodyKinds": [
+          "inland_sea"
+        ],
+        "hasOpenSea": false,
+        "hasInlandSea": true,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "samanli_bespinar_926m_barrier"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "armutlu_cinarcik_poyraz_refraction"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 12,
+        "coldPoolMaxDepthM": 180,
+        "topographicEnclosureIndex": 0.34,
+        "deltaPressureTopHpa": 22,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -15,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 974,
+        "maxPlausibleMslpHpa": 1050,
+        "kalmanTempBiasCapC": 4.2
+      },
+      "flags": []
+    },
+    "TR-78": {
+      "provinceName": "Karabük",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 41.1956,
+        "lon": 32.6227,
+        "elevationM": 280,
+        "subBasinId": "karabuk_arac_soganli_v_valley",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-78",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          182,
+          280,
+          950,
+          2000
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          220,
+          280,
+          950,
+          1850
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2000,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "karabuk_arac_soganli_v_valley",
+          "yenice_filyos_forest_gorge",
+          "safranbolu_eflani_ovacik_plateau",
+          "keltepe_ahmetusta_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.16,
+        "offDiagonalMax": 0.58
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "keltepe_yenice_nw_moisture_wall",
+          "karabuk_v_valley_foehn_and_bartin_ridge_shadow"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "yenice_filyos_canyon_funnel"
+        ],
+        "stationOverridesCount": 8,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 5
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 259,
+        "coldPoolMaxDepthM": 320,
+        "topographicEnclosureIndex": 0.84,
+        "deltaPressureTopHpa": 960,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -22,
+        "maxPlausibleTempC": 45,
+        "minPlausibleMslpHpa": 978,
+        "maxPlausibleMslpHpa": 1046,
+        "kalmanTempBiasCapC": 4
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-80": {
+      "provinceName": "Osmaniye",
+      "synopticRegion": "MEDITERRANEAN",
+      "climateRegion": "AKDENIZ",
+      "isLandlocked": true,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "MEDITERRANEAN_COASTAL_OROG",
+      "primaryCenter": {
+        "lat": 37.1021,
+        "lon": 36.2539,
+        "elevationM": 125,
+        "subBasinId": "osmaniye_east_cukurova_funnel",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-80",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          65,
+          420,
+          1100,
+          2150
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          65,
+          125,
+          920,
+          1780
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 2246,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 3,
+        "subBasinIds": [
+          "osmaniye_east_cukurova_funnel",
+          "bahce_hasanbeyli_duzici_windward",
+          "zorkun_duldul_alpine"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.18,
+        "offDiagonalMax": 0.64
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 0,
+        "waterBodyIds": [],
+        "waterBodyKinds": [],
+        "hasOpenSea": false,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": false,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 1,
+        "directionalBarrierIds": [
+          "amanos_duldul_west_convective_funnel"
+        ],
+        "venturiCorridorsCount": 2,
+        "venturiCorridorIds": [
+          "gavurdagi_nurdagi_bahce_pass",
+          "toprakkale_iskenderun_funnel_gate"
+        ],
+        "stationOverridesCount": 7,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 65,
+        "coldPoolMaxDepthM": 210,
+        "topographicEnclosureIndex": 0.52,
+        "deltaPressureTopHpa": 985,
+        "hasShallowColdWedgeRule": false
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -20,
+        "maxPlausibleTempC": 47,
+        "minPlausibleMslpHpa": 984,
+        "maxPlausibleMslpHpa": 1044,
+        "kalmanTempBiasCapC": 5.8
+      },
+      "flags": [
+        "AUD01-ADVISORY-02:deltaPressureTopHpa_encoded_as_absolute_hPa_top"
+      ]
+    },
+    "TR-81": {
+      "provinceName": "Düzce",
+      "synopticRegion": "BLACK_SEA_WEST_CENTRAL",
+      "climateRegion": "KARADENIZ",
+      "isLandlocked": false,
+      "calibrationTier": "TIER_B_DONOR_KALMAN",
+      "donorCluster": "INLAND_PASS_PLATEAU",
+      "primaryCenter": {
+        "lat": 40.8437,
+        "lon": 31.1488,
+        "elevationM": 146,
+        "subBasinId": "TR81_DUZCE_ENCLOSED_BOWL",
+        "inDomainBounds": true,
+        "exactPointInPolygon": true,
+        "resolvedProvinceCode": "TR-81",
+        "resolutionMethod": "exact_polygon",
+        "coastalSnapDistanceKm": 0.0
+      },
+      "verticalProfile": {
+        "piecewiseKnotsM": [
+          146,
+          466,
+          980,
+          1750
+        ],
+        "knotsStrictlyIncreasing": true,
+        "snowElevationBandsM": [
+          12,
+          150,
+          850,
+          1650
+        ],
+        "snowBandsStrictlyIncreasing": true,
+        "maxPhysicalPeakM": 1830,
+        "matchesTr81HypsometricProfile": true
+      },
+      "subBasinAndMatrix": {
+        "subBasinCount": 4,
+        "subBasinIds": [
+          "TR81_AKCAKOCA_BLACKSEA_COAST",
+          "TR81_DUZCE_ENCLOSED_BOWL",
+          "TR81_BOLU_DAGI_YIGILCA_PASS",
+          "TR81_KARDUZ_ELMACIK_SNOW_WALL"
+        ],
+        "diagonalAllOne": true,
+        "allValuesInUnitInterval": true,
+        "offDiagonalMin": 0.12,
+        "offDiagonalMax": 0.48
+      },
+      "metarAudit": {
+        "specIcaoWhitelist": [],
+        "metarVerifyWhitelist": [],
+        "zeroNeighborOrForeignLeakage": true,
+        "exactSetMatch": true
+      },
+      "marineAndDekAudit": {
+        "waterBodyCount": 1,
+        "waterBodyIds": [
+          "TR81_AKCAKOCA_WEST_BLACK_SEA"
+        ],
+        "waterBodyKinds": [
+          "open_sea"
+        ],
+        "hasOpenSea": true,
+        "hasInlandSea": false,
+        "usesOpenMeteoMarineApi": true,
+        "landlockedMarineIsolationCompliant": true
+      },
+      "orographicAndCorridorCounts": {
+        "directionalBarriersCount": 2,
+        "directionalBarrierIds": [
+          "TR81_KARDUZ_ELMACIK_AND_KAPLANDEDE_BARRIER",
+          "TR81_BOLU_DAGI_PASS_ICING_WALL"
+        ],
+        "venturiCorridorsCount": 1,
+        "venturiCorridorIds": [
+          "TR81_BOLU_DAGI_SADDLE_GAP"
+        ],
+        "stationOverridesCount": 10,
+        "stencil9PointsCount": 9,
+        "curatedSubLocationsCount": 4
+      },
+      "inversionAudit": {
+        "basinFloorElevationM": 146,
+        "coldPoolMaxDepthM": 320,
+        "topographicEnclosureIndex": 0.94,
+        "deltaPressureTopHpa": 38,
+        "hasShallowColdWedgeRule": true
+      },
+      "qcAndMosBounds": {
+        "minPlausibleTempC": -22,
+        "maxPlausibleTempC": 44,
+        "minPlausibleMslpHpa": 976,
+        "maxPlausibleMslpHpa": 1048,
+        "kalmanTempBiasCapC": 6.2
+      },
+      "flags": [
+        "AUD01-DEFECT-01:cressman_auto_subbasin_latches_index_0"
+      ]
+    }
+  }
+}

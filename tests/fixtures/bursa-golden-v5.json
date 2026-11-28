@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "bursa-golden-v5.0",
+  "frozenManifestCount": 11,
+  "winterEmosTempC": 1.23,
+  "lodosEmosTempC": 19.56,
+  "verticalProfile": {
+    "lapseRateCPerKm": -6.1902082160945415,
+    "lowerLapseCPerKm": -6.1902082160945415,
+    "midLapseCPerKm": -6.1902082160945415,
+    "upperLapseCPerKm": -6.1902082160945415,
+    "inversionStrengthC": 0,
+    "boundaryLayerState": "STANDARD_MIXED",
+    "ovaRefTempC": 4.133333333333334,
+    "mountainRefTempC": -6.8,
+    "measuredPairCount": 3,
+    "isDirectlyMeasured": true
+  },
+  "cressmanOsmangazi": {
+    "tempC": 3.82,
+    "dewPointC": 1.97,
+    "relHumidityPct": 87.7,
+    "pressureMslHpa": 1018.4,
+    "windSpeedKt": 8.4,
+    "windDirDeg": 30,
+    "precipRateMmHr": 1.2,
+    "isPrecipitatingNow": true,
+    "uncertaintyC": 0.15,
+    "usedFallbackBasinTransfer": false,
+    "verticalState": "STANDARD_MIXED",
+    "contributions": [
+      {
+        "stationId": "MGM_OSMANGAZI_FOOTHILL",
+        "stationName": "Bursa Osmangazi (Şehreküstü Etek)",
+        "distanceKm": 0,
+        "deltaElevM": 0,
+        "rawTempC": 3.8,
+        "transportedTempC": 3.8,
+        "normalizedWeight": 0.4973
+      },
+      {
+        "stationId": "WMO_17116",
+        "stationName": "Bursa Merkez (Osmangazi · 17116)",
+        "distanceKm": 6.21,
+        "deltaElevM": 55,
+        "rawTempC": 4.2,
+        "transportedTempC": 3.86,
+        "normalizedWeight": 0.3959
+      },
+      {
+        "stationId": "MGM_NILUFER",
+        "stationName": "Bursa Nilüfer",
+        "distanceKm": 17.76,
+        "deltaElevM": 50,
+        "rawTempC": 4.4,
+        "transportedTempC": 4.09,
+        "normalizedWeight": 0.1068
+      },
+      {
+        "stationId": "WMO_17676_ULUDAG",
+        "stationName": "Uludağ Kayak Merkezi (17676)",
+        "distanceKm": 10.71,
+        "deltaElevM": -1722,
+        "rawTempC": -6.8,
+        "transportedTempC": 3.86,
+        "normalizedWeight": 0
+      }
+    ]
+  },
+  "lodosRegime": "LODOS_FOEHN",
+  "kestelNightOffsetC": -1.35
+}

@@ -14,7 +14,7 @@ import {
   VignetteEffect
 } from "postprocessing";
 import { createNoise2D } from "simplex-noise";
-import { Play, Volume2, VolumeX } from "lucide-react";
+import { Lock, MapPin, Play, Sparkles, Volume2, VolumeX } from "lucide-react";
 import { CUMULUS_STAGES, FACTION_META } from "@/lib/cumulus-engine";
 import { cumulusAudio, type ThunderKind } from "@/lib/cumulus-audio";
 import { getNubisCloudTextures } from "@/lib/volumetric-noise-3d";
@@ -883,6 +883,17 @@ export type CumulusIntro3DProps = {
   onDiveReveal?: () => void;
   onComplete: () => void;
   onSkip: () => void;
+  cityName?: string;
+  provinceBadge?: string | null;
+  elevationText?: string | null;
+  tempText?: string | null;
+  pressureText?: string | null;
+  cloudBaseText?: string | null;
+  freezingLevelLabel?: string;
+  freezingLevelText?: string | null;
+  autoStageId?: string;
+  isStageManuallyLocked?: boolean;
+  onResetAutoStage?: () => void;
 };
 
 export default function CumulusIntro3D({
@@ -891,13 +902,25 @@ export default function CumulusIntro3D({
   windBadgeText,
   windKmh,
   pressureHpa,
+  capeJkg,
   totalWins,
   sfxEnabled,
   onToggleSfx,
   onStartDive,
   onDiveReveal,
   onComplete,
-  onSkip
+  onSkip,
+  cityName,
+  provinceBadge,
+  elevationText,
+  tempText,
+  pressureText,
+  cloudBaseText,
+  freezingLevelLabel = "Donma (0°C)",
+  freezingLevelText,
+  autoStageId,
+  isStageManuallyLocked = false,
+  onResetAutoStage
 }: CumulusIntro3DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [diving, setDiving] = useState(false);
@@ -912,6 +935,7 @@ export default function CumulusIntro3D({
   const completedRef = useRef(false);
   const revealFiredRef = useRef(false);
   const windKmhRef = useRef(windKmh);
+  const capeJkgRef = useRef<number | null>(capeJkg ?? null);
   const stageIdRef = useRef(stageId);
   const sfxRef = useRef(sfxEnabled);
   const pointerRef = useRef({ tx: 0, ty: 0, x: 0, y: 0 });
@@ -923,6 +947,10 @@ export default function CumulusIntro3D({
   useEffect(() => {
     windKmhRef.current = windKmh;
   }, [windKmh]);
+
+  useEffect(() => {
+    capeJkgRef.current = capeJkg ?? null;
+  }, [capeJkg]);
 
   useEffect(() => {
     stageIdRef.current = stageId;
@@ -1408,8 +1436,24 @@ export default function CumulusIntro3D({
         }
       }
 
-      // Seçili cepheye göre 6 fotoğrafik meteoroloji rejimini yumuşakça morfla
+      // Seçili cepheye ve canlı CAPE kararsızlığına göre meteoroloji rejimini yumuşakça morfla
       const look = STAGE_LOOKS[stageIdRef.current] ?? STAGE_LOOKS.marmara;
+      const liveCape = capeJkgRef.current;
+      const capeBoost =
+        typeof liveCape === "number" && Number.isFinite(liveCape)
+          ? THREE.MathUtils.clamp(liveCape / 1800, 0, 1.15)
+          : 0.25;
+      const targetStormDensity = THREE.MathUtils.clamp(
+        look.stormDensity * (0.96 + capeBoost * 0.1),
+        1.18,
+        1.56
+      );
+      const effectiveBoltRateSec = THREE.MathUtils.clamp(
+        look.boltRateSec / (0.9 + capeBoost * 0.35),
+        0.85,
+        2.8
+      );
+
       const mLerp = Math.min(1, dt * 2.8);
       bgUniforms.uSkyZenith.value.lerp(tmpV3.set(...look.skyZenith), mLerp);
       bgUniforms.uSkyHorizon.value.lerp(tmpV3.set(...look.skyHorizon), mLerp);
@@ -1421,7 +1465,7 @@ export default function CumulusIntro3D({
       bgUniforms.uSunDir.value.lerp(tmpV3.set(...look.sunDir), mLerp).normalize();
       bgUniforms.uStormDensity.value = THREE.MathUtils.lerp(
         bgUniforms.uStormDensity.value,
-        look.stormDensity,
+        targetStormDensity,
         mLerp
       );
       bgUniforms.uShearTilt.value = THREE.MathUtils.lerp(
@@ -1558,12 +1602,12 @@ export default function CumulusIntro3D({
           targetNdcY: req.ndcY,
           playAudio: true
         });
-        nextBoltIn = look.boltRateSec * (0.95 + Math.random() * 0.9);
+        nextBoltIn = effectiveBoltRateSec * (0.95 + Math.random() * 0.9);
       } else {
         nextBoltIn -= dt;
         if (nextBoltIn <= 0 && !divingRef.current) {
           spawnNaturalLightning({ playAudio: elapsed > 0.9 });
-          nextBoltIn = look.boltRateSec * (0.75 + Math.random() * 1.15);
+          nextBoltIn = effectiveBoltRateSec * (0.75 + Math.random() * 1.15);
         }
       }
 
@@ -1691,6 +1735,12 @@ export default function CumulusIntro3D({
   const selectedStage =
     CUMULUS_STAGES.find((s) => s.id === stageId) ?? CUMULUS_STAGES[0];
   const activeLook = STAGE_LOOKS[stageId] ?? STAGE_LOOKS.marmara;
+  const resolvedPressureText =
+    pressureText ?? (pressureHpa !== undefined ? `${Math.round(pressureHpa)} hPa` : null);
+  const formattedCapeText =
+    typeof capeJkg === "number" && Number.isFinite(capeJkg)
+      ? `${Math.max(0, Math.round(capeJkg))} J/kg`
+      : null;
 
   const handleRootSkyPointer = (e: React.PointerEvent<HTMLDivElement>) => {
     if (divingRef.current) return;
@@ -1730,18 +1780,37 @@ export default function CumulusIntro3D({
           diving ? "scale-105 opacity-0" : "scale-100 opacity-100"
         }`}
       >
-        {/* Minimal Üst Telemetri & Gerçek Fırtına Sesi */}
+        {/* Minimal Üst Seçili Şehir & Canlı Atmosfer Telemetrisi */}
         <div
           className={`flex flex-wrap items-center justify-between gap-2 transition-all duration-700 ${
             revealed ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
           }`}
         >
-          <div className="flex items-center gap-2.5 font-mono text-[11px] tracking-[0.14em] text-slate-200/85 drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)]">
-            <span className="h-1.5 w-1.5 rounded-full bg-slate-100/85" />
-            <span>{windBadgeText}</span>
-            {pressureHpa !== undefined && (
-              <span className="hidden sm:inline text-slate-300/75">
-                · {Math.round(pressureHpa)} hPa
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tracking-[0.12em] text-slate-200/90 drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)]">
+            {cityName && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/18 bg-[#050912]/68 px-2.5 py-1 text-[11px] font-medium tracking-wider text-white">
+                <MapPin className="h-3 w-3 text-sky-300" />
+                <span>{cityName}</span>
+                {provinceBadge && (
+                  <span className="rounded bg-sky-400/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">
+                    {provinceBadge}
+                  </span>
+                )}
+                {elevationText && (
+                  <span className="text-[10px] text-slate-300/80">· {elevationText}</span>
+                )}
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-300/90" />
+              <span>{windBadgeText}</span>
+            </span>
+            {tempText && (
+              <span className="text-sky-200/90">· {tempText}</span>
+            )}
+            {resolvedPressureText && (
+              <span className="hidden sm:inline text-slate-300/80">
+                · {resolvedPressureText}
               </span>
             )}
             {totalWins > 0 && (
@@ -1782,9 +1851,9 @@ export default function CumulusIntro3D({
           </button>
         </div>
 
-        {/* Sinematik Film Başlığı & Mimari Füme Cam Aksiyon */}
+        {/* Sinematik Film Başlığı, Canlı Termodinamik Brifing & Mimari Füme Cam Aksiyon */}
         <div
-          className={`mx-auto flex max-w-xl flex-col items-center px-4 text-center transition-all duration-1000 ${
+          className={`mx-auto flex max-w-2xl flex-col items-center px-4 text-center transition-all duration-1000 ${
             revealed ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"
           }`}
         >
@@ -1800,7 +1869,28 @@ export default function CumulusIntro3D({
             BULUT SAVAŞI
           </p>
 
-          <div className="pointer-events-auto mt-4 sm:mt-7 flex flex-wrap items-center justify-center gap-2.5 sm:gap-3">
+          {(formattedCapeText || cloudBaseText || freezingLevelText) && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 font-mono text-[10px] tracking-wider text-slate-100/90">
+              {formattedCapeText && (
+                <span className="rounded-full border border-white/15 bg-[#050912]/62 px-2.5 py-1 backdrop-blur-md">
+                  CAPE <strong className="text-amber-200">{formattedCapeText}</strong>
+                </span>
+              )}
+              {cloudBaseText && (
+                <span className="rounded-full border border-white/15 bg-[#050912]/62 px-2.5 py-1 backdrop-blur-md">
+                  Bulut Tabanı <strong className="text-sky-200">{cloudBaseText}</strong>
+                </span>
+              )}
+              {freezingLevelText && (
+                <span className="rounded-full border border-white/15 bg-[#050912]/62 px-2.5 py-1 backdrop-blur-md">
+                  {freezingLevelLabel}{" "}
+                  <strong className="text-cyan-200">{freezingLevelText}</strong>
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="pointer-events-auto mt-4 sm:mt-6 flex flex-wrap items-center justify-center gap-2.5 sm:gap-3">
             <button
               type="button"
               onClick={triggerDive}
@@ -1820,19 +1910,32 @@ export default function CumulusIntro3D({
             </button>
           </div>
 
-          <p className="mt-3.5 font-mono text-[10px] tracking-[0.16em] text-slate-200/65 drop-shadow-[0_1px_8px_rgba(0,0,0,0.95)]">
+          <p className="mt-3 font-mono text-[10px] tracking-[0.16em] text-slate-200/65 drop-shadow-[0_1px_8px_rgba(0,0,0,0.95)]">
             GÖKYÜZÜNE TIKLA: YILDIRIM ÇAKTIR · CEPHE SEÇ: SÜPER HÜCRE DÖNÜŞÜR
           </p>
         </div>
 
-        {/* Alt 6-Cephe Film Şeridi Seçici */}
+        {/* Alt 6-Cephe Film Şeridi Seçici + Oto Sahne Anahtarı */}
         <div
-          className={`pointer-events-auto mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-1.5 transition-all duration-700 ${
+          className={`pointer-events-auto mx-auto flex w-full max-w-4xl flex-wrap items-center justify-center gap-1.5 transition-all duration-700 ${
             revealed ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
           }`}
         >
+          {isStageManuallyLocked && onResetAutoStage && (
+            <button
+              type="button"
+              onClick={onResetAutoStage}
+              title="Sahne kilidini kaldır ve seçili şehrin otomatik cephesine dön"
+              className="flex items-center gap-1 rounded-full border border-emerald-300/40 bg-emerald-500/18 px-3 py-1.5 font-mono text-[11px] font-medium text-emerald-100 transition-colors hover:border-emerald-300/70 hover:bg-emerald-500/28"
+            >
+              <Sparkles className="h-3 w-3 text-emerald-300" />
+              <span>Oto Sahne</span>
+            </button>
+          )}
+
           {CUMULUS_STAGES.map((st, idx) => {
             const active = st.id === stageId;
+            const isAutoMatch = Boolean(autoStageId && st.id === autoStageId);
             return (
               <button
                 key={st.id}
@@ -1846,6 +1949,14 @@ export default function CumulusIntro3D({
               >
                 <span className="font-mono text-[10px] opacity-65">0{st.index}</span>
                 <span>{st.name}</span>
+                {active && isStageManuallyLocked && (
+                  <Lock className="h-2.5 w-2.5 text-amber-200/90" aria-label="Elle kilitli sahne" />
+                )}
+                {isAutoMatch && !isStageManuallyLocked && (
+                  <span className="rounded bg-emerald-400/20 px-1 py-0.2 font-mono text-[9px] text-emerald-200">
+                    OTO
+                  </span>
+                )}
                 <span className="flex items-center gap-0.5">
                   {st.opponents.map((op) => (
                     <span
@@ -1868,7 +1979,9 @@ export default function CumulusIntro3D({
             {divePhaseText}
           </div>
           <div className="font-mono text-[10px] tracking-[0.32em] text-slate-300/80">
-            {selectedStage.name.toUpperCase()}
+            {cityName
+              ? `${cityName.toUpperCase()} · ${selectedStage.name.toUpperCase()}`
+              : selectedStage.name.toUpperCase()}
           </div>
         </div>
       )}

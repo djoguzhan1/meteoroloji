@@ -11,9 +11,13 @@ import {
   Bell,
   BellOff,
   Clock,
+  Compass,
   Droplets,
+  Mountain,
   Plus,
+  Radio,
   RefreshCw,
+  ShieldCheck,
   Trash2,
   Wind
 } from "lucide-react";
@@ -29,6 +33,7 @@ import {
   reanchorWeatherBundleToNow
 } from "@/lib/forecast-resilience";
 import { buildLocationHref } from "@/lib/location-url";
+import type { CalibrationTier } from "@/lib/provinces/types";
 import {
   resolveActiveTemporalView,
   type ActiveTemporalView
@@ -40,12 +45,15 @@ import {
   createFastZonedTimeResolver,
   formatElevation,
   formatPressure,
+  formatTempDelta,
   formatTemperature,
   formatWindSpeed
 } from "@/lib/weather-client";
 import type {
   AlertMetric,
+  AtmosCalibrationTierLabel,
   GeoLocation,
+  MetarObservation,
   UnitSystem,
   WeatherAlertRule,
   WeatherBundle
@@ -56,6 +64,209 @@ import AnimatedNumber from "./AnimatedNumber";
 import AnimatedWeatherIcon from "./AnimatedWeatherIcon";
 
 const MPH_PER_KMH = 0.621371;
+const VALID_PROVINCE_CODE_RE = /^(?:TR-(?:0[1-9]|[1-7][0-9]|8[01])|GLOBAL)$/i;
+
+type ProvinceAwareAlertRule = WeatherAlertRule & {
+  provinceCode?: string;
+};
+
+function normalizeProvinceCode(raw?: string | null): string | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const trimmed = raw.trim().toUpperCase();
+  return VALID_PROVINCE_CODE_RE.test(trimmed) ? trimmed : undefined;
+}
+
+function inferProvinceCodeFromStationId(id?: string | null): string | undefined {
+  if (!id) return undefined;
+  const clean = id.trim().toLowerCase();
+  const trMatch = /^tr-(0[1-9]|[1-7][0-9]|8[01])(?:-|$)/.exec(clean);
+  if (trMatch) {
+    return `TR-${trMatch[1]}`;
+  }
+  if (clean === "bursa-tr" || clean.startsWith("bursa-")) return "TR-16";
+  if (clean === "istanbul-tr") return "TR-34";
+  if (clean === "ankara-tr") return "TR-06";
+  if (clean === "izmir-tr") return "TR-35";
+  if (clean === "trabzon-tr") return "TR-61";
+  return undefined;
+}
+
+function resolveLocationProvinceCode(
+  loc?: Pick<GeoLocation, "id" | "provinceCode"> | null,
+  bundle?: WeatherBundle | null
+): string | undefined {
+  return (
+    normalizeProvinceCode(loc?.provinceCode) ??
+    normalizeProvinceCode(bundle?.location.provinceCode) ??
+    normalizeProvinceCode(bundle?.provinceSummary?.provinceCode) ??
+    normalizeProvinceCode(bundle?.hybrid?.engineMeta?.provinceCode) ??
+    inferProvinceCodeFromStationId(loc?.id ?? bundle?.location.id)
+  );
+}
+
+function hasProvinceConflict(
+  a?: string | null,
+  b?: string | null
+): boolean {
+  const pa = normalizeProvinceCode(a);
+  const pb = normalizeProvinceCode(b);
+  if (!pa || !pb) return false;
+  return pa !== pb;
+}
+
+function areStationsIsolatedEquivalent(
+  a: GeoLocation,
+  b: GeoLocation,
+  bundleA?: WeatherBundle | null,
+  bundleB?: WeatherBundle | null
+): boolean {
+  const pcA = resolveLocationProvinceCode(a, bundleA);
+  const pcB = resolveLocationProvinceCode(b, bundleB);
+  if (hasProvinceConflict(pcA, pcB)) {
+    return false;
+  }
+  return areLocationsEquivalent(a, b);
+}
+
+function buildDashboardWeatherApiUrl(loc: GeoLocation): string {
+  const baseUrl = buildWeatherApiUrl(loc);
+  const qIndex = baseUrl.indexOf("?");
+  const pathPart = qIndex === -1 ? baseUrl : baseUrl.slice(0, qIndex);
+  const qs = new URLSearchParams(qIndex === -1 ? "" : baseUrl.slice(qIndex + 1));
+
+  if (loc.id?.trim() && !qs.has("id")) {
+    qs.set("id", loc.id.trim());
+  }
+  if (loc.district?.trim() && !qs.has("district")) {
+    qs.set("district", loc.district.trim());
+  }
+  if (loc.countryCode?.trim() && !qs.has("cc")) {
+    qs.set("cc", loc.countryCode.trim().toUpperCase());
+  }
+  const pc = normalizeProvinceCode(loc.provinceCode);
+  if (pc) {
+    qs.set("pc", pc);
+  }
+  return `${pathPart}?${qs.toString()}`;
+}
+
+function resolveDashboardTierBadge(params: {
+  provinceCode?: string | null;
+  summaryTier?: CalibrationTier | null;
+  engineTier?: AtmosCalibrationTierLabel | null;
+}): {
+  code: CalibrationTier | "GLOBAL";
+  detail: string;
+  className: string;
+} | null {
+  const pc = normalizeProvinceCode(params.provinceCode);
+  const { summaryTier, engineTier } = params;
+
+  if (
+    pc === "TR-16" &&
+    (summaryTier === "TIER_0_BURSA" ||
+      engineTier === "BURSA_FROZEN_V5" ||
+      (!summaryTier && !engineTier))
+  ) {
+    return {
+      code: "TIER_0_BURSA",
+      detail: "Dondurulmuş Referans v5",
+      className: "border-emerald-400/35 bg-emerald-500/12 text-emerald-200"
+    };
+  }
+
+  if (
+    summaryTier === "TIER_A_WMO" ||
+    engineTier === "TIER_A_EMPIRICAL_WMO"
+  ) {
+    return {
+      code: "TIER_A_WMO",
+      detail: "Ampirik WMO + Kalman",
+      className: "border-signal-sky/35 bg-signal-sky/12 text-sky-200"
+    };
+  }
+
+  if (
+    summaryTier === "TIER_B_DONOR_KALMAN" ||
+    engineTier === "TIER_B_DONOR_ALARO"
+  ) {
+    return {
+      code: "TIER_B_DONOR_KALMAN",
+      detail: "Donör EMOS + Kalman",
+      className: "border-indigo-400/35 bg-indigo-500/12 text-indigo-200"
+    };
+  }
+
+  if (pc === "GLOBAL" || engineTier === "GLOBAL") {
+    return {
+      code: "GLOBAL",
+      detail: "Küresel Hibrit NWP",
+      className: "border-white/15 bg-white/[0.06] text-ink-secondary"
+    };
+  }
+
+  return null;
+}
+
+function resolveBundleWaterTelemetry(
+  bundle: WeatherBundle,
+  provinceCode?: string
+): { label: string; tempC: number } | null {
+  const eng = bundle.hybrid?.engineMeta;
+  if (
+    eng?.waterBodyLabelTr &&
+    eng.seaOrLakeTempC !== null &&
+    eng.seaOrLakeTempC !== undefined &&
+    Number.isFinite(eng.seaOrLakeTempC)
+  ) {
+    return {
+      label: eng.waterBodyLabelTr,
+      tempC: eng.seaOrLakeTempC
+    };
+  }
+  const wb = bundle.provinceSummary?.activeWaterBodies?.find(
+    (item) =>
+      item.liveTempC !== null &&
+      item.liveTempC !== undefined &&
+      Number.isFinite(item.liveTempC)
+  );
+  if (wb && wb.liveTempC !== null && wb.liveTempC !== undefined) {
+    return {
+      label: wb.labelTr,
+      tempC: wb.liveTempC
+    };
+  }
+  if (
+    provinceCode === "TR-16" &&
+    eng?.marmaraSstC !== null &&
+    eng?.marmaraSstC !== undefined &&
+    Number.isFinite(eng.marmaraSstC)
+  ) {
+    return {
+      label: "Marmara Denizi",
+      tempC: eng.marmaraSstC
+    };
+  }
+  return null;
+}
+
+function collectVerificationStations(bundle: WeatherBundle): MetarObservation[] {
+  const list = bundle.hybrid?.verification?.stations;
+  if (Array.isArray(list) && list.length > 0) {
+    return list;
+  }
+  const single = bundle.hybrid?.verification?.station;
+  return single ? [single] : [];
+}
+
+function formatVerificationModeTr(
+  mode: WeatherBundle["hybrid"]["verification"]["mode"]
+): string {
+  if (mode === "live-mgm-mesh") return "Canlı MGM İstasyon Ağı";
+  if (mode === "live-station-48h") return "48s Canlı İstasyon Doğrulaması";
+  if (mode === "live-station-24h") return "24s Canlı İstasyon Doğrulaması";
+  return "WMO Klimatolojik Önsel Kalibrasyon";
+}
 
 function formatStationLocalClock(
   timezone: string | undefined,
@@ -184,10 +395,10 @@ export function normalizeName(value: string | undefined | null): string {
 }
 
 /**
- * 3 kademeli kırılmaz alarm-istasyon eşleştiricisi:
+ * 3 kademeli kırılmaz ve il-izoleli alarm-istasyon eşleştiricisi:
  * 1) `rule.cityId === c.id`
- * 2) `rule.lat !== undefined && areLocationsEquivalent(rule, c)`
- * 3) `normalizeName(rule.cityName) === normalizeName(c.name)`
+ * 2) `rule.lat !== undefined && areLocationsEquivalent(rule, c)` (+ provinceCode çatışma kilidi)
+ * 3) `normalizeName(rule.cityName) === normalizeName(c.name)` (+ sesteş ilçeler için provinceCode kilidi)
  * Eşleşme favorilerde henüz yoksa `activeBundle` üzerinden de aynı 3 kademeyi dener.
  */
 export function resolveBundleForAlertRule(
@@ -196,16 +407,28 @@ export function resolveBundleForAlertRule(
   bundlesMap: Record<string, WeatherBundle>,
   activeBundle: WeatherBundle | null
 ): WeatherBundle | undefined {
+  const rulePc =
+    normalizeProvinceCode((rule as ProvinceAwareAlertRule).provinceCode) ??
+    inferProvinceCodeFromStationId(rule.cityId);
+
   // Kademe 1: Doğrudan ID eşleşmesi
   const directFav = favorites.find((c) => rule.cityId === c.id);
   if (directFav && bundlesMap[directFav.id]) {
-    return bundlesMap[directFav.id];
+    const cand = bundlesMap[directFav.id];
+    const candPc = resolveLocationProvinceCode(directFav, cand);
+    if (!hasProvinceConflict(rulePc, candPc)) {
+      return cand;
+    }
   }
   if (bundlesMap[rule.cityId]) {
-    return bundlesMap[rule.cityId];
+    const cand = bundlesMap[rule.cityId];
+    const candPc = resolveLocationProvinceCode(cand.location, cand);
+    if (!hasProvinceConflict(rulePc, candPc)) {
+      return cand;
+    }
   }
 
-  // Kademe 2: Koordinat + rakım (< 65m) eşdeğerliği
+  // Kademe 2: Koordinat + rakım (< 65m) eşdeğerliği + il uyumu
   if (
     rule.lat !== undefined &&
     rule.lon !== undefined &&
@@ -217,25 +440,41 @@ export function resolveBundleForAlertRule(
       lon: rule.lon,
       elevation: rule.elevation
     };
-    const coordFav = favorites.find((c) => areLocationsEquivalent(ruleGeo, c));
+    const coordFav = favorites.find((c) => {
+      const cand = bundlesMap[c.id];
+      if (!cand) return false;
+      const candPc = resolveLocationProvinceCode(c, cand);
+      if (hasProvinceConflict(rulePc, candPc)) return false;
+      return areLocationsEquivalent(ruleGeo, c);
+    });
     if (coordFav && bundlesMap[coordFav.id]) {
       return bundlesMap[coordFav.id];
     }
     for (const candidate of Object.values(bundlesMap)) {
+      const candPc = resolveLocationProvinceCode(candidate.location, candidate);
+      if (hasProvinceConflict(rulePc, candPc)) continue;
       if (areLocationsEquivalent(ruleGeo, candidate.location)) {
         return candidate;
       }
     }
   }
 
-  // Kademe 3: Normalize şehir adı eşleşmesi
+  // Kademe 3: Normalize şehir/ilçe adı eşleşmesi (farklı illerdeki sesteş ilçeleri asla birbirine karıştırmaz)
   const targetName = normalizeName(rule.cityName);
   if (targetName) {
-    const nameFav = favorites.find((c) => normalizeName(c.name) === targetName);
+    const nameFav = favorites.find((c) => {
+      const cand = bundlesMap[c.id];
+      if (!cand) return false;
+      const candPc = resolveLocationProvinceCode(c, cand);
+      if (hasProvinceConflict(rulePc, candPc)) return false;
+      return normalizeName(c.name) === targetName;
+    });
     if (nameFav && bundlesMap[nameFav.id]) {
       return bundlesMap[nameFav.id];
     }
     for (const candidate of Object.values(bundlesMap)) {
+      const candPc = resolveLocationProvinceCode(candidate.location, candidate);
+      if (hasProvinceConflict(rulePc, candPc)) continue;
       if (normalizeName(candidate.location.name) === targetName) {
         return candidate;
       }
@@ -244,21 +483,24 @@ export function resolveBundleForAlertRule(
 
   // Aktif bağlam paketi yedeği (istasyon favorilerden silinmiş ama aktif seçiliyse)
   if (activeBundle) {
-    if (activeBundle.location.id === rule.cityId) {
-      return activeBundle;
-    }
-    if (
-      rule.lat !== undefined &&
-      rule.lon !== undefined &&
-      areLocationsEquivalent(
-        { lat: rule.lat, lon: rule.lon, elevation: rule.elevation },
-        activeBundle.location
-      )
-    ) {
-      return activeBundle;
-    }
-    if (targetName && normalizeName(activeBundle.location.name) === targetName) {
-      return activeBundle;
+    const activePc = resolveLocationProvinceCode(activeBundle.location, activeBundle);
+    if (!hasProvinceConflict(rulePc, activePc)) {
+      if (activeBundle.location.id === rule.cityId) {
+        return activeBundle;
+      }
+      if (
+        rule.lat !== undefined &&
+        rule.lon !== undefined &&
+        areLocationsEquivalent(
+          { lat: rule.lat, lon: rule.lon, elevation: rule.elevation },
+          activeBundle.location
+        )
+      ) {
+        return activeBundle;
+      }
+      if (targetName && normalizeName(activeBundle.location.name) === targetName) {
+        return activeBundle;
+      }
     }
   }
 
@@ -409,11 +651,21 @@ export function evaluateRule(
 }
 
 function mergeStationIntoBundle(data: WeatherBundle, loc: GeoLocation): WeatherBundle {
+  const resolvedProvinceCode =
+    normalizeProvinceCode(loc.provinceCode) ??
+    normalizeProvinceCode(data.location.provinceCode) ??
+    normalizeProvinceCode(data.provinceSummary?.provinceCode) ??
+    normalizeProvinceCode(data.hybrid?.engineMeta?.provinceCode);
+
   return {
     ...data,
     location: {
       ...data.location,
       ...loc,
+      admin1: loc.admin1 ?? data.location.admin1,
+      district: loc.district ?? data.location.district,
+      countryCode: loc.countryCode ?? data.location.countryCode,
+      ...(resolvedProvinceCode ? { provinceCode: resolvedProvinceCode } : {}),
       elevation: loc.elevation ?? data.location.elevation,
       timezone: data.location.timezone ?? loc.timezone
     }
@@ -544,45 +796,50 @@ export default function DashboardView() {
     });
   }, [favorites]);
 
-  // İleri Yön Senkronu: WeatherContext'teki aktif istasyon güncellendiğinde eşleşen favori kartını anında güncelle
+  // İleri Yön Senkronu: WeatherContext'teki aktif istasyon güncellendiğinde yalnızca aynı il ve koordinattaki kartı güncelle
   useEffect(() => {
     if (!activeContextBundle) return;
     const matchedFavs = favorites.filter((c) =>
-      areLocationsEquivalent(c, activeContextBundle.location)
+      areStationsIsolatedEquivalent(
+        c,
+        activeContextBundle.location,
+        bundlesRef.current[c.id],
+        activeContextBundle
+      )
     );
     if (matchedFavs.length === 0) return;
 
     queueMicrotask(() => {
-    setCityBundles((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const fav of matchedFavs) {
-        const cur = prev[fav.id];
-        if (
-          !cur ||
-          cur.fetchedAt !== activeContextBundle.fetchedAt ||
-          cur.current.time !== activeContextBundle.current.time ||
-          cur.current.temperature !== activeContextBundle.current.temperature ||
-          cur.freshness?.status !== activeContextBundle.freshness?.status
-        ) {
-          next[fav.id] = mergeStationIntoBundle(activeContextBundle, fav);
-          changed = true;
+      setCityBundles((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const fav of matchedFavs) {
+          const cur = prev[fav.id];
+          if (
+            !cur ||
+            cur.fetchedAt !== activeContextBundle.fetchedAt ||
+            cur.current.time !== activeContextBundle.current.time ||
+            cur.current.temperature !== activeContextBundle.current.temperature ||
+            cur.freshness?.status !== activeContextBundle.freshness?.status
+          ) {
+            next[fav.id] = mergeStationIntoBundle(activeContextBundle, fav);
+            changed = true;
+          }
         }
-      }
-      if (!changed) return prev;
-      bundlesRef.current = next;
-      return next;
-    });
+        if (!changed) return prev;
+        bundlesRef.current = next;
+        return next;
+      });
 
-    setFailedCities((prev) => {
-      const hasFailedMatch = matchedFavs.some((f) => f.id in prev);
-      if (!hasFailedMatch) return prev;
-      const next = { ...prev };
-      for (const fav of matchedFavs) {
-        delete next[fav.id];
-      }
-      return next;
-    });
+      setFailedCities((prev) => {
+        const hasFailedMatch = matchedFavs.some((f) => f.id in prev);
+        if (!hasFailedMatch) return prev;
+        const next = { ...prev };
+        for (const fav of matchedFavs) {
+          delete next[fav.id];
+        }
+        return next;
+      });
     });
   }, [activeContextBundle, favorites]);
 
@@ -611,7 +868,7 @@ export default function DashboardView() {
     ? alertCityId
     : (favorites[0]?.id ?? "");
 
-  // Kilitlenmeyen (deadlock-free) istasyon yükleyici
+  // Kilitlenmeyen (deadlock-free) ve il-izoleli istasyon yükleyici
   const fetchCityList = useCallback(
     async (list: GeoLocation[], forceAll = false) => {
       if (!mountedRef.current || list.length === 0) {
@@ -631,7 +888,7 @@ export default function DashboardView() {
         if (
           !forceAll &&
           ctxBundle &&
-          areLocationsEquivalent(ctxBundle.location, loc)
+          areStationsIsolatedEquivalent(ctxBundle.location, loc, ctxBundle, null)
         ) {
           hydratedSeed[loc.id] = mergeStationIntoBundle(ctxBundle, loc);
           continue;
@@ -640,7 +897,10 @@ export default function DashboardView() {
           const syncHit = readCachedWeatherBundleSync(loc, nowMs, {
             forceStale: offlineNow
           });
-          if (syncHit) {
+          if (
+            syncHit &&
+            areStationsIsolatedEquivalent(syncHit.location, loc, syncHit, null)
+          ) {
             hydratedSeed[loc.id] = mergeStationIntoBundle(syncHit, loc);
           }
         }
@@ -711,17 +971,24 @@ export default function DashboardView() {
           }
 
           try {
-            const res = await fetch(buildWeatherApiUrl(loc), {
+            const res = await fetch(buildDashboardWeatherApiUrl(loc), {
               signal: controller.signal,
               cache: forceAll ? "no-store" : "default"
             });
             if (controller.signal.aborted || !mountedRef.current) return;
             if (!res.ok) {
-              throw new Error(`HTTP ${res.status}`);
+              const errBody = await res.json().catch(() => null);
+              throw new Error(errBody?.error ?? `HTTP ${res.status}`);
             }
 
             const data: WeatherBundle = await res.json();
             if (controller.signal.aborted || !mountedRef.current) return;
+
+            const reqPc = resolveLocationProvinceCode(loc, null);
+            const resPc = resolveLocationProvinceCode(data.location, data);
+            if (hasProvinceConflict(reqPc, resPc)) {
+              throw new Error(`İl kodu uyuşmazlığı (${reqPc} vs ${resPc})`);
+            }
 
             const isStillFavorite = favoritesRef.current.some((f) => f.id === loc.id);
             const merged = mergeStationIntoBundle(data, loc);
@@ -744,8 +1011,15 @@ export default function DashboardView() {
               });
             }
 
-            // Ters Yön Senkronu: Yenilenen kart aktif istasyonla eşleşiyorsa WeatherContext'e taze paketi aktar
-            if (areLocationsEquivalent(loc, activeLocationRef.current)) {
+            // Ters Yön Senkronu: Yenilenen kart aktif istasyonla aynı il ve koordinattaysa WeatherContext'e taze paketi aktar
+            if (
+              areStationsIsolatedEquivalent(
+                loc,
+                activeLocationRef.current,
+                merged,
+                activeContextBundleRef.current
+              )
+            ) {
               syncExternalBundle(merged);
             }
           } catch (err) {
@@ -794,7 +1068,15 @@ export default function DashboardView() {
               if (controller.signal.aborted || !mountedRef.current) return;
               if (!favoritesRef.current.some((f) => f.id === loc.id)) return;
 
-              if (idbFallback) {
+              if (
+                idbFallback &&
+                areStationsIsolatedEquivalent(
+                  idbFallback.location,
+                  loc,
+                  idbFallback,
+                  null
+                )
+              ) {
                 const mergedFallback = mergeStationIntoBundle(idbFallback, loc);
                 setCityBundles((prev) => {
                   const next = { ...prev, [loc.id]: mergedFallback };
@@ -891,6 +1173,83 @@ export default function DashboardView() {
     return () => window.clearTimeout(timer);
   }, [isOffline, hasImpairedStation, loadingMap, fetchCityList]);
 
+  // Aktif seçili ilin doğrulanmış paketi (başka ilin verisi asla karışmaz)
+  const activeVerifiedBundle = useMemo(() => {
+    if (
+      activeContextBundle &&
+      areStationsIsolatedEquivalent(
+        activeContextBundle.location,
+        activeLocation,
+        activeContextBundle,
+        null
+      )
+    ) {
+      return activeContextBundle;
+    }
+    for (const fav of favorites) {
+      const cand = cityBundles[fav.id];
+      if (
+        cand &&
+        areStationsIsolatedEquivalent(fav, activeLocation, cand, null)
+      ) {
+        return cand;
+      }
+    }
+    return null;
+  }, [activeContextBundle, activeLocation, favorites, cityBundles]);
+
+  const activeProvinceOverview = useMemo(() => {
+    if (!activeVerifiedBundle) return null;
+    const provinceCode = resolveLocationProvinceCode(
+      activeLocation,
+      activeVerifiedBundle
+    );
+    const provinceName =
+      activeVerifiedBundle.provinceSummary?.provinceName ??
+      activeVerifiedBundle.hybrid?.engineMeta?.provinceName ??
+      activeLocation.name;
+    const isBursa = provinceCode === "TR-16";
+    const tierBadge = resolveDashboardTierBadge({
+      provinceCode,
+      summaryTier: activeVerifiedBundle.provinceSummary?.calibrationTier ?? null,
+      engineTier: activeVerifiedBundle.hybrid?.engineMeta?.calibrationTier ?? null
+    });
+    const stations = collectVerificationStations(activeVerifiedBundle);
+    const microclimateTags =
+      activeVerifiedBundle.hybrid?.engineMeta?.activeMicroclimateTags ?? [];
+    const water = resolveBundleWaterTelemetry(activeVerifiedBundle, provinceCode);
+    const elevationM =
+      activeLocation.elevation ??
+      activeVerifiedBundle.location.elevation ??
+      activeVerifiedBundle.provinceSummary?.canonicalCenter.elevationM;
+
+    const panelTitle = isBursa
+      ? "TR-16 Bursa · Uludağ–Marmara Referans İstasyon Ağı & Doğrulama"
+      : provinceCode && provinceCode !== "GLOBAL"
+        ? `${provinceCode} ${provinceName} · İl İstasyon Ağı & Mikroiklim Doğrulaması`
+        : `${activeLocation.name} · Küresel İstasyon & Model Doğrulaması`;
+
+    const panelSubtitle = isBursa
+      ? "Dondurulmuş Bursa v5 sinoptik omurgası, canlı MGM istasyon gözlemleri ve Marmara–Uludağ dikey doğrulaması"
+      : provinceCode && provinceCode !== "GLOBAL"
+        ? `${provinceName} iline özel kalibrasyon katmanı, canlı MGM gözlem ağı ve yerel topoğrafik mikroiklim sinyalleri`
+        : `${activeLocation.name} için çoklu model uzlaşısı ve canlı METAR/WMO istasyon doğrulaması`;
+
+    return {
+      bundle: activeVerifiedBundle,
+      provinceCode,
+      provinceName,
+      isBursa,
+      tierBadge,
+      stations,
+      microclimateTags,
+      water,
+      elevationM,
+      panelTitle,
+      panelSubtitle
+    };
+  }, [activeVerifiedBundle, activeLocation]);
+
   // Her istasyon için deterministik `resolveActiveTemporalView(b, 0)` önbelleği
   const temporalByCityId = useMemo<Record<string, ActiveTemporalView>>(() => {
     const map: Record<string, ActiveTemporalView> = {};
@@ -983,8 +1342,9 @@ export default function DashboardView() {
     const cityBundle = bundlesRef.current[city.id] ?? cityBundles[city.id];
     const resolvedElevation =
       city.elevation ?? canonicalCity.elevation ?? cityBundle?.location.elevation;
+    const resolvedProvinceCode = resolveLocationProvinceCode(city, cityBundle);
 
-    addAlert({
+    const nextRule: Omit<ProvinceAwareAlertRule, "id"> = {
       cityId: city.id,
       cityName: city.name,
       lat: city.lat,
@@ -992,13 +1352,16 @@ export default function DashboardView() {
       ...(resolvedElevation !== undefined && Number.isFinite(resolvedElevation)
         ? { elevation: Math.round(resolvedElevation) }
         : {}),
+      ...(resolvedProvinceCode ? { provinceCode: resolvedProvinceCode } : {}),
       metric: alertMetric,
       operator: alertOperator,
       threshold: toMetricThreshold(alertMetric, rawNumericInput, unit),
       sourceUnit: unit,
       sourceValue: rawNumericInput,
       enabled: true
-    });
+    };
+
+    addAlert(nextRule);
 
     setThresholdError(null);
     setIsCustomThreshold(false);
@@ -1007,8 +1370,12 @@ export default function DashboardView() {
 
   const openCityOnRoute = (city: GeoLocation, route: "/" | "/lab") => {
     const cityBundle = bundlesRef.current[city.id] ?? cityBundles[city.id] ?? null;
-    setActiveLocation(city, cityBundle);
-    router.push(buildLocationHref(route, city));
+    const resolvedPc = resolveLocationProvinceCode(city, cityBundle);
+    const enrichedCity: GeoLocation = resolvedPc
+      ? { ...city, provinceCode: resolvedPc }
+      : city;
+    setActiveLocation(enrichedCity, cityBundle);
+    router.push(buildLocationHref(route, enrichedCity));
   };
 
   return (
@@ -1038,6 +1405,159 @@ export default function DashboardView() {
         </div>
       </div>
 
+      {/* Seçili İl Canlı İstasyon Ağı, Kalibrasyon Katmanı & Mikroiklim Doğrulaması */}
+      {activeProvinceOverview && (
+        <section className="surface-panel p-5 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Radio className="h-4 w-4 text-signal-sky" />
+                <h2 className="font-display text-base font-semibold text-ink-primary">
+                  {activeProvinceOverview.panelTitle}
+                </h2>
+                {activeProvinceOverview.tierBadge && (
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${activeProvinceOverview.tierBadge.className}`}
+                  >
+                    <ShieldCheck className="h-3 w-3" />
+                    <span>
+                      {activeProvinceOverview.tierBadge.code} ·{" "}
+                      {activeProvinceOverview.tierBadge.detail}
+                    </span>
+                  </span>
+                )}
+                {activeProvinceOverview.elevationM !== undefined &&
+                  Number.isFinite(activeProvinceOverview.elevationM) && (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-obsidian-950/75 px-2 py-0.5 font-mono text-[11px] text-ink-secondary tabular">
+                      <Mountain className="h-3 w-3 text-signal-sky" />
+                      <span>
+                        Hedef {formatElevation(activeProvinceOverview.elevationM, unit)}
+                      </span>
+                    </span>
+                  )}
+                {activeProvinceOverview.water && (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-signal-sky/30 bg-signal-sky/10 px-2 py-0.5 font-mono text-[11px] text-sky-200 tabular">
+                    <Droplets className="h-3 w-3 text-signal-sky" />
+                    <span>
+                      {activeProvinceOverview.water.label}:{" "}
+                      {formatTemperature(activeProvinceOverview.water.tempC, unit, {
+                        decimals: 1,
+                        showUnit: true
+                      })}
+                    </span>
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-ink-muted">
+                {activeProvinceOverview.panelSubtitle}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-ink-secondary tabular">
+              <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">
+                {formatVerificationModeTr(
+                  activeProvinceOverview.bundle.hybrid.verification.mode
+                )}
+                {activeProvinceOverview.bundle.provinceSummary
+                  ? ` · ${activeProvinceOverview.bundle.provinceSummary.mgmMeshStationCount} MGM Noktası`
+                  : ""}
+              </span>
+              {activeProvinceOverview.bundle.hybrid.verification.calibration
+                ?.active && (
+                <span className="rounded-md border border-signal-emerald/30 bg-signal-emerald/10 px-2 py-1 text-signal-emerald">
+                  Kalman ΔT{" "}
+                  {formatTempDelta(
+                    activeProvinceOverview.bundle.hybrid.verification.calibration
+                      .nowcastTempDeltaC,
+                    unit,
+                    { decimals: 1, signed: true, showUnit: true }
+                  )}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {(activeProvinceOverview.bundle.hybrid.engineMeta?.activeRegimeLabel ||
+            activeProvinceOverview.bundle.hybrid.engineMeta?.mgmDistrictMatched ||
+            activeProvinceOverview.microclimateTags.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {activeProvinceOverview.bundle.hybrid.engineMeta
+                ?.activeRegimeLabel && (
+                <span className="inline-flex items-center gap-1 rounded-md border border-signal-sky/25 bg-signal-sky/10 px-2 py-0.5 font-mono text-[11px] text-sky-200">
+                  <Compass className="h-3 w-3 text-signal-sky" />
+                  <span>
+                    {
+                      activeProvinceOverview.bundle.hybrid.engineMeta
+                        .activeRegimeLabel
+                    }
+                  </span>
+                </span>
+              )}
+              {activeProvinceOverview.bundle.hybrid.engineMeta
+                ?.mgmDistrictMatched && (
+                <span className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 font-mono text-[11px] text-emerald-200">
+                  MGM Eşleşen: {
+                    activeProvinceOverview.bundle.hybrid.engineMeta
+                      .mgmDistrictMatched
+                  }
+                </span>
+              )}
+              {activeProvinceOverview.microclimateTags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[11px] text-ink-secondary"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {activeProvinceOverview.stations.length > 0 && (
+            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4 font-mono text-xs tabular">
+              {activeProvinceOverview.stations.slice(0, 8).map((st) => (
+                <div
+                  key={`${st.icaoId}-${st.stationName}`}
+                  className="surface-tile p-3 space-y-1"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-sans text-xs font-semibold text-ink-primary">
+                      {st.stationName}
+                    </span>
+                    <span className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-ink-muted">
+                      {st.icaoId}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-ink-secondary">
+                    <span className="font-semibold text-signal-sky">
+                      {st.tempC !== null
+                        ? formatTemperature(st.tempC, unit, {
+                            decimals: 1,
+                            showUnit: true
+                          })
+                        : "—"}
+                    </span>
+                    <span>
+                      {st.windSpeedKmh !== null
+                        ? formatWindSpeed(st.windSpeedKmh, unit)
+                        : "—"}
+                    </span>
+                    <span className="text-ink-muted">
+                      {formatElevation(st.elevationM, unit)}
+                    </span>
+                  </div>
+                  {st.qnhHpa !== null && (
+                    <div className="text-[10px] text-ink-muted">
+                      QNH {formatPressure(st.qnhHpa, unit)}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Tetiklenen Eşik Uyarı Bandı */}
       {activeTriggered.length > 0 && (
         <div className="rounded-2xl border border-signal-amber/40 bg-signal-amber/10 p-4 space-y-2">
@@ -1048,12 +1568,19 @@ export default function DashboardView() {
           <div className="flex flex-wrap gap-2">
             {activeTriggered.map(({ rule, currentVal, displayThreshold }) => {
               const meta = getMetricMeta(rule.metric, unit);
+              const rulePc = normalizeProvinceCode(
+                (rule as ProvinceAwareAlertRule).provinceCode
+              );
               return (
                 <span
                   key={rule.id}
                   className="rounded-lg border border-signal-amber/30 bg-obsidian-950/75 px-3 py-1.5 text-xs text-ink-primary tabular"
                 >
-                  <strong>{rule.cityName}</strong> · {meta.label}{" "}
+                  <strong>
+                    {rule.cityName}
+                    {rulePc && rulePc !== "GLOBAL" ? ` (${rulePc})` : ""}
+                  </strong>{" "}
+                  · {meta.label}{" "}
                   <span className="font-mono text-signal-amber">
                     {currentVal}
                     {meta.unit}
@@ -1198,6 +1725,14 @@ export default function DashboardView() {
           const isStaleCard =
             isOffline || (b.freshness?.status ?? "live") === "stale";
           const stationElev = city.elevation ?? b.location.elevation;
+          const cardProvinceCode = resolveLocationProvinceCode(city, b);
+          const cardTierBadge = resolveDashboardTierBadge({
+            provinceCode: cardProvinceCode,
+            summaryTier: b.provinceSummary?.calibrationTier ?? null,
+            engineTier: b.hybrid?.engineMeta?.calibrationTier ?? null
+          });
+          const cardWater = resolveBundleWaterTelemetry(b, cardProvinceCode);
+          const cardTags = (b.hybrid?.engineMeta?.activeMicroclimateTags ?? []).slice(0, 2);
 
           return (
             <article
@@ -1207,10 +1742,22 @@ export default function DashboardView() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <h2 className="font-display text-lg font-semibold text-ink-primary">
                       {city.name}
                     </h2>
+                    {cardProvinceCode && cardProvinceCode !== "GLOBAL" && (
+                      <span className="rounded border border-white/15 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-ink-secondary tabular">
+                        {cardProvinceCode}
+                      </span>
+                    )}
+                    {cardTierBadge && (
+                      <span
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${cardTierBadge.className}`}
+                      >
+                        {cardTierBadge.code}
+                      </span>
+                    )}
                     {isStaleCard && (
                       <span className="inline-flex items-center gap-1 rounded-md border border-signal-amber/35 bg-signal-amber/12 px-1.5 py-0.5 font-mono text-[10px] text-amber-200 tabular">
                         <Clock className="h-2.5 w-2.5 text-signal-amber" />
@@ -1291,6 +1838,23 @@ export default function DashboardView() {
                         %{b.hybrid.engineMeta.stabilityPct} Kilitli
                       </span>
                     )}
+                    {cardWater && (
+                      <span className="rounded border border-signal-sky/30 bg-signal-sky/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-200 tabular">
+                        {cardWater.label}{" "}
+                        {formatTemperature(cardWater.tempC, unit, {
+                          decimals: 1,
+                          showUnit: true
+                        })}
+                      </span>
+                    )}
+                    {cardTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-ink-muted"
+                      >
+                        {tag}
+                      </span>
+                    ))}
                     {tv.stormChip.score >= 35 && (
                       <span
                         className="rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
@@ -1402,11 +1966,19 @@ export default function DashboardView() {
                 aria-label="Eşik istasyonu"
                 className="h-10 rounded-xl border border-white/10 bg-obsidian-950/90 px-3 text-sm text-ink-primary focus:border-signal-sky/60 focus:outline-none"
               >
-                {favorites.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
+                {favorites.map((c) => {
+                  const optPc = resolveLocationProvinceCode(c, cityBundles[c.id]);
+                  const optElev = c.elevation ?? cityBundles[c.id]?.location.elevation;
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {optPc && optPc !== "GLOBAL" ? ` (${optPc})` : ""}
+                      {optElev !== undefined && Number.isFinite(optElev)
+                        ? ` · ${formatElevation(optElev, unit)}`
+                        : ""}
+                    </option>
+                  );
+                })}
               </select>
 
               <select
@@ -1487,6 +2059,9 @@ export default function DashboardView() {
         <div className="divide-y divide-white/[0.07]">
           {evaluatedAlerts.map(({ rule, triggered, currentVal, displayThreshold }) => {
             const meta = getMetricMeta(rule.metric, unit);
+            const rulePc =
+              normalizeProvinceCode((rule as ProvinceAwareAlertRule).provinceCode) ??
+              inferProvinceCodeFromStationId(rule.cityId);
             return (
               <div
                 key={rule.id}
@@ -1503,6 +2078,16 @@ export default function DashboardView() {
                     }`}
                   />
                   <span className="font-medium text-ink-primary">{rule.cityName}</span>
+                  {rulePc && rulePc !== "GLOBAL" && (
+                    <span className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-ink-muted tabular">
+                      {rulePc}
+                    </span>
+                  )}
+                  {rule.elevation !== undefined && Number.isFinite(rule.elevation) && (
+                    <span className="font-mono text-[11px] text-ink-muted tabular">
+                      {formatElevation(rule.elevation, unit)}
+                    </span>
+                  )}
                   <span className="text-xs text-ink-secondary">
                     {meta.label}{" "}
                     <strong className="font-mono text-ink-primary tabular">

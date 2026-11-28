@@ -1,0 +1,1512 @@
+{
+  "generatedAtIso": "2026-11-28T16:35:00.000Z",
+  "methodology": "5-Fold 168-Hour-Purged Block Cross-Validation on 2024-2025 Real WMO SYNOP/METAR Observations",
+  "reanalysisSurrogatesUsed": false,
+  "excludedSealedProvince": "TR-16",
+  "counts": {
+    "totalNationalProvincesCalibrated": 80,
+    "tierAEmpiricalWmoCount": 60,
+    "tierBDonorAlaroCount": 20
+  },
+  "nationalTierASummary": {
+    "meanMatchedHoursPerStation": 17322,
+    "meanRawIfsMaeC": 1.3087,
+    "meanRawEqualEnsembleMaeC": 1.2878,
+    "meanOutOfSampleCalibratedMaeC": 0.9243,
+    "meanMaeReductionVsIfsC": 0.3844,
+    "meanMaeReductionVsEqualC": 0.3636,
+    "meanRawPopBrier": 0.03925,
+    "meanOutOfSampleCalibratedPopBrier": 0.036,
+    "all60BeatOrMatchRawBenchmark": true
+  },
+  "tierAProvinces": [
+    {
+      "provinceCode": "TR-01",
+      "provinceName": "Adana",
+      "wmoStationId": "17352",
+      "stationElevationM": 20,
+      "matchedHours": 17439,
+      "rawIfsMaeC": 1.343,
+      "rawEqualMaeC": 1.0884,
+      "cvCalibratedMaeC": 0.9022,
+      "maeImprovementVsIfsC": 0.4408,
+      "maeImprovementVsEqualC": 0.1862,
+      "rawPopBrier": 0.041,
+      "cvCalibratedPopBrier": 0.03675
+    },
+    {
+      "provinceCode": "TR-02",
+      "provinceName": "Adıyaman",
+      "wmoStationId": "17265",
+      "stationElevationM": 672,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.8087,
+      "rawEqualMaeC": 1.1929,
+      "cvCalibratedMaeC": 0.6849,
+      "maeImprovementVsIfsC": 0.1238,
+      "maeImprovementVsEqualC": 0.508,
+      "rawPopBrier": 0.02942,
+      "cvCalibratedPopBrier": 0.02635
+    },
+    {
+      "provinceCode": "TR-03",
+      "provinceName": "Afyonkarahisar",
+      "wmoStationId": "17190",
+      "stationElevationM": 1034,
+      "matchedHours": 17432,
+      "rawIfsMaeC": 1.4102,
+      "rawEqualMaeC": 1.1559,
+      "cvCalibratedMaeC": 1.1501,
+      "maeImprovementVsIfsC": 0.2601,
+      "maeImprovementVsEqualC": 0.0058,
+      "rawPopBrier": 0.03252,
+      "cvCalibratedPopBrier": 0.03001
+    },
+    {
+      "provinceCode": "TR-04",
+      "provinceName": "Ağrı",
+      "wmoStationId": "17099",
+      "stationElevationM": 1632,
+      "matchedHours": 17216,
+      "rawIfsMaeC": 1.4965,
+      "rawEqualMaeC": 1.6019,
+      "cvCalibratedMaeC": 1.3686,
+      "maeImprovementVsIfsC": 0.1279,
+      "maeImprovementVsEqualC": 0.2333,
+      "rawPopBrier": 0.04672,
+      "cvCalibratedPopBrier": 0.0451
+    },
+    {
+      "provinceCode": "TR-05",
+      "provinceName": "Amasya",
+      "wmoStationId": "17082",
+      "stationElevationM": 545,
+      "matchedHours": 17439,
+      "rawIfsMaeC": 1.5341,
+      "rawEqualMaeC": 1.3143,
+      "cvCalibratedMaeC": 1.197,
+      "maeImprovementVsIfsC": 0.3371,
+      "maeImprovementVsEqualC": 0.1173,
+      "rawPopBrier": 0.03534,
+      "cvCalibratedPopBrier": 0.03218
+    },
+    {
+      "provinceCode": "TR-06",
+      "provinceName": "Ankara",
+      "wmoStationId": "17130",
+      "stationElevationM": 891,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.5683,
+      "rawEqualMaeC": 0.9987,
+      "cvCalibratedMaeC": 0.4843,
+      "maeImprovementVsIfsC": 0.084,
+      "maeImprovementVsEqualC": 0.5144,
+      "rawPopBrier": 0.03412,
+      "cvCalibratedPopBrier": 0.03137
+    },
+    {
+      "provinceCode": "TR-07",
+      "provinceName": "Antalya",
+      "wmoStationId": "17300",
+      "stationElevationM": 54,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.0325,
+      "rawEqualMaeC": 0.9022,
+      "cvCalibratedMaeC": 0.7892,
+      "maeImprovementVsIfsC": 0.2433,
+      "maeImprovementVsEqualC": 0.113,
+      "rawPopBrier": 0.0473,
+      "cvCalibratedPopBrier": 0.03509
+    },
+    {
+      "provinceCode": "TR-08",
+      "provinceName": "Artvin",
+      "wmoStationId": "17045",
+      "stationElevationM": 613,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 3.1902,
+      "rawEqualMaeC": 2.8298,
+      "cvCalibratedMaeC": 1.3103,
+      "maeImprovementVsIfsC": 1.8799,
+      "maeImprovementVsEqualC": 1.5195,
+      "rawPopBrier": 0.05466,
+      "cvCalibratedPopBrier": 0.04742
+    },
+    {
+      "provinceCode": "TR-09",
+      "provinceName": "Aydın",
+      "wmoStationId": "17234",
+      "stationElevationM": 57,
+      "matchedHours": 17440,
+      "rawIfsMaeC": 1.7457,
+      "rawEqualMaeC": 1.4154,
+      "cvCalibratedMaeC": 1.2808,
+      "maeImprovementVsIfsC": 0.4649,
+      "maeImprovementVsEqualC": 0.1346,
+      "rawPopBrier": 0.03502,
+      "cvCalibratedPopBrier": 0.03365
+    },
+    {
+      "provinceCode": "TR-10",
+      "provinceName": "Balıkesir",
+      "wmoStationId": "17150",
+      "stationElevationM": 101,
+      "matchedHours": 17440,
+      "rawIfsMaeC": 1.3459,
+      "rawEqualMaeC": 1.19,
+      "cvCalibratedMaeC": 1.0254,
+      "maeImprovementVsIfsC": 0.3205,
+      "maeImprovementVsEqualC": 0.1646,
+      "rawPopBrier": 0.0299,
+      "cvCalibratedPopBrier": 0.02816
+    },
+    {
+      "provinceCode": "TR-12",
+      "provinceName": "Bingöl",
+      "wmoStationId": "17203",
+      "stationElevationM": 1177,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.4429,
+      "rawEqualMaeC": 1.0658,
+      "cvCalibratedMaeC": 0.4325,
+      "maeImprovementVsIfsC": 0.0104,
+      "maeImprovementVsEqualC": 0.6333,
+      "rawPopBrier": 0.03654,
+      "cvCalibratedPopBrier": 0.03168
+    },
+    {
+      "provinceCode": "TR-14",
+      "provinceName": "Bolu",
+      "wmoStationId": "17070",
+      "stationElevationM": 742,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.805,
+      "rawEqualMaeC": 1.3354,
+      "cvCalibratedMaeC": 1.0435,
+      "maeImprovementVsIfsC": 0.7615,
+      "maeImprovementVsEqualC": 0.2919,
+      "rawPopBrier": 0.05542,
+      "cvCalibratedPopBrier": 0.05161
+    },
+    {
+      "provinceCode": "TR-15",
+      "provinceName": "Burdur",
+      "wmoStationId": "17241",
+      "stationElevationM": 864,
+      "matchedHours": 17439,
+      "rawIfsMaeC": 1.6095,
+      "rawEqualMaeC": 1.3236,
+      "cvCalibratedMaeC": 1.1662,
+      "maeImprovementVsIfsC": 0.4433,
+      "maeImprovementVsEqualC": 0.1574,
+      "rawPopBrier": 0.02931,
+      "cvCalibratedPopBrier": 0.0279
+    },
+    {
+      "provinceCode": "TR-17",
+      "provinceName": "Çanakkale",
+      "wmoStationId": "17112",
+      "stationElevationM": 3,
+      "matchedHours": 17440,
+      "rawIfsMaeC": 1.367,
+      "rawEqualMaeC": 1.1686,
+      "cvCalibratedMaeC": 1.047,
+      "maeImprovementVsIfsC": 0.32,
+      "maeImprovementVsEqualC": 0.1216,
+      "rawPopBrier": 0.02838,
+      "cvCalibratedPopBrier": 0.02742
+    },
+    {
+      "provinceCode": "TR-18",
+      "provinceName": "Çankırı",
+      "wmoStationId": "17080",
+      "stationElevationM": 751,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.4504,
+      "rawEqualMaeC": 0.986,
+      "cvCalibratedMaeC": 0.4433,
+      "maeImprovementVsIfsC": 0.0071,
+      "maeImprovementVsEqualC": 0.5427,
+      "rawPopBrier": 0.03401,
+      "cvCalibratedPopBrier": 0.02919
+    },
+    {
+      "provinceCode": "TR-19",
+      "provinceName": "Çorum",
+      "wmoStationId": "17084",
+      "stationElevationM": 776,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 1.1427,
+      "rawEqualMaeC": 1.0386,
+      "cvCalibratedMaeC": 0.7329,
+      "maeImprovementVsIfsC": 0.4098,
+      "maeImprovementVsEqualC": 0.3057,
+      "rawPopBrier": 0.04106,
+      "cvCalibratedPopBrier": 0.03835
+    },
+    {
+      "provinceCode": "TR-20",
+      "provinceName": "Denizli",
+      "wmoStationId": "17237",
+      "stationElevationM": 428,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.5878,
+      "rawEqualMaeC": 1.0066,
+      "cvCalibratedMaeC": 0.5005,
+      "maeImprovementVsIfsC": 0.0873,
+      "maeImprovementVsEqualC": 0.5061,
+      "rawPopBrier": 0.0273,
+      "cvCalibratedPopBrier": 0.02414
+    },
+    {
+      "provinceCode": "TR-21",
+      "provinceName": "Diyarbakır",
+      "wmoStationId": "17280",
+      "stationElevationM": 686,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.3533,
+      "rawEqualMaeC": 1.1654,
+      "cvCalibratedMaeC": 1.0554,
+      "maeImprovementVsIfsC": 0.2979,
+      "maeImprovementVsEqualC": 0.11,
+      "rawPopBrier": 0.03089,
+      "cvCalibratedPopBrier": 0.02793
+    },
+    {
+      "provinceCode": "TR-22",
+      "provinceName": "Edirne",
+      "wmoStationId": "17050",
+      "stationElevationM": 48,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.3634,
+      "rawEqualMaeC": 1.0815,
+      "cvCalibratedMaeC": 0.7871,
+      "maeImprovementVsIfsC": 0.5763,
+      "maeImprovementVsEqualC": 0.2944,
+      "rawPopBrier": 0.02986,
+      "cvCalibratedPopBrier": 0.02807
+    },
+    {
+      "provinceCode": "TR-23",
+      "provinceName": "Elazığ",
+      "wmoStationId": "17202",
+      "stationElevationM": 902,
+      "matchedHours": 17440,
+      "rawIfsMaeC": 1.8658,
+      "rawEqualMaeC": 1.7892,
+      "cvCalibratedMaeC": 1.4087,
+      "maeImprovementVsIfsC": 0.4571,
+      "maeImprovementVsEqualC": 0.3805,
+      "rawPopBrier": 0.02878,
+      "cvCalibratedPopBrier": 0.02609
+    },
+    {
+      "provinceCode": "TR-24",
+      "provinceName": "Erzincan",
+      "wmoStationId": "17092",
+      "stationElevationM": 1156,
+      "matchedHours": 17439,
+      "rawIfsMaeC": 2.5927,
+      "rawEqualMaeC": 2.147,
+      "cvCalibratedMaeC": 1.821,
+      "maeImprovementVsIfsC": 0.7717,
+      "maeImprovementVsEqualC": 0.326,
+      "rawPopBrier": 0.0385,
+      "cvCalibratedPopBrier": 0.03229
+    },
+    {
+      "provinceCode": "TR-25",
+      "provinceName": "Erzurum",
+      "wmoStationId": "17096",
+      "stationElevationM": 1756,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 2.4459,
+      "rawEqualMaeC": 2.06,
+      "cvCalibratedMaeC": 1.7899,
+      "maeImprovementVsIfsC": 0.656,
+      "maeImprovementVsEqualC": 0.2701,
+      "rawPopBrier": 0.05047,
+      "cvCalibratedPopBrier": 0.04824
+    },
+    {
+      "provinceCode": "TR-26",
+      "provinceName": "Eskişehir",
+      "wmoStationId": "17124",
+      "stationElevationM": 785,
+      "matchedHours": 17440,
+      "rawIfsMaeC": 1.4623,
+      "rawEqualMaeC": 1.3308,
+      "cvCalibratedMaeC": 1.1893,
+      "maeImprovementVsIfsC": 0.273,
+      "maeImprovementVsEqualC": 0.1415,
+      "rawPopBrier": 0.02904,
+      "cvCalibratedPopBrier": 0.02652
+    },
+    {
+      "provinceCode": "TR-27",
+      "provinceName": "Gaziantep",
+      "wmoStationId": "17260",
+      "stationElevationM": 701,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.5037,
+      "rawEqualMaeC": 1.2936,
+      "cvCalibratedMaeC": 1.0745,
+      "maeImprovementVsIfsC": 0.4292,
+      "maeImprovementVsEqualC": 0.2191,
+      "rawPopBrier": 0.02736,
+      "cvCalibratedPopBrier": 0.02502
+    },
+    {
+      "provinceCode": "TR-28",
+      "provinceName": "Giresun",
+      "wmoStationId": "17034",
+      "stationElevationM": 38,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.681,
+      "rawEqualMaeC": 0.6788,
+      "cvCalibratedMaeC": 0.4117,
+      "maeImprovementVsIfsC": 0.2693,
+      "maeImprovementVsEqualC": 0.2671,
+      "rawPopBrier": 0.06292,
+      "cvCalibratedPopBrier": 0.0579
+    },
+    {
+      "provinceCode": "TR-29",
+      "provinceName": "Gümüşhane",
+      "wmoStationId": "17088",
+      "stationElevationM": 1219,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.9451,
+      "rawEqualMaeC": 1.1018,
+      "cvCalibratedMaeC": 0.5995,
+      "maeImprovementVsIfsC": 0.3456,
+      "maeImprovementVsEqualC": 0.5023,
+      "rawPopBrier": 0.04879,
+      "cvCalibratedPopBrier": 0.04461
+    },
+    {
+      "provinceCode": "TR-31",
+      "provinceName": "Hatay",
+      "wmoStationId": "LTDA0",
+      "stationElevationM": 82,
+      "matchedHours": 17306,
+      "rawIfsMaeC": 1.8092,
+      "rawEqualMaeC": 1.3853,
+      "cvCalibratedMaeC": 1.1644,
+      "maeImprovementVsIfsC": 0.6448,
+      "maeImprovementVsEqualC": 0.2209,
+      "rawPopBrier": 0.02905,
+      "cvCalibratedPopBrier": 0.02773
+    },
+    {
+      "provinceCode": "TR-32",
+      "provinceName": "Isparta",
+      "wmoStationId": "17240",
+      "stationElevationM": 997,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.9241,
+      "rawEqualMaeC": 1.591,
+      "cvCalibratedMaeC": 0.9229,
+      "maeImprovementVsIfsC": 1.0012,
+      "maeImprovementVsEqualC": 0.6681,
+      "rawPopBrier": 0.03158,
+      "cvCalibratedPopBrier": 0.02755
+    },
+    {
+      "provinceCode": "TR-33",
+      "provinceName": "Mersin",
+      "wmoStationId": "17340",
+      "stationElevationM": 3,
+      "matchedHours": 17088,
+      "rawIfsMaeC": 0.5899,
+      "rawEqualMaeC": 0.9061,
+      "cvCalibratedMaeC": 0.4911,
+      "maeImprovementVsIfsC": 0.0988,
+      "maeImprovementVsEqualC": 0.415,
+      "rawPopBrier": 0.03354,
+      "cvCalibratedPopBrier": 0.02619
+    },
+    {
+      "provinceCode": "TR-34",
+      "provinceName": "İstanbul",
+      "wmoStationId": "17060",
+      "stationElevationM": 48,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.1021,
+      "rawEqualMaeC": 0.8832,
+      "cvCalibratedMaeC": 0.6939,
+      "maeImprovementVsIfsC": 0.4082,
+      "maeImprovementVsEqualC": 0.1893,
+      "rawPopBrier": 0.03612,
+      "cvCalibratedPopBrier": 0.03275
+    },
+    {
+      "provinceCode": "TR-35",
+      "provinceName": "İzmir",
+      "wmoStationId": "17220",
+      "stationElevationM": 25,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.4004,
+      "rawEqualMaeC": 0.8155,
+      "cvCalibratedMaeC": 0.341,
+      "maeImprovementVsIfsC": 0.0594,
+      "maeImprovementVsEqualC": 0.4745,
+      "rawPopBrier": 0.02961,
+      "cvCalibratedPopBrier": 0.0279
+    },
+    {
+      "provinceCode": "TR-36",
+      "provinceName": "Kars",
+      "wmoStationId": "17098",
+      "stationElevationM": 1775,
+      "matchedHours": 17440,
+      "rawIfsMaeC": 2.0044,
+      "rawEqualMaeC": 1.6521,
+      "cvCalibratedMaeC": 1.4432,
+      "maeImprovementVsIfsC": 0.5612,
+      "maeImprovementVsEqualC": 0.2089,
+      "rawPopBrier": 0.05157,
+      "cvCalibratedPopBrier": 0.04575
+    },
+    {
+      "provinceCode": "TR-37",
+      "provinceName": "Kastamonu",
+      "wmoStationId": "17074",
+      "stationElevationM": 799,
+      "matchedHours": 17340,
+      "rawIfsMaeC": 1.197,
+      "rawEqualMaeC": 1.2559,
+      "cvCalibratedMaeC": 1.1165,
+      "maeImprovementVsIfsC": 0.0805,
+      "maeImprovementVsEqualC": 0.1394,
+      "rawPopBrier": 0.04459,
+      "cvCalibratedPopBrier": 0.0389
+    },
+    {
+      "provinceCode": "TR-38",
+      "provinceName": "Kayseri",
+      "wmoStationId": "17195",
+      "stationElevationM": 1053,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.6867,
+      "rawEqualMaeC": 1.3984,
+      "cvCalibratedMaeC": 1.1494,
+      "maeImprovementVsIfsC": 0.5373,
+      "maeImprovementVsEqualC": 0.249,
+      "rawPopBrier": 0.03739,
+      "cvCalibratedPopBrier": 0.03396
+    },
+    {
+      "provinceCode": "TR-40",
+      "provinceName": "Kırşehir",
+      "wmoStationId": "17160",
+      "stationElevationM": 995,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.5184,
+      "rawEqualMaeC": 0.8775,
+      "cvCalibratedMaeC": 0.4902,
+      "maeImprovementVsIfsC": 0.0282,
+      "maeImprovementVsEqualC": 0.3873,
+      "rawPopBrier": 0.03005,
+      "cvCalibratedPopBrier": 0.02818
+    },
+    {
+      "provinceCode": "TR-41",
+      "provinceName": "Kocaeli",
+      "wmoStationId": "LTBQ0",
+      "stationElevationM": 50,
+      "matchedHours": 17307,
+      "rawIfsMaeC": 2.1915,
+      "rawEqualMaeC": 2.3084,
+      "cvCalibratedMaeC": 1.7615,
+      "maeImprovementVsIfsC": 0.43,
+      "maeImprovementVsEqualC": 0.5469,
+      "rawPopBrier": 0.06125,
+      "cvCalibratedPopBrier": 0.0603
+    },
+    {
+      "provinceCode": "TR-42",
+      "provinceName": "Konya",
+      "wmoStationId": "17244",
+      "stationElevationM": 1032,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.2916,
+      "rawEqualMaeC": 1.0228,
+      "cvCalibratedMaeC": 0.9292,
+      "maeImprovementVsIfsC": 0.3624,
+      "maeImprovementVsEqualC": 0.0936,
+      "rawPopBrier": 0.0319,
+      "cvCalibratedPopBrier": 0.03003
+    },
+    {
+      "provinceCode": "TR-43",
+      "provinceName": "Kütahya",
+      "wmoStationId": "17155",
+      "stationElevationM": 969,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.4775,
+      "rawEqualMaeC": 0.9246,
+      "cvCalibratedMaeC": 0.43,
+      "maeImprovementVsIfsC": 0.0475,
+      "maeImprovementVsEqualC": 0.4946,
+      "rawPopBrier": 0.03242,
+      "cvCalibratedPopBrier": 0.02958
+    },
+    {
+      "provinceCode": "TR-44",
+      "provinceName": "Malatya",
+      "wmoStationId": "LTAO0",
+      "stationElevationM": 919,
+      "matchedHours": 17297,
+      "rawIfsMaeC": 1.1839,
+      "rawEqualMaeC": 1.1296,
+      "cvCalibratedMaeC": 1.0725,
+      "maeImprovementVsIfsC": 0.1114,
+      "maeImprovementVsEqualC": 0.0571,
+      "rawPopBrier": 0.02692,
+      "cvCalibratedPopBrier": 0.02446
+    },
+    {
+      "provinceCode": "TR-46",
+      "provinceName": "Kahramanmaraş",
+      "wmoStationId": "17255",
+      "stationElevationM": 549,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 2.5992,
+      "rawEqualMaeC": 2.9616,
+      "cvCalibratedMaeC": 1.0869,
+      "maeImprovementVsIfsC": 1.5123,
+      "maeImprovementVsEqualC": 1.8747,
+      "rawPopBrier": 0.03609,
+      "cvCalibratedPopBrier": 0.0355
+    },
+    {
+      "provinceCode": "TR-48",
+      "provinceName": "Muğla",
+      "wmoStationId": "17292",
+      "stationElevationM": 646,
+      "matchedHours": 17088,
+      "rawIfsMaeC": 0.6512,
+      "rawEqualMaeC": 0.8556,
+      "cvCalibratedMaeC": 0.4916,
+      "maeImprovementVsIfsC": 0.1596,
+      "maeImprovementVsEqualC": 0.364,
+      "rawPopBrier": 0.03791,
+      "cvCalibratedPopBrier": 0.03568
+    },
+    {
+      "provinceCode": "TR-49",
+      "provinceName": "Muş",
+      "wmoStationId": "17204",
+      "stationElevationM": 1320,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 1.3301,
+      "rawEqualMaeC": 1.1083,
+      "cvCalibratedMaeC": 0.7591,
+      "maeImprovementVsIfsC": 0.571,
+      "maeImprovementVsEqualC": 0.3492,
+      "rawPopBrier": 0.04074,
+      "cvCalibratedPopBrier": 0.03924
+    },
+    {
+      "provinceCode": "TR-50",
+      "provinceName": "Nevşehir",
+      "wmoStationId": "17193",
+      "stationElevationM": 1260,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.6156,
+      "rawEqualMaeC": 0.957,
+      "cvCalibratedMaeC": 0.5519,
+      "maeImprovementVsIfsC": 0.0637,
+      "maeImprovementVsEqualC": 0.4051,
+      "rawPopBrier": 0.03573,
+      "cvCalibratedPopBrier": 0.03385
+    },
+    {
+      "provinceCode": "TR-51",
+      "provinceName": "Niğde",
+      "wmoStationId": "17250",
+      "stationElevationM": 1208,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.8267,
+      "rawEqualMaeC": 0.9076,
+      "cvCalibratedMaeC": 0.6856,
+      "maeImprovementVsIfsC": 0.1411,
+      "maeImprovementVsEqualC": 0.222,
+      "rawPopBrier": 0.03782,
+      "cvCalibratedPopBrier": 0.03599
+    },
+    {
+      "provinceCode": "TR-53",
+      "provinceName": "Rize",
+      "wmoStationId": "17040",
+      "stationElevationM": 9,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.6345,
+      "rawEqualMaeC": 0.7739,
+      "cvCalibratedMaeC": 0.5047,
+      "maeImprovementVsIfsC": 0.1298,
+      "maeImprovementVsEqualC": 0.2692,
+      "rawPopBrier": 0.06917,
+      "cvCalibratedPopBrier": 0.06448
+    },
+    {
+      "provinceCode": "TR-54",
+      "provinceName": "Sakarya",
+      "wmoStationId": "17069",
+      "stationElevationM": 30,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.4934,
+      "rawEqualMaeC": 0.8698,
+      "cvCalibratedMaeC": 0.4363,
+      "maeImprovementVsIfsC": 0.0571,
+      "maeImprovementVsEqualC": 0.4335,
+      "rawPopBrier": 0.04945,
+      "cvCalibratedPopBrier": 0.04465
+    },
+    {
+      "provinceCode": "TR-55",
+      "provinceName": "Samsun",
+      "wmoStationId": "17030",
+      "stationElevationM": 4,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.1967,
+      "rawEqualMaeC": 0.7838,
+      "cvCalibratedMaeC": 0.6208,
+      "maeImprovementVsIfsC": 0.5759,
+      "maeImprovementVsEqualC": 0.163,
+      "rawPopBrier": 0.05469,
+      "cvCalibratedPopBrier": 0.04791
+    },
+    {
+      "provinceCode": "TR-56",
+      "provinceName": "Siirt",
+      "wmoStationId": "17210",
+      "stationElevationM": 895,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.5527,
+      "rawEqualMaeC": 1.4358,
+      "cvCalibratedMaeC": 0.4729,
+      "maeImprovementVsIfsC": 0.0798,
+      "maeImprovementVsEqualC": 0.9629,
+      "rawPopBrier": 0.03448,
+      "cvCalibratedPopBrier": 0.02919
+    },
+    {
+      "provinceCode": "TR-57",
+      "provinceName": "Sinop",
+      "wmoStationId": "17026",
+      "stationElevationM": 32,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.5418,
+      "rawEqualMaeC": 1.4299,
+      "cvCalibratedMaeC": 1.1239,
+      "maeImprovementVsIfsC": 0.4179,
+      "maeImprovementVsEqualC": 0.306,
+      "rawPopBrier": 0.05136,
+      "cvCalibratedPopBrier": 0.04787
+    },
+    {
+      "provinceCode": "TR-58",
+      "provinceName": "Sivas",
+      "wmoStationId": "17090",
+      "stationElevationM": 1285,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 2.3764,
+      "rawEqualMaeC": 2.3022,
+      "cvCalibratedMaeC": 1.3409,
+      "maeImprovementVsIfsC": 1.0355,
+      "maeImprovementVsEqualC": 0.9613,
+      "rawPopBrier": 0.04115,
+      "cvCalibratedPopBrier": 0.03896
+    },
+    {
+      "provinceCode": "TR-59",
+      "provinceName": "Tekirdağ",
+      "wmoStationId": "17056",
+      "stationElevationM": 4,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.4206,
+      "rawEqualMaeC": 1.0168,
+      "cvCalibratedMaeC": 0.8367,
+      "maeImprovementVsIfsC": 0.5839,
+      "maeImprovementVsEqualC": 0.1801,
+      "rawPopBrier": 0.0301,
+      "cvCalibratedPopBrier": 0.02824
+    },
+    {
+      "provinceCode": "TR-60",
+      "provinceName": "Tokat",
+      "wmoStationId": "17086",
+      "stationElevationM": 608,
+      "matchedHours": 17385,
+      "rawIfsMaeC": 1.4177,
+      "rawEqualMaeC": 1.3529,
+      "cvCalibratedMaeC": 1.27,
+      "maeImprovementVsIfsC": 0.1477,
+      "maeImprovementVsEqualC": 0.0829,
+      "rawPopBrier": 0.04338,
+      "cvCalibratedPopBrier": 0.03988
+    },
+    {
+      "provinceCode": "TR-61",
+      "provinceName": "Trabzon",
+      "wmoStationId": "17038",
+      "stationElevationM": 35,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.8859,
+      "rawEqualMaeC": 1.3931,
+      "cvCalibratedMaeC": 0.9018,
+      "maeImprovementVsIfsC": 0.9841,
+      "maeImprovementVsEqualC": 0.4913,
+      "rawPopBrier": 0.07177,
+      "cvCalibratedPopBrier": 0.06983
+    },
+    {
+      "provinceCode": "TR-63",
+      "provinceName": "Şanlıurfa",
+      "wmoStationId": "17270",
+      "stationElevationM": 547,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.4838,
+      "rawEqualMaeC": 0.824,
+      "cvCalibratedMaeC": 0.4465,
+      "maeImprovementVsIfsC": 0.0373,
+      "maeImprovementVsEqualC": 0.3775,
+      "rawPopBrier": 0.02612,
+      "cvCalibratedPopBrier": 0.02363
+    },
+    {
+      "provinceCode": "TR-64",
+      "provinceName": "Uşak",
+      "wmoStationId": "17188",
+      "stationElevationM": 919,
+      "matchedHours": 17302,
+      "rawIfsMaeC": 1.2995,
+      "rawEqualMaeC": 1.4189,
+      "cvCalibratedMaeC": 1.2433,
+      "maeImprovementVsIfsC": 0.0562,
+      "maeImprovementVsEqualC": 0.1756,
+      "rawPopBrier": 0.03537,
+      "cvCalibratedPopBrier": 0.03341
+    },
+    {
+      "provinceCode": "TR-65",
+      "provinceName": "Van",
+      "wmoStationId": "17170",
+      "stationElevationM": 1667,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.7028,
+      "rawEqualMaeC": 1.6154,
+      "cvCalibratedMaeC": 1.3932,
+      "maeImprovementVsIfsC": 0.3096,
+      "maeImprovementVsEqualC": 0.2222,
+      "rawPopBrier": 0.03926,
+      "cvCalibratedPopBrier": 0.03591
+    },
+    {
+      "provinceCode": "TR-66",
+      "provinceName": "Yozgat",
+      "wmoStationId": "17140",
+      "stationElevationM": 1298,
+      "matchedHours": 17083,
+      "rawIfsMaeC": 0.6826,
+      "rawEqualMaeC": 0.7782,
+      "cvCalibratedMaeC": 0.4991,
+      "maeImprovementVsIfsC": 0.1835,
+      "maeImprovementVsEqualC": 0.2791,
+      "rawPopBrier": 0.03885,
+      "cvCalibratedPopBrier": 0.03664
+    },
+    {
+      "provinceCode": "TR-67",
+      "provinceName": "Zonguldak",
+      "wmoStationId": "17022",
+      "stationElevationM": 136,
+      "matchedHours": 17544,
+      "rawIfsMaeC": 1.4836,
+      "rawEqualMaeC": 1.2748,
+      "cvCalibratedMaeC": 1.0699,
+      "maeImprovementVsIfsC": 0.4137,
+      "maeImprovementVsEqualC": 0.2049,
+      "rawPopBrier": 0.04945,
+      "cvCalibratedPopBrier": 0.04676
+    },
+    {
+      "provinceCode": "TR-72",
+      "provinceName": "Batman",
+      "wmoStationId": "17282",
+      "stationElevationM": 540,
+      "matchedHours": 17439,
+      "rawIfsMaeC": 1.8632,
+      "rawEqualMaeC": 1.7214,
+      "cvCalibratedMaeC": 1.2227,
+      "maeImprovementVsIfsC": 0.6405,
+      "maeImprovementVsEqualC": 0.4987,
+      "rawPopBrier": 0.03232,
+      "cvCalibratedPopBrier": 0.02903
+    },
+    {
+      "provinceCode": "TR-77",
+      "provinceName": "Yalova",
+      "wmoStationId": "LTBP0",
+      "stationElevationM": 2,
+      "matchedHours": 17253,
+      "rawIfsMaeC": 0.9911,
+      "rawEqualMaeC": 1.0766,
+      "cvCalibratedMaeC": 0.7962,
+      "maeImprovementVsIfsC": 0.1949,
+      "maeImprovementVsEqualC": 0.2804,
+      "rawPopBrier": 0.03937,
+      "cvCalibratedPopBrier": 0.03675
+    }
+  ],
+  "tierBProvinces": [
+    {
+      "provinceCode": "TR-11",
+      "provinceName": "Bilecik",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-26",
+        "TR-43",
+        "TR-54"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-26",
+          "provinceName": "Eskişehir",
+          "wmoStationId": "17124",
+          "weight": 0.45
+        },
+        {
+          "provinceCode": "TR-43",
+          "provinceName": "Kütahya",
+          "wmoStationId": "17155",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-54",
+          "provinceName": "Sakarya",
+          "wmoStationId": "17069",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-13",
+      "provinceName": "Bitlis",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-49",
+        "TR-65",
+        "TR-12"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-49",
+          "provinceName": "Muş",
+          "wmoStationId": "17204",
+          "weight": 0.45
+        },
+        {
+          "provinceCode": "TR-65",
+          "provinceName": "Van",
+          "wmoStationId": "17170",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-12",
+          "provinceName": "Bingöl",
+          "wmoStationId": "17203",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-30",
+      "provinceName": "Hakkari",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-65",
+        "TR-56",
+        "TR-49"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-65",
+          "provinceName": "Van",
+          "wmoStationId": "17170",
+          "weight": 0.5
+        },
+        {
+          "provinceCode": "TR-56",
+          "provinceName": "Siirt",
+          "wmoStationId": "17210",
+          "weight": 0.3
+        },
+        {
+          "provinceCode": "TR-49",
+          "provinceName": "Muş",
+          "wmoStationId": "17204",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-39",
+      "provinceName": "Kırklareli",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-22",
+        "TR-59"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-22",
+          "provinceName": "Edirne",
+          "wmoStationId": "17050",
+          "weight": 0.6
+        },
+        {
+          "provinceCode": "TR-59",
+          "provinceName": "Tekirdağ",
+          "wmoStationId": "17056",
+          "weight": 0.4
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-45",
+      "provinceName": "Manisa",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-09",
+        "TR-20",
+        "TR-10"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-09",
+          "provinceName": "Aydın",
+          "wmoStationId": "17234",
+          "weight": 0.45
+        },
+        {
+          "provinceCode": "TR-20",
+          "provinceName": "Denizli",
+          "wmoStationId": "17237",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-10",
+          "provinceName": "Balıkesir",
+          "wmoStationId": "17150",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-47",
+      "provinceName": "Mardin",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-56",
+        "TR-21",
+        "TR-63"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-56",
+          "provinceName": "Siirt",
+          "wmoStationId": "17210",
+          "weight": 0.4
+        },
+        {
+          "provinceCode": "TR-21",
+          "provinceName": "Diyarbakır",
+          "wmoStationId": "17280",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-63",
+          "provinceName": "Şanlıurfa",
+          "wmoStationId": "17270",
+          "weight": 0.25
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-52",
+      "provinceName": "Ordu",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-28",
+        "TR-55"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-28",
+          "provinceName": "Giresun",
+          "wmoStationId": "17034",
+          "weight": 0.55
+        },
+        {
+          "provinceCode": "TR-55",
+          "provinceName": "Samsun",
+          "wmoStationId": "17030",
+          "weight": 0.45
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-62",
+      "provinceName": "Tunceli",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-12",
+        "TR-24",
+        "TR-23"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-12",
+          "provinceName": "Bingöl",
+          "wmoStationId": "17203",
+          "weight": 0.45
+        },
+        {
+          "provinceCode": "TR-24",
+          "provinceName": "Erzincan",
+          "wmoStationId": "17092",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-23",
+          "provinceName": "Elazığ",
+          "wmoStationId": "17202",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-68",
+      "provinceName": "Aksaray",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-51",
+        "TR-42",
+        "TR-50"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-51",
+          "provinceName": "Niğde",
+          "wmoStationId": "17250",
+          "weight": 0.4
+        },
+        {
+          "provinceCode": "TR-42",
+          "provinceName": "Konya",
+          "wmoStationId": "17244",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-50",
+          "provinceName": "Nevşehir",
+          "wmoStationId": "17193",
+          "weight": 0.25
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-69",
+      "provinceName": "Bayburt",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-29",
+        "TR-25",
+        "TR-24"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-29",
+          "provinceName": "Gümüşhane",
+          "wmoStationId": "17088",
+          "weight": 0.45
+        },
+        {
+          "provinceCode": "TR-25",
+          "provinceName": "Erzurum",
+          "wmoStationId": "17096",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-24",
+          "provinceName": "Erzincan",
+          "wmoStationId": "17092",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-70",
+      "provinceName": "Karaman",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-42",
+        "TR-51",
+        "TR-32"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-42",
+          "provinceName": "Konya",
+          "wmoStationId": "17244",
+          "weight": 0.55
+        },
+        {
+          "provinceCode": "TR-51",
+          "provinceName": "Niğde",
+          "wmoStationId": "17250",
+          "weight": 0.3
+        },
+        {
+          "provinceCode": "TR-32",
+          "provinceName": "Isparta",
+          "wmoStationId": "17240",
+          "weight": 0.15
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-71",
+      "provinceName": "Kırıkkale",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-06",
+        "TR-40",
+        "TR-18"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-06",
+          "provinceName": "Ankara",
+          "wmoStationId": "17130",
+          "weight": 0.5
+        },
+        {
+          "provinceCode": "TR-40",
+          "provinceName": "Kırşehir",
+          "wmoStationId": "17160",
+          "weight": 0.3
+        },
+        {
+          "provinceCode": "TR-18",
+          "provinceName": "Çankırı",
+          "wmoStationId": "17080",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-73",
+      "provinceName": "Şırnak",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-56",
+        "TR-72",
+        "TR-65"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-56",
+          "provinceName": "Siirt",
+          "wmoStationId": "17210",
+          "weight": 0.5
+        },
+        {
+          "provinceCode": "TR-72",
+          "provinceName": "Batman",
+          "wmoStationId": "17282",
+          "weight": 0.3
+        },
+        {
+          "provinceCode": "TR-65",
+          "provinceName": "Van",
+          "wmoStationId": "17170",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-74",
+      "provinceName": "Bartın",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-67",
+        "TR-57",
+        "TR-37"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-67",
+          "provinceName": "Zonguldak",
+          "wmoStationId": "17022",
+          "weight": 0.6
+        },
+        {
+          "provinceCode": "TR-57",
+          "provinceName": "Sinop",
+          "wmoStationId": "17026",
+          "weight": 0.25
+        },
+        {
+          "provinceCode": "TR-37",
+          "provinceName": "Kastamonu",
+          "wmoStationId": "17074",
+          "weight": 0.15
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-75",
+      "provinceName": "Ardahan",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-36",
+        "TR-25",
+        "TR-08"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-36",
+          "provinceName": "Kars",
+          "wmoStationId": "17098",
+          "weight": 0.6
+        },
+        {
+          "provinceCode": "TR-25",
+          "provinceName": "Erzurum",
+          "wmoStationId": "17096",
+          "weight": 0.25
+        },
+        {
+          "provinceCode": "TR-08",
+          "provinceName": "Artvin",
+          "wmoStationId": "17045",
+          "weight": 0.15
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-76",
+      "provinceName": "Iğdır",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-24",
+        "TR-04",
+        "TR-44"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-24",
+          "provinceName": "Erzincan",
+          "wmoStationId": "17092",
+          "weight": 0.45
+        },
+        {
+          "provinceCode": "TR-04",
+          "provinceName": "Ağrı",
+          "wmoStationId": "17099",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-44",
+          "provinceName": "Malatya",
+          "wmoStationId": "LTAO0",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-78",
+      "provinceName": "Karabük",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-14",
+        "TR-37",
+        "TR-67"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-14",
+          "provinceName": "Bolu",
+          "wmoStationId": "17070",
+          "weight": 0.4
+        },
+        {
+          "provinceCode": "TR-37",
+          "provinceName": "Kastamonu",
+          "wmoStationId": "17074",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-67",
+          "provinceName": "Zonguldak",
+          "wmoStationId": "17022",
+          "weight": 0.25
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-79",
+      "provinceName": "Kilis",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-27",
+        "TR-63",
+        "TR-46"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-27",
+          "provinceName": "Gaziantep",
+          "wmoStationId": "17260",
+          "weight": 0.6
+        },
+        {
+          "provinceCode": "TR-63",
+          "provinceName": "Şanlıurfa",
+          "wmoStationId": "17270",
+          "weight": 0.25
+        },
+        {
+          "provinceCode": "TR-46",
+          "provinceName": "Kahramanmaraş",
+          "wmoStationId": "17255",
+          "weight": 0.15
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-80",
+      "provinceName": "Osmaniye",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-01",
+        "TR-31",
+        "TR-46"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-01",
+          "provinceName": "Adana",
+          "wmoStationId": "17352",
+          "weight": 0.5
+        },
+        {
+          "provinceCode": "TR-31",
+          "provinceName": "Hatay",
+          "wmoStationId": "LTDA0",
+          "weight": 0.3
+        },
+        {
+          "provinceCode": "TR-46",
+          "provinceName": "Kahramanmaraş",
+          "wmoStationId": "17255",
+          "weight": 0.2
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    },
+    {
+      "provinceCode": "TR-81",
+      "provinceName": "Düzce",
+      "tier": "TIER_B_DONOR_ALARO",
+      "donorProvinces": [
+        "TR-54",
+        "TR-14",
+        "TR-67"
+      ],
+      "donorStations": [
+        {
+          "provinceCode": "TR-54",
+          "provinceName": "Sakarya",
+          "wmoStationId": "17069",
+          "weight": 0.5
+        },
+        {
+          "provinceCode": "TR-14",
+          "provinceName": "Bolu",
+          "wmoStationId": "17070",
+          "weight": 0.35
+        },
+        {
+          "provinceCode": "TR-67",
+          "provinceName": "Zonguldak",
+          "wmoStationId": "17022",
+          "weight": 0.15
+        }
+      ],
+      "alaroAnchorWeight0to72h": 0.24,
+      "zeroInterceptVerified": true,
+      "zeroBetaDriversVerified": true
+    }
+  ]
+}
